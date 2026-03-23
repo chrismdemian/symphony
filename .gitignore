@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build
+dist/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Claude Code (internal dev config — not for public repo)
+.claude/
+CLAUDE.md
+
+# Internal planning docs
+PLAN.md
+
+# Symphony runtime
+.symphony/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+coverage/
+test-results/
+
+# Logs
+*.log
+
+# Codex
+AGENTS.md
