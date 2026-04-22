@@ -68,6 +68,12 @@ export async function* parseStream(
         // Deferred for v1 — complete-turn events are authoritative. Silent
         // skip keeps the parse_error channel meaningful for real bugs.
         break;
+      case 'rate_limit_event':
+        // Emitted by live `claude -p --verbose` at session start with the
+        // user's rate-limit window (5-hour / overage status). We don't need
+        // it yet; silent skip keeps parse_error meaningful. If Phase 4's
+        // rate-limit awareness needs this, wire a dedicated event type.
+        break;
       default:
         yield parseError(`unknown event type: ${JSON.stringify(rawType)}`, line.value);
     }

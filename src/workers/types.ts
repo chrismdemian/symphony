@@ -118,3 +118,72 @@ export interface ParseErrorEvent {
   reason: string;
   line?: string;
 }
+
+// ── Worker (Phase 1B) ────────────────────────────────────────────────
+
+export type WorkerStatus =
+  | 'spawning'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'killed'
+  | 'timeout'
+  | 'crashed';
+
+export type KillSignal = 'SIGTERM' | 'SIGKILL';
+
+export interface WorkerConfig {
+  id: string;
+  cwd: string;
+  prompt: string;
+  claudePath?: string;
+  model?: string;
+  sessionId?: string;
+  deterministicUuidInput?: string;
+  maxTurns?: number;
+  appendSystemPrompt?: string;
+  mcpConfigPath?: string;
+  extraArgs?: string[];
+  extraEnv?: Record<string, string>;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  /**
+   * Keep stdin open after `result` arrives so follow-up user messages can
+   * continue the same `claude -p` session. Default: false (stdin closes on
+   * `result`, letting claude exit cleanly). Callers who set this MUST call
+   * `worker.endInput()` when finished to allow claude to exit.
+   */
+  keepStdinOpen?: boolean;
+  /**
+   * Policy when `sessionId` is set but the corresponding jsonl file is
+   * missing or the cwd doesn't match:
+   * - `'reject'` (default): throw from `spawn()`. Caller must decide.
+   * - `'warn-and-fresh'`: fire `onStaleResume` hook, start a fresh session.
+   * - `'start-fresh'`: silently start a fresh session (only for deterministic
+   *   resume loops that already expect this).
+   * Silent substitution breaks observability of session identity.
+   */
+  onStaleResume?: 'reject' | 'warn-and-fresh' | 'start-fresh';
+}
+
+export interface WorkerExitInfo {
+  status: WorkerStatus;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  sessionId?: string;
+  durationMs: number;
+  /** Last ~8KB of stderr captured from the child, for crash diagnosis. */
+  stderrTail?: string;
+}
+
+export interface Worker {
+  readonly id: string;
+  readonly sessionId: string | undefined;
+  readonly status: WorkerStatus;
+  readonly events: AsyncIterable<StreamEvent>;
+  sendFollowup(text: string): void;
+  /** End stdin so claude can exit. Safe to call multiple times. */
+  endInput(): void;
+  kill(signal?: KillSignal): void;
+  waitForExit(): Promise<WorkerExitInfo>;
+}
