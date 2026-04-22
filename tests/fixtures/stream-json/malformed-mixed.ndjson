@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","session_id":"00000000-0000-4000-8000-000000000004","cwd":"/tmp/project","model":"claude-opus-4-7","tools":[]}
+{not json}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-7","content":[{"type":"text","text":"Survived a bad line."}],"usage":{"input_tokens":10,"output_tokens":5}}}
+{"type":"mystery_event","foo":"bar"}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":100,"num_turns":1,"result":"Survived a bad line.","session_id":"00000000-0000-4000-8000-000000000004","total_cost_usd":0.0001}
