@@ -17,12 +17,14 @@ import {
   parseWorktreePorcelain,
   WorktreeSafetyError,
 } from './safety.js';
+import { readSymphonyConfig } from './symphony-config.js';
 import {
   DEFAULT_GIT_EXCLUDE_PATTERNS,
   type CreateWorktreeOptions,
   type RemoveWorktreeOptions,
   type WorktreeInfo,
   type WorktreeManagerConfig,
+  type WorktreePoolHandle,
   type WorktreeStatus,
 } from './types.js';
 
@@ -39,20 +41,31 @@ export interface WorktreeManagerEvents {
   onPreserveResult?: (info: { worktreePath: string; copied: readonly string[]; skipped: readonly string[] }) => void;
   /** Fired after project-prep dispatch (whether or not it actually spawned). */
   onProjectPrep?: (info: { worktreePath: string; detected: string | null; spawned: boolean }) => void;
+  /** Fired after a successful pool claim (before returning from create). */
+  onPoolClaim?: (info: { worktreePath: string; workerId: string; projectPath: string }) => void;
+  /** Fired when the pool was asked but returned null and we fell back to sync creation. */
+  onPoolFallback?: (info: {
+    workerId: string;
+    projectPath: string;
+    reason: 'disabled' | 'missing-pool' | 'claim-miss';
+  }) => void;
 }
 
 export class WorktreeManager {
-  private readonly locks = new ProjectLockRegistry();
+  private readonly locks: ProjectLockRegistry;
   private readonly branchPrefix: string;
   private readonly runProjectPrep: boolean;
   private readonly excludePatterns: readonly string[];
   private readonly events: WorktreeManagerEvents;
+  private readonly pool: WorktreePoolHandle | undefined;
 
-  constructor(config: WorktreeManagerConfig & { events?: WorktreeManagerEvents } = {}) {
+  constructor(config: WorktreeManagerConfig & { events?: WorktreeManagerEvents; locks?: ProjectLockRegistry } = {}) {
     this.branchPrefix = config.branchPrefix ?? DEFAULT_BRANCH_PREFIX;
     this.runProjectPrep = config.runProjectPrep ?? true;
     this.excludePatterns = config.excludePatterns ?? DEFAULT_GIT_EXCLUDE_PATTERNS;
     this.events = config.events ?? {};
+    this.pool = config.pool;
+    this.locks = config.locks ?? new ProjectLockRegistry();
   }
 
   async create(opts: CreateWorktreeOptions): Promise<WorktreeInfo> {
@@ -60,6 +73,42 @@ export class WorktreeManager {
     if (!workerId.trim()) {
       throw new Error('WorktreeManager.create: workerId is required');
     }
+
+    const poolEnabled = isPoolEnabled(projectPath);
+    if (this.pool && poolEnabled) {
+      try {
+        const claimed = await this.pool.claimReserve({
+          projectPath,
+          workerId,
+          shortDescription: opts.shortDescription,
+          baseRef: opts.baseRef,
+          branchPrefix: this.branchPrefix,
+          excludePatterns: this.excludePatterns,
+          skipPreserve: opts.skipPreserve,
+          skipProjectPrep: opts.skipProjectPrep,
+          runProjectPrep: this.runProjectPrep,
+          onPreserveResult: this.events.onPreserveResult,
+          onProjectPrep: this.events.onProjectPrep,
+        });
+        if (claimed) {
+          this.events.onPoolClaim?.({
+            worktreePath: claimed.path,
+            workerId,
+            projectPath,
+          });
+          return claimed;
+        }
+        this.events.onPoolFallback?.({ workerId, projectPath, reason: 'claim-miss' });
+      } catch (err) {
+        console.warn(
+          `[worktree] pool claim threw; falling back to sync create: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        this.events.onPoolFallback?.({ workerId, projectPath, reason: 'claim-miss' });
+      }
+    }
+
     return this.locks.withLock(projectPath, async () => {
       this.events.onCreateStart?.({ workerId, projectPath });
       try {
@@ -445,6 +494,15 @@ async function rmWithWindowsFallback(target: string): Promise<void> {
  * `.symphony/worktrees/<id>` segment. Throws if the path doesn't fit
  * the convention — callers must pass a managed worktree path.
  */
+/**
+ * Is the worktree pool opt-in for this project? Consult `.symphony.json`.
+ * Defaults to false in v1 per PLAN.md §1D — opt-in per project.
+ */
+export function isPoolEnabled(projectPath: string): boolean {
+  const cfg = readSymphonyConfig(projectPath);
+  return cfg?.worktreePool?.enabled === true;
+}
+
 export function inferProjectPath(worktreePath: string): string {
   const resolved = path.resolve(worktreePath);
   const parent = path.dirname(resolved);
@@ -453,6 +511,7 @@ export function inferProjectPath(worktreePath: string): string {
   if (path.basename(parent) !== 'worktrees' || path.basename(grand) !== '.symphony') {
     throw new WorktreeSafetyError(
       `Cannot infer projectPath from non-managed worktree path: ${worktreePath}`,
+      'not-managed',
     );
   }
   return greatGrand;

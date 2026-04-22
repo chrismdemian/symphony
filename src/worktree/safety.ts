@@ -9,10 +9,20 @@ export interface WorktreeSafetyContext {
   readonly projectPath: string;
 }
 
+export type WorktreeSafetyCode =
+  | 'path-equals-project'
+  | 'not-managed'
+  | 'porcelain-failed'
+  | 'not-linked'
+  | 'is-main'
+  | 'is-bare';
+
 export class WorktreeSafetyError extends Error {
-  constructor(message: string) {
+  readonly code: WorktreeSafetyCode;
+  constructor(message: string, code: WorktreeSafetyCode) {
     super(message);
     this.name = 'WorktreeSafetyError';
+    this.code = code;
   }
 }
 
@@ -87,12 +97,14 @@ export async function assertWorktreeRemovable(
   if (pathResolvesEqual(worktreePath, projectPath)) {
     throw new WorktreeSafetyError(
       `Refusing to remove path equal to projectPath: ${worktreePath}`,
+      'path-equals-project',
     );
   }
 
   if (!looksLikeManagedWorktree(worktreePath)) {
     throw new WorktreeSafetyError(
       `Refusing to remove path that does not look like a managed worktree: ${worktreePath}`,
+      'not-managed',
     );
   }
 
@@ -103,6 +115,7 @@ export async function assertWorktreeRemovable(
   } catch (err) {
     throw new WorktreeSafetyError(
       `Could not verify worktree via git porcelain: ${err instanceof Error ? err.message : String(err)}`,
+      'porcelain-failed',
     );
   }
 
@@ -112,16 +125,19 @@ export async function assertWorktreeRemovable(
   if (!match) {
     throw new WorktreeSafetyError(
       `Path is not a linked worktree of ${projectPath}: ${worktreePath}`,
+      'not-linked',
     );
   }
   if (match.isMain) {
     throw new WorktreeSafetyError(
       `Refusing to remove main worktree: ${worktreePath}`,
+      'is-main',
     );
   }
   if (match.isBare) {
     throw new WorktreeSafetyError(
       `Refusing to remove bare worktree: ${worktreePath}`,
+      'is-bare',
     );
   }
 }
