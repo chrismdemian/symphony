@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","session_id":"00000000-0000-4000-8000-000000000003","cwd":"/tmp/project","model":"claude-opus-4-7","tools":["Read"]}
+{"type":"system","subtype":"api_retry","attempt":1,"delay_ms":2000,"reason":"rate_limit"}
+{"type":"system","subtype":"api_retry","attempt":2,"delay_ms":4000,"reason":"rate_limit"}
+{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-7","content":[{"type":"text","text":"Recovered."}],"usage":{"input_tokens":50,"output_tokens":4,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":8500,"num_turns":1,"result":"Recovered.","session_id":"00000000-0000-4000-8000-000000000003","total_cost_usd":0.00055}

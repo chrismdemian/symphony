@@ -33,5 +33,20 @@ export default tseslint.config(
       '@typescript-eslint/consistent-type-imports': 'warn',
     },
   },
+  {
+    files: ['**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        process: 'readonly',
+        console: 'readonly',
+        Buffer: 'readonly',
+        setTimeout: 'readonly',
+        clearTimeout: 'readonly',
+        setImmediate: 'readonly',
+      },
+    },
+  },
   prettier,
 );
