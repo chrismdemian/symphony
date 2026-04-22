@@ -23,10 +23,15 @@ export async function* ndjsonLines(
   let droppedBytes = 0;
 
   for await (const chunk of source) {
-    const text =
+    const rawText =
       typeof chunk === 'string'
         ? chunk
         : decoder.decode(chunk as Uint8Array, { stream: true });
+    if (rawText.length === 0) continue;
+
+    // TextDecoder only strips BOM at stream start. Strip any mid-stream BOM
+    // too so subsequent JSON.parse doesn't fail on a sneaky U+FEFF prefix.
+    const text = rawText.includes('\uFEFF') ? rawText.replace(/\uFEFF/g, '') : rawText;
     if (text.length === 0) continue;
 
     buffer += text;

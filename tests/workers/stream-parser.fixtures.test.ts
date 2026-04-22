@@ -76,6 +76,12 @@ describe('parseStream fixtures', () => {
         cacheReadTokens: 2050,
         cacheWriteTokens: 50,
       });
+      expect(result.sessionUsage).toEqual({
+        inputTokens: 420,
+        outputTokens: 42,
+        cacheReadTokens: 2050,
+        cacheWriteTokens: 50,
+      });
     }
   });
 

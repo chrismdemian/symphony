@@ -30,12 +30,39 @@ describe('scanForCompletionReport', () => {
     expect(r.raw).toContain('did');
   });
 
-  it('keeps the LAST fenced block when multiple are present', () => {
+  it('keeps the LAST VALID fenced block when multiple are present', () => {
     const earlier = { ...validBody, audit: 'FAIL' as const };
     const text = fence(earlier) + '\n\nsome commentary\n\n' + fence(validBody);
     const r = scanForCompletionReport(text);
     expect(r.kind).toBe('valid');
     expect(r.report?.audit).toBe('PASS');
+  });
+
+  it('falls back past a trailing unrelated json fence to a valid prior report', () => {
+    const text =
+      'Completion report:\n' +
+      fence(validBody) +
+      '\n\nFor reference, example schema I used:\n' +
+      '```json\n{"x": 1}\n```';
+    const r = scanForCompletionReport(text);
+    expect(r.kind).toBe('valid');
+    expect(r.report?.audit).toBe('PASS');
+    expect(r.report?.did).toEqual(['wrote types.ts']);
+  });
+
+  it('handles CRLF-terminated fences (Windows-authored text)', () => {
+    const body = JSON.stringify(validBody, null, 2);
+    const crlfFence = '```json\r\n' + body + '\r\n```';
+    const r = scanForCompletionReport(crlfFence);
+    expect(r.kind).toBe('valid');
+    expect(r.report?.audit).toBe('PASS');
+  });
+
+  it('returns the last match invalid reason when no fence validates', () => {
+    const text = fence({ not: 'a report' }) + '\n\n' + '```json\n{"also": "nope"}\n```';
+    const r = scanForCompletionReport(text);
+    expect(r.kind).toBe('invalid');
+    expect(r.reason).toBeDefined();
   });
 
   it('returns invalid when fence contains malformed json', () => {

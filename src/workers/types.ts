@@ -96,6 +96,9 @@ export interface ResultEvent {
   numTurns: number;
   costUsd?: number;
   usageByModel: Record<string, TokenUsage>;
+  // Cumulative session usage reported by the CLI at turn end.
+  // Already summed across turns — do NOT combine with usageByModel values.
+  sessionUsage?: TokenUsage;
 }
 
 export interface LogEvent {

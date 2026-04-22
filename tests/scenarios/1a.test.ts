@@ -76,9 +76,10 @@ describe('Phase 1A production scenario', () => {
     // Result contract
     expect(result.sessionId).toBe(init.sessionId);
     expect(result.costUsd ?? -1).toBeGreaterThanOrEqual(0);
-    const usage = Object.values(result.usageByModel).find(
+    const perModelUsage = Object.values(result.usageByModel).find(
       (u) => u.inputTokens > 0,
     );
-    expect(usage).toBeDefined();
+    expect(perModelUsage).toBeDefined();
+    expect(result.sessionUsage?.inputTokens ?? 0).toBeGreaterThan(0);
   }, 10_000);
 });

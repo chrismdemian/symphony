@@ -366,7 +366,7 @@ describe('parseStream', () => {
     expect(events.find((e) => e.type === 'assistant_text')).toBeDefined();
   });
 
-  it('result event carries top-level usage under __session__ key', async () => {
+  it('result event exposes cumulative session usage as a top-level sessionUsage field', async () => {
     const events = await collect(
       feed({
         type: 'result',
@@ -378,13 +378,73 @@ describe('parseStream', () => {
         usage: { input_tokens: 100, output_tokens: 50 },
       }),
     );
+    expect(events[0]?.type).toBe('result');
     if (events[0]?.type === 'result') {
-      expect(events[0].usageByModel.__session__).toEqual({
+      expect(events[0].sessionUsage).toEqual({
         inputTokens: 100,
         outputTokens: 50,
         cacheReadTokens: 0,
         cacheWriteTokens: 0,
       });
+      // sessionUsage lives alongside (not inside) usageByModel, so consumers
+      // summing per-model totals never double-count the CLI's cumulative roll-up.
+      expect(events[0].usageByModel).not.toHaveProperty('__session__');
     }
+  });
+
+  it('emits parse_error when result is missing session_id', async () => {
+    const events = await collect(
+      feed({ type: 'result', is_error: false, result: 'ok', duration_ms: 1, num_turns: 1 }),
+    );
+    expect(events[0]?.type).toBe('parse_error');
+    if (events[0]?.type === 'parse_error') {
+      expect(events[0].reason).toContain('session_id');
+    }
+  });
+
+  it('propagates isError=true on result', async () => {
+    const events = await collect(
+      feed({
+        type: 'result',
+        is_error: true,
+        result: 'rate limited',
+        session_id: 'sess-err',
+        duration_ms: 5000,
+        num_turns: 2,
+      }),
+    );
+    expect(events[0]?.type).toBe('result');
+    if (events[0]?.type === 'result') {
+      expect(events[0].isError).toBe(true);
+      expect(events[0].resultText).toBe('rate limited');
+      expect(events[0].sessionId).toBe('sess-err');
+    }
+  });
+
+  it('silently skips stream_event delta events (deferred for v1)', async () => {
+    const events = await collect(
+      feed(
+        { type: 'stream_event', event: { type: 'content_block_delta' } },
+        { type: 'log', log: { level: 'info', message: 'ok' } },
+      ),
+    );
+    expect(events).toEqual([{ type: 'log', level: 'info', message: 'ok' }]);
+  });
+
+  it('strips mid-stream BOM before dispatching', async () => {
+    const logLine = JSON.stringify({
+      type: 'log',
+      log: { level: 'info', message: 'hi' },
+    });
+    async function* src(): AsyncIterable<Buffer> {
+      yield Buffer.from(logLine + '\n', 'utf8');
+      // Second chunk begins with a BOM — must not break the next line's JSON parse.
+      yield Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(logLine + '\n', 'utf8')]);
+    }
+    const events: StreamEvent[] = [];
+    for await (const ev of parseStream(src())) events.push(ev);
+    expect(events).toHaveLength(2);
+    expect(events[0]?.type).toBe('log');
+    expect(events[1]?.type).toBe('log');
   });
 });

@@ -55,11 +55,18 @@ export async function* parseStream(
       case 'control_request':
         yield* handleControlRequest(msg);
         break;
-      case 'result':
-        yield buildResult(msg, usageByModel);
+      case 'result': {
+        const event = buildResult(msg, usageByModel);
+        if (event.kind === 'error') yield event.error;
+        else yield event.value;
         break;
+      }
       case 'log':
         yield* handleLog(msg);
+        break;
+      case 'stream_event':
+        // Deferred for v1 — complete-turn events are authoritative. Silent
+        // skip keeps the parse_error channel meaningful for real bugs.
         break;
       default:
         yield parseError(`unknown event type: ${JSON.stringify(rawType)}`, line.value);
@@ -191,25 +198,35 @@ function* handleControlRequest(msg: RawMessage): Generator<StreamEvent> {
   yield { type: 'control_request', requestId, subtype, toolName, input };
 }
 
+type BuildResult =
+  | { kind: 'value'; value: ResultEvent }
+  | { kind: 'error'; error: ParseErrorEvent };
+
 function buildResult(
   msg: RawMessage,
   usageByModel: Record<string, TokenUsage>,
-): ResultEvent {
-  const topUsage = coerceTopUsage(msg.usage);
-  const usageCopy: Record<string, TokenUsage> = { ...usageByModel };
-  if (topUsage) usageCopy.__session__ = topUsage;
+): BuildResult {
+  const sessionId = stringOr(msg.session_id, '');
+  if (sessionId === '') {
+    return {
+      kind: 'error',
+      error: parseError('result event missing session_id'),
+    };
+  }
   const event: ResultEvent = {
     type: 'result',
-    sessionId: stringOr(msg.session_id, ''),
+    sessionId,
     isError: msg.is_error === true,
     resultText: stringOr(msg.result, ''),
     durationMs: asNumber(msg.duration_ms) ?? 0,
     numTurns: asNumber(msg.num_turns) ?? 0,
-    usageByModel: usageCopy,
+    usageByModel: { ...usageByModel },
   };
   const cost = asNumber(msg.total_cost_usd);
   if (cost !== undefined) event.costUsd = cost;
-  return event;
+  const sessionUsage = coerceTopUsage(msg.usage);
+  if (sessionUsage) event.sessionUsage = sessionUsage;
+  return { kind: 'value', value: event };
 }
 
 function* handleLog(msg: RawMessage): Generator<StreamEvent> {

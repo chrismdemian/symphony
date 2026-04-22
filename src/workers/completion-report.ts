@@ -1,6 +1,6 @@
 import type { WorkerCompletionReport } from './types.js';
 
-const FENCE_RE = /```json\s*\n([\s\S]*?)\n```/g;
+const FENCE_RE = /```json\s*\r?\n([\s\S]*?)\r?\n```/g;
 
 export interface ReportScanResult {
   kind: 'none' | 'valid' | 'invalid';
@@ -13,25 +13,29 @@ export function scanForCompletionReport(text: string): ReportScanResult {
   const matches = [...text.matchAll(FENCE_RE)];
   if (matches.length === 0) return { kind: 'none' };
 
-  // If multiple fences exist in one turn, the last one wins (Phase 4E: "end of final message").
-  const last = matches[matches.length - 1];
-  if (!last) return { kind: 'none' };
-  const raw = last[1] ?? '';
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (err) {
-    return {
-      kind: 'invalid',
-      raw,
-      reason: `json parse failed: ${err instanceof Error ? err.message : String(err)}`,
-    };
+  // Walk fences from last to first; the first that validates wins.
+  // This handles workers that append trailing example/reference fences
+  // after their actual completion report. If none validate, report the
+  // last one's failure reason so feedback points at the most likely
+  // "intended to be the report" block.
+  let lastInvalid: ReportScanResult | undefined;
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const match = matches[i];
+    if (!match) continue;
+    const raw = match[1] ?? '';
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (err) {
+      const reason = `json parse failed: ${err instanceof Error ? err.message : String(err)}`;
+      if (!lastInvalid) lastInvalid = { kind: 'invalid', raw, reason };
+      continue;
+    }
+    const validated = validateReport(parsed);
+    if (validated.ok) return { kind: 'valid', raw, report: validated.report };
+    if (!lastInvalid) lastInvalid = { kind: 'invalid', raw, reason: validated.reason };
   }
-
-  const validated = validateReport(parsed);
-  if (!validated.ok) return { kind: 'invalid', raw, reason: validated.reason };
-  return { kind: 'valid', raw, report: validated.report };
+  return lastInvalid ?? { kind: 'none' };
 }
 
 interface ValidateOk {
