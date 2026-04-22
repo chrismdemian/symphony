@@ -38,6 +38,17 @@ describe('isBranchCollisionError', () => {
   it('returns false for unrelated errors', () => {
     expect(isBranchCollisionError('fatal: not a git repository')).toBe(false);
   });
+  it('rejects path collision where path contains "branches/" segment (gotcha C1)', () => {
+    expect(isBranchCollisionError("fatal: '/repo/branches/foo' already exists")).toBe(false);
+  });
+  it('rejects path collision where path contains "branchx" substring', () => {
+    expect(
+      isBranchCollisionError("fatal: working tree at '/foo/branchx-stale' already exists"),
+    ).toBe(false);
+  });
+  it('rejects bare path-name collision with no branch keyword nearby', () => {
+    expect(isBranchCollisionError("fatal: 'branchpath' already exists")).toBe(false);
+  });
 });
 
 describe('inferProjectPath', () => {

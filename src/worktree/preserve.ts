@@ -22,6 +22,16 @@ export interface ResolvedPreservePatterns {
   readonly source: PreserveSource;
 }
 
+function hasPositives(patterns: readonly string[] | null | undefined): boolean {
+  if (!patterns) return false;
+  return patterns.some((p) => !p.startsWith('!'));
+}
+
+function negationsOf(patterns: readonly string[] | null | undefined): string[] {
+  if (!patterns) return [];
+  return patterns.filter((p) => p.startsWith('!'));
+}
+
 /**
  * Resolve preserve patterns via precedence:
  *
@@ -30,19 +40,30 @@ export interface ResolvedPreservePatterns {
  *   2. `<projectPath>/.symphony.json` `preservePatterns`
  *   3. Built-in defaults (`.env`, `.envrc`, etc.)
  *
- * A file with a `!pattern` negation but nothing else yields an empty
- * resolved list — negations are only meaningful against base patterns.
+ * A layer that contains ONLY negations does not win — gitignore-style,
+ * negations need a positive set to subtract from. Negations from skipped
+ * layers ARE collected and appended to the chosen layer's positives so
+ * `.worktreeinclude` of `!.env.example` correctly strips `.env.example`
+ * from the defaults instead of silently preserving nothing.
  */
 export function resolvePreservePatterns(projectPath: string): ResolvedPreservePatterns {
   const fromInclude = readWorktreeInclude(projectPath);
-  if (fromInclude && fromInclude.length > 0) {
-    return { patterns: fromInclude, source: 'worktreeinclude' };
-  }
   const cfg = readSymphonyConfig(projectPath);
-  if (cfg?.preservePatterns && cfg.preservePatterns.length > 0) {
-    return { patterns: [...cfg.preservePatterns], source: 'symphony.json' };
+  const cfgPatterns = cfg?.preservePatterns;
+
+  if (hasPositives(fromInclude)) {
+    return { patterns: fromInclude!, source: 'worktreeinclude' };
   }
-  return { patterns: [...DEFAULT_PRESERVE_PATTERNS], source: 'defaults' };
+  if (hasPositives(cfgPatterns)) {
+    const merged = [...cfgPatterns!, ...negationsOf(fromInclude)];
+    return { patterns: merged, source: 'symphony.json' };
+  }
+  const merged = [
+    ...DEFAULT_PRESERVE_PATTERNS,
+    ...negationsOf(fromInclude),
+    ...negationsOf(cfgPatterns),
+  ];
+  return { patterns: merged, source: 'defaults' };
 }
 
 /**

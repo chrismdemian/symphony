@@ -109,4 +109,30 @@ describe('resolvePreservePatterns', () => {
     const r = resolvePreservePatterns(sandbox);
     expect(r.source).toBe('defaults');
   });
+
+  it('falls through when .worktreeinclude has only negations and applies them against defaults (gotcha M2)', () => {
+    writeFileSync(path.join(sandbox, '.worktreeinclude'), '!.env.local\n');
+    const r = resolvePreservePatterns(sandbox);
+    expect(r.source).toBe('defaults');
+    expect(r.patterns).toContain('.env');
+    expect(r.patterns).toContain('!.env.local');
+  });
+
+  it('honors negations from .worktreeinclude against .symphony.json positives', () => {
+    writeFileSync(
+      path.join(sandbox, '.symphony.json'),
+      JSON.stringify({ preservePatterns: ['secrets.json', 'config.json'] }),
+    );
+    writeFileSync(path.join(sandbox, '.worktreeinclude'), '!secrets.json\n');
+    const r = resolvePreservePatterns(sandbox);
+    expect(r.source).toBe('symphony.json');
+    expect(r.patterns).toEqual(['secrets.json', 'config.json', '!secrets.json']);
+  });
+
+  it('honors mixed positives + negations within .worktreeinclude', () => {
+    writeFileSync(path.join(sandbox, '.worktreeinclude'), '.env*\n!.env.example\n');
+    const r = resolvePreservePatterns(sandbox);
+    expect(r.source).toBe('worktreeinclude');
+    expect(r.patterns).toEqual(['.env*', '!.env.example']);
+  });
 });

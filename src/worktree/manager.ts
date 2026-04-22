@@ -1,7 +1,12 @@
 import { execFile } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
+
+function randomSuffix(): string {
+  return randomBytes(3).toString('hex');
+}
 
 import { excludeFromGit } from './exclude.js';
 import { ProjectLockRegistry } from './locks.js';
@@ -26,6 +31,10 @@ const execFileAsync = promisify(execFile);
 const DEFAULT_BRANCH_PREFIX = 'symphony';
 
 export interface WorktreeManagerEvents {
+  /** Fired inside the project lock at the start of `createUnlocked`. */
+  onCreateStart?: (info: { workerId: string; projectPath: string }) => void;
+  /** Fired inside the project lock once `createUnlocked` has fully resolved. */
+  onCreateEnd?: (info: { workerId: string; projectPath: string }) => void;
   /** Fired after preserve-copy. Useful for tests + observability. */
   onPreserveResult?: (info: { worktreePath: string; copied: readonly string[]; skipped: readonly string[] }) => void;
   /** Fired after project-prep dispatch (whether or not it actually spawned). */
@@ -51,7 +60,14 @@ export class WorktreeManager {
     if (!workerId.trim()) {
       throw new Error('WorktreeManager.create: workerId is required');
     }
-    return this.locks.withLock(projectPath, () => this.createUnlocked(opts));
+    return this.locks.withLock(projectPath, async () => {
+      this.events.onCreateStart?.({ workerId, projectPath });
+      try {
+        return await this.createUnlocked(opts);
+      } finally {
+        this.events.onCreateEnd?.({ workerId, projectPath });
+      }
+    });
   }
 
   private async createUnlocked(opts: CreateWorktreeOptions): Promise<WorktreeInfo> {
@@ -202,11 +218,17 @@ export class WorktreeManager {
     }
   }
 
-  async removeIfClean(worktreePath: string, options: RemoveWorktreeOptions = {}): Promise<boolean> {
-    const status = await this.status(worktreePath);
-    if (status.hasChanges) return false;
-    await this.remove(worktreePath, options);
-    return true;
+  async removeIfClean(
+    worktreePath: string,
+    options: RemoveWorktreeOptions = {},
+  ): Promise<boolean> {
+    const projectPath = inferProjectPath(worktreePath);
+    return this.locks.withLock(projectPath, async () => {
+      const status = await this.status(worktreePath);
+      if (status.hasChanges) return false;
+      await this.removeUnlocked(worktreePath, projectPath, options);
+      return true;
+    });
   }
 
   async status(worktreePath: string): Promise<WorktreeStatus> {
@@ -267,7 +289,10 @@ interface AddWorktreeArgs {
 }
 
 export function isBranchCollisionError(message: string): boolean {
-  return /a branch named/i.test(message) || /already exists/i.test(message) && /branch/i.test(message);
+  return (
+    /a branch named/i.test(message) ||
+    (/already exists/i.test(message) && /\bbranch\b/i.test(message))
+  );
 }
 
 export async function addWorktreeWithCollisionRetry(args: AddWorktreeArgs): Promise<string> {
@@ -287,7 +312,7 @@ export async function addWorktreeWithCollisionRetry(args: AddWorktreeArgs): Prom
     if (!isBranchCollisionError(message) && !isBranchCollisionError(stderr)) {
       throw err;
     }
-    const retryBranch = `${args.branch}-${Date.now()}`;
+    const retryBranch = `${args.branch}-${Date.now()}-${randomSuffix()}`;
     await attempt(retryBranch);
     return retryBranch;
   }

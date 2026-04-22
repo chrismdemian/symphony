@@ -101,16 +101,80 @@ describe('WorktreeManager.create', () => {
       workerId: 'w-collide',
       shortDescription: 'x',
     });
-    expect(info.branch).toMatch(/^symphony\/w-collide\/x-\d+$/);
+    expect(info.branch).toMatch(/^symphony\/w-collide\/x-\d+-[0-9a-f]{6}$/);
   });
 
-  it('serializes concurrent create calls on the same project', async () => {
-    const [a, b, c] = await Promise.all([
-      manager.create({ projectPath: repoPath, workerId: 'w-c1' }),
-      manager.create({ projectPath: repoPath, workerId: 'w-c2' }),
-      manager.create({ projectPath: repoPath, workerId: 'w-c3' }),
+  it('serializes concurrent create calls on the same project — onCreateStart/End windows never overlap', async () => {
+    let inFlight = 0;
+    let maxConcurrent = 0;
+    const order: Array<{ event: 'start' | 'end'; id: string }> = [];
+
+    const observingManager = new WorktreeManager({
+      runProjectPrep: false,
+      events: {
+        onCreateStart: ({ workerId }) => {
+          inFlight += 1;
+          maxConcurrent = Math.max(maxConcurrent, inFlight);
+          order.push({ event: 'start', id: workerId });
+        },
+        onCreateEnd: ({ workerId }) => {
+          inFlight -= 1;
+          order.push({ event: 'end', id: workerId });
+        },
+      },
+    });
+
+    const results = await Promise.all([
+      observingManager.create({ projectPath: repoPath, workerId: 'w-c1' }),
+      observingManager.create({ projectPath: repoPath, workerId: 'w-c2' }),
+      observingManager.create({ projectPath: repoPath, workerId: 'w-c3' }),
     ]);
-    expect(new Set([a.path, b.path, c.path]).size).toBe(3);
+
+    expect(new Set(results.map((r) => r.path)).size).toBe(3);
+    expect(maxConcurrent).toBe(1);
+    // Strict alternation: start, end, start, end, start, end.
+    expect(order).toHaveLength(6);
+    for (let i = 0; i < order.length; i += 2) {
+      expect(order[i]?.event).toBe('start');
+      expect(order[i + 1]?.event).toBe('end');
+      expect(order[i]?.id).toBe(order[i + 1]?.id);
+    }
+  });
+
+  it('removeIfClean holds the project lock across status + remove (gotcha M1 TOCTOU)', async () => {
+    const info = await manager.create({ projectPath: repoPath, workerId: 'w-toctou' });
+    let removeStarted = false;
+    let createBlockedUntilRemove = true;
+
+    const observingManager = new WorktreeManager({
+      runProjectPrep: false,
+      events: {
+        onCreateStart: () => {
+          // If create starts BEFORE removeIfClean has finished, the
+          // lock is not actually serializing them — fail the test.
+          if (!removeStarted) {
+            createBlockedUntilRemove = false;
+          }
+        },
+      },
+    });
+
+    // Kick off both — removeIfClean should win the lock first because
+    // it's invoked first in code order; the create call sits waiting
+    // until the remove releases.
+    const removePromise = (async () => {
+      removeStarted = true;
+      return observingManager.removeIfClean(info.path);
+    })();
+    const createPromise = observingManager.create({
+      projectPath: repoPath,
+      workerId: 'w-after-toctou',
+    });
+
+    const [removed, created] = await Promise.all([removePromise, createPromise]);
+    expect(removed).toBe(true);
+    expect(created.id).toBe('w-after-toctou');
+    expect(createBlockedUntilRemove).toBe(true);
   });
 });
 
