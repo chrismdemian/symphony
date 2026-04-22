@@ -1,0 +1,70 @@
+{
+  "steps": [
+    {
+      "action": "emit",
+      "line": {
+        "type": "system",
+        "subtype": "init",
+        "session_id": "00000000-0000-4000-8000-000000000003",
+        "cwd": "/tmp/fake",
+        "model": "claude-opus-4-7"
+      }
+    },
+    { "action": "await_user", "required": true },
+    {
+      "action": "emit",
+      "line": {
+        "type": "assistant",
+        "message": {
+          "role": "assistant",
+          "model": "claude-opus-4-7",
+          "content": [{ "type": "text", "text": "first turn" }],
+          "usage": {
+            "input_tokens": 6,
+            "output_tokens": 2,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0
+          }
+        }
+      }
+    },
+    { "action": "await_user", "matchContainsText": "second", "required": true },
+    {
+      "action": "emit",
+      "line": {
+        "type": "assistant",
+        "message": {
+          "role": "assistant",
+          "model": "claude-opus-4-7",
+          "content": [{ "type": "text", "text": "second turn" }],
+          "usage": {
+            "input_tokens": 4,
+            "output_tokens": 2,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0
+          }
+        }
+      }
+    },
+    {
+      "action": "emit",
+      "line": {
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "duration_ms": 120,
+        "num_turns": 2,
+        "result": "second turn",
+        "session_id": "00000000-0000-4000-8000-000000000003",
+        "total_cost_usd": 0.0003,
+        "usage": {
+          "input_tokens": 10,
+          "output_tokens": 4,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0
+        }
+      }
+    },
+    { "action": "exit", "code": 0 }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  "steps": [
+    {
+      "action": "emit",
+      "line": {
+        "type": "system",
+        "subtype": "init",
+        "session_id": "00000000-0000-4000-8000-000000000001",
+        "cwd": "/tmp/fake",
+        "model": "claude-opus-4-7",
+        "tools": ["Read"],
+        "mcp_servers": [{ "name": "symphony", "status": "connected" }]
+      }
+    },
+    { "action": "await_user", "required": true },
+    {
+      "action": "emit",
+      "line": {
+        "type": "assistant",
+        "message": {
+          "role": "assistant",
+          "model": "claude-opus-4-7",
+          "content": [{ "type": "text", "text": "hello from fake claude" }],
+          "usage": {
+            "input_tokens": 10,
+            "output_tokens": 4,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0
+          }
+        }
+      }
+    },
+    {
+      "action": "emit",
+      "line": {
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "duration_ms": 50,
+        "num_turns": 1,
+        "result": "hello from fake claude",
+        "session_id": "00000000-0000-4000-8000-000000000001",
+        "total_cost_usd": 0.0001,
+        "usage": {
+          "input_tokens": 10,
+          "output_tokens": 4,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0
+        }
+      }
+    },
+    { "action": "exit", "code": 0 }
+  ]
+}

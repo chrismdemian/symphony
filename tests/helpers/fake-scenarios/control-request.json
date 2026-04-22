@@ -1,0 +1,58 @@
+{
+  "steps": [
+    {
+      "action": "emit",
+      "line": {
+        "type": "system",
+        "subtype": "init",
+        "session_id": "00000000-0000-4000-8000-000000000002",
+        "cwd": "/tmp/fake",
+        "model": "claude-opus-4-7"
+      }
+    },
+    { "action": "await_user", "required": true },
+    {
+      "action": "control_request",
+      "requestId": "req-abc-1",
+      "toolName": "Bash",
+      "input": { "command": "ls" }
+    },
+    {
+      "action": "emit",
+      "line": {
+        "type": "assistant",
+        "message": {
+          "role": "assistant",
+          "model": "claude-opus-4-7",
+          "content": [{ "type": "text", "text": "done after ack" }],
+          "usage": {
+            "input_tokens": 5,
+            "output_tokens": 3,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0
+          }
+        }
+      }
+    },
+    {
+      "action": "emit",
+      "line": {
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "duration_ms": 80,
+        "num_turns": 1,
+        "result": "done after ack",
+        "session_id": "00000000-0000-4000-8000-000000000002",
+        "total_cost_usd": 0.0002,
+        "usage": {
+          "input_tokens": 5,
+          "output_tokens": 3,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0
+        }
+      }
+    },
+    { "action": "exit", "code": 0 }
+  ]
+}
