@@ -32,12 +32,25 @@ export interface WorkerManagerOptions {
   claudeConfigPath?: string;
   /** Override `~/.claude/projects` root for resume validation in tests. */
   claudeHome?: string;
-  /** Stream child stderr through a hook (default: ignore). */
+  /** Stream child stderr through a hook (always-drained internally). */
   onWorkerStderr?: (workerId: string, chunk: string) => void;
   /** Hook fired when user-supplied extraEnv keys are blocklisted. */
   onBlockedEnv?: (workerId: string, key: string) => void;
   /** Hook fired when user-supplied extraArgs are filtered. */
   onFilteredArgs?: (workerId: string, flags: readonly string[]) => void;
+  /**
+   * Hook fired when `ensureClaudeTrust` fails. If set, the manager proceeds
+   * with the spawn despite the failure (caller owns the consequences). If
+   * unset, a trust failure THROWS from spawn — the default, because the
+   * downstream symptom is a 20-minute interactive-dialog hang.
+   */
+  onTrustFailure?: (workerId: string, error: Error) => void;
+  /**
+   * Hook fired when a caller-supplied sessionId fails validation and the
+   * policy is `'warn-and-fresh'`. Receives the worker id and the failure
+   * reason. Called before the fresh session is started.
+   */
+  onStaleResume?: (workerId: string, reason: string) => void;
   /**
    * Inject a custom spawner. Tests use this to substitute a helper script
    * that ignores Symphony's hardcoded Claude flags. In production, defaults
@@ -57,6 +70,10 @@ export type ClassifierInput = {
 export function classifyExit(input: ClassifierInput): WorkerStatus {
   if (input.stopIntent === 'timeout') return 'timeout';
   if (input.stopIntent === 'kill') return 'killed';
+  // Signaled death without stop-intent means the OS killed us (OOM, SIGSEGV,
+  // SIGKILL from outside). Distinct retry policy: crashed workers should not
+  // be retried on the same environment.
+  if (input.signal !== null && input.exitCode === null) return 'crashed';
   if (input.resultSeen && input.resultIsError) return 'failed';
   if (input.exitCode === 0 && input.resultSeen) return 'completed';
   if (input.exitCode === 0 && !input.resultSeen) return 'failed';
@@ -81,9 +98,16 @@ export class WorkerManager {
 
     const promise = this.startWorker(cfg, key);
     this.inflight.set(key, promise);
-    promise.finally(() => {
-      if (this.inflight.get(key) === promise) this.inflight.delete(key);
-    });
+    // Register cleanup without creating an unhandled-rejection channel.
+    // The caller observes rejection via their own await on `promise`.
+    promise
+      .finally(() => {
+        if (this.inflight.get(key) === promise) this.inflight.delete(key);
+      })
+      .catch(() => {
+        // rejection is observed by caller; swallow here to prevent
+        // Node flagging the finally()-chained promise as unhandled
+      });
     return promise;
   }
 
@@ -121,10 +145,26 @@ export class WorkerManager {
     const claudeHomeOpt = this.options.claudeHome ?? undefined;
     const claudeConfigOpt = this.options.claudeConfigPath ?? undefined;
 
-    ensureClaudeTrust(cfg.cwd, {
+    const trustResult = ensureClaudeTrust(cfg.cwd, {
       ...(claudeConfigOpt !== undefined ? { configPath: claudeConfigOpt } : {}),
       ...(claudeHomeOpt !== undefined ? { home: claudeHomeOpt } : {}),
+      // Always route errors through our handler instead of console.warn so
+      // the manager can decide: throw (default) or hand to onTrustFailure.
+      onError: () => {
+        // deliberate no-op — we re-check trustResult.error below
+      },
     });
+    if (trustResult.error !== undefined) {
+      if (this.options.onTrustFailure !== undefined) {
+        this.options.onTrustFailure(cfg.id, trustResult.error);
+      } else {
+        throw new Error(
+          `worker ${cfg.id}: ensureClaudeTrust failed for ${cfg.cwd}: ${trustResult.error.message}. ` +
+            `Without trust injection, claude -p will hang on the interactive trust dialog. ` +
+            `Pass WorkerManagerOptions.onTrustFailure to override this check.`,
+        );
+      }
+    }
 
     const sessionArg = this.chooseSessionArg(cfg, claudeHomeOpt);
 
@@ -203,6 +243,20 @@ export class WorkerManager {
       if (validation.ok) {
         return { kind: 'resume', uuid: cfg.sessionId };
       }
+      // Explicit sessionId failed validation. Policy-driven handling —
+      // silent substitution would break Phase 2B DB reconciliation and
+      // Phase 3 "resuming session X" TUI state.
+      const policy = cfg.onStaleResume ?? 'reject';
+      if (policy === 'reject') {
+        throw new Error(
+          `worker ${cfg.id}: requested resume session ${cfg.sessionId} is invalid (reason=${validation.reason}). ` +
+            `Set onStaleResume to 'warn-and-fresh' or 'start-fresh' to opt into fallback.`,
+        );
+      }
+      if (policy === 'warn-and-fresh') {
+        this.options.onStaleResume?.(cfg.id, validation.reason);
+      }
+      // fall through to fresh session for 'warn-and-fresh' and 'start-fresh'
     }
     const stable =
       cfg.deterministicUuidInput !== undefined && cfg.deterministicUuidInput.length > 0
@@ -222,13 +276,15 @@ interface WorkerImplOptions {
   onStderr?: (workerId: string, chunk: string) => void;
 }
 
+const STDERR_TAIL_BYTES = 8 * 1024;
+
 class WorkerImpl implements Worker {
   readonly id: string;
   private _sessionId: string | undefined = undefined;
   private _status: WorkerStatus = 'spawning';
   private readonly child: ChildProcess;
   private readonly stopIntents: Set<string>;
-  private readonly queue = new AsyncEventQueue<StreamEvent>();
+  private readonly broadcaster = new EventBroadcaster<StreamEvent>();
   private resultSeen = false;
   private resultIsError = false;
   private exitPromise: Promise<WorkerExitInfo>;
@@ -240,6 +296,7 @@ class WorkerImpl implements Worker {
   private readonly onStderr?: WorkerImplOptions['onStderr'];
   private keepStdinOpen = false;
   private stdinEnded = false;
+  private stderrTail = '';
 
   constructor(opts: WorkerImplOptions) {
     this.id = opts.id;
@@ -268,16 +325,20 @@ class WorkerImpl implements Worker {
           signal,
           durationMs: Date.now() - this.startTime,
           ...(this._sessionId !== undefined ? { sessionId: this._sessionId } : {}),
+          ...(this.stderrTail.length > 0 ? { stderrTail: this.stderrTail } : {}),
         };
-        this.queue.close();
+        this.broadcaster.close();
         this.onExit(status, code, signal);
         resolve(exitInfo);
       });
     });
 
-    if (this.onStderr && this.child.stderr !== null) {
+    // Always drain stderr — the kernel pipe buffer fills (~64KB Win11,
+    // up to 1MB Linux) and the child blocks on fd 2 writes otherwise.
+    if (this.child.stderr !== null) {
       this.child.stderr.setEncoding('utf8');
       this.child.stderr.on('data', (chunk: string) => {
+        this.stderrTail = (this.stderrTail + chunk).slice(-STDERR_TAIL_BYTES);
         this.onStderr?.(this.id, chunk);
       });
     }
@@ -292,7 +353,7 @@ class WorkerImpl implements Worker {
   }
 
   get events(): AsyncIterable<StreamEvent> {
-    return this.queue;
+    return this.broadcaster;
   }
 
   sendFollowup(text: string): void {
@@ -383,16 +444,16 @@ class WorkerImpl implements Worker {
   private async drain(): Promise<void> {
     const stdout = this.child.stdout;
     if (stdout === null) {
-      this.queue.close();
+      this.broadcaster.close();
       return;
     }
     try {
       for await (const event of parseStream(stdout)) {
         this.handleEvent(event);
-        this.queue.push(event);
+        this.broadcaster.push(event);
       }
     } catch (err) {
-      this.queue.pushError(err instanceof Error ? err : new Error(String(err)));
+      this.broadcaster.pushError(err instanceof Error ? err : new Error(String(err)));
     }
   }
 
@@ -462,24 +523,46 @@ class WorkerImpl implements Worker {
   }
 }
 
-// ── Async event queue (single-consumer fan-out target) ──
+// ── Event broadcaster — true fan-out to every consumer ──
 
 type Waiter<T> = (result: IteratorResult<T>) => void;
 
-class AsyncEventQueue<T> implements AsyncIterable<T> {
-  private buffer: T[] = [];
-  private waiters: Waiter<T>[] = [];
+const DEFAULT_CONSUMER_BUFFER = 4096;
+
+interface Subscriber<T> {
+  buffer: T[];
+  waiter: Waiter<T> | undefined;
+  dropped: number;
+}
+
+class EventBroadcaster<T> implements AsyncIterable<T> {
+  private readonly subscribers = new Set<Subscriber<T>>();
+  // Anything pushed before the first subscriber attaches is buffered so
+  // consumers that attach slightly late still see the session's start.
+  private readonly preSubscribeBacklog: T[] = [];
+  private readonly backlogCap = DEFAULT_CONSUMER_BUFFER;
   private closed = false;
   private error: Error | undefined;
 
   push(item: T): void {
     if (this.closed) return;
-    const waiter = this.waiters.shift();
-    if (waiter !== undefined) {
-      waiter({ value: item, done: false });
+    if (this.subscribers.size === 0) {
+      if (this.preSubscribeBacklog.length < this.backlogCap) {
+        this.preSubscribeBacklog.push(item);
+      }
       return;
     }
-    this.buffer.push(item);
+    for (const sub of this.subscribers) {
+      if (sub.waiter !== undefined) {
+        const waiter = sub.waiter;
+        sub.waiter = undefined;
+        waiter({ value: item, done: false });
+      } else if (sub.buffer.length < this.backlogCap) {
+        sub.buffer.push(item);
+      } else {
+        sub.dropped += 1;
+      }
+    }
   }
 
   pushError(err: Error): void {
@@ -490,31 +573,46 @@ class AsyncEventQueue<T> implements AsyncIterable<T> {
   close(): void {
     if (this.closed) return;
     this.closed = true;
-    const waiters = this.waiters;
-    this.waiters = [];
-    for (const waiter of waiters) {
-      waiter({ value: undefined as never, done: true });
+    for (const sub of this.subscribers) {
+      const waiter = sub.waiter;
+      sub.waiter = undefined;
+      if (waiter !== undefined) {
+        waiter({ value: undefined as never, done: true });
+      }
     }
   }
 
   [Symbol.asyncIterator](): AsyncIterator<T> {
+    const sub: Subscriber<T> = {
+      buffer: [...this.preSubscribeBacklog],
+      waiter: undefined,
+      dropped: 0,
+    };
+    this.subscribers.add(sub);
+    let errorSeenLocally = false;
+
     return {
       next: (): Promise<IteratorResult<T>> => {
-        if (this.buffer.length > 0) {
-          const value = this.buffer.shift()!;
+        if (sub.buffer.length > 0) {
+          const value = sub.buffer.shift()!;
           return Promise.resolve({ value, done: false });
         }
         if (this.closed) {
-          if (this.error !== undefined) {
-            const err = this.error;
-            this.error = undefined;
-            return Promise.reject(err);
+          if (this.error !== undefined && !errorSeenLocally) {
+            errorSeenLocally = true;
+            return Promise.reject(this.error);
           }
+          this.subscribers.delete(sub);
           return Promise.resolve({ value: undefined as never, done: true });
         }
         return new Promise<IteratorResult<T>>((resolve) => {
-          this.waiters.push(resolve);
+          sub.waiter = resolve;
         });
+      },
+      return: (): Promise<IteratorResult<T>> => {
+        sub.waiter = undefined;
+        this.subscribers.delete(sub);
+        return Promise.resolve({ value: undefined as never, done: true });
       },
     };
   }

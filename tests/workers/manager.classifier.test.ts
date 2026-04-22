@@ -44,9 +44,32 @@ describe('classifyExit', () => {
     expect(classifyExit(mk({ stopIntent: 'timeout', exitCode: 1 }))).toBe('timeout');
   });
 
-  it('signal present without stopIntent still classified by code/result', () => {
-    // e.g. process killed by OS OOM — no deliberate stopIntent
-    expect(classifyExit(mk({ exitCode: null, signal: 'SIGKILL', resultSeen: false }))).toBe(
+  it('signaled death without stopIntent → crashed (OOM, SIGSEGV, external SIGKILL)', () => {
+    expect(
+      classifyExit(mk({ exitCode: null, signal: 'SIGKILL', resultSeen: false })),
+    ).toBe('crashed');
+    expect(
+      classifyExit(mk({ exitCode: null, signal: 'SIGSEGV', resultSeen: false })),
+    ).toBe('crashed');
+    expect(
+      classifyExit(mk({ exitCode: null, signal: 'SIGBUS', resultSeen: false })),
+    ).toBe('crashed');
+  });
+
+  it('stopIntent takes precedence over signaled death', () => {
+    expect(
+      classifyExit(mk({ exitCode: null, signal: 'SIGKILL', stopIntent: 'kill' })),
+    ).toBe('killed');
+    expect(
+      classifyExit(mk({ exitCode: null, signal: 'SIGTERM', stopIntent: 'timeout' })),
+    ).toBe('timeout');
+  });
+
+  it('signal + non-null exitCode (rare) falls through to exit-code classification', () => {
+    // If signal is reported alongside a numeric exit code, treat the exit
+    // code as authoritative (typical on Windows when kill bubbles through
+    // as code 1 with signal null).
+    expect(classifyExit(mk({ exitCode: 1, signal: 'SIGTERM', resultSeen: false }))).toBe(
       'failed',
     );
   });

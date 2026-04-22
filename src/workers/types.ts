@@ -127,7 +127,8 @@ export type WorkerStatus =
   | 'completed'
   | 'failed'
   | 'killed'
-  | 'timeout';
+  | 'timeout'
+  | 'crashed';
 
 export type KillSignal = 'SIGTERM' | 'SIGKILL';
 
@@ -153,6 +154,16 @@ export interface WorkerConfig {
    * `worker.endInput()` when finished to allow claude to exit.
    */
   keepStdinOpen?: boolean;
+  /**
+   * Policy when `sessionId` is set but the corresponding jsonl file is
+   * missing or the cwd doesn't match:
+   * - `'reject'` (default): throw from `spawn()`. Caller must decide.
+   * - `'warn-and-fresh'`: fire `onStaleResume` hook, start a fresh session.
+   * - `'start-fresh'`: silently start a fresh session (only for deterministic
+   *   resume loops that already expect this).
+   * Silent substitution breaks observability of session identity.
+   */
+  onStaleResume?: 'reject' | 'warn-and-fresh' | 'start-fresh';
 }
 
 export interface WorkerExitInfo {
@@ -161,6 +172,8 @@ export interface WorkerExitInfo {
   signal: NodeJS.Signals | null;
   sessionId?: string;
   durationMs: number;
+  /** Last ~8KB of stderr captured from the child, for crash diagnosis. */
+  stderrTail?: string;
 }
 
 export interface Worker {
