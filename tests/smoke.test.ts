@@ -29,7 +29,7 @@ describe('project scaffold', () => {
     expect(pkg.type).toBe('module');
   });
 
-  it('pins Node 20+', () => {
-    expect(pkg.engines.node).toMatch(/>=\s*20/);
+  it('pins Node 22+', () => {
+    expect(pkg.engines.node).toMatch(/>=\s*22/);
   });
 });

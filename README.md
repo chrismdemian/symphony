@@ -42,7 +42,7 @@ If you use Claude Code seriously, you've been here: 10+ terminals open, each run
 
 - **Claude Code** CLI installed and authenticated
 - **Claude Max** subscription (or API key)
-- **Node.js** 20+
+- **Node.js** 22+
 - **Git** (for worktree support)
 - **pnpm** (package manager)
 
