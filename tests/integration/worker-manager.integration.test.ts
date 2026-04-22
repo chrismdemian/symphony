@@ -117,7 +117,7 @@ describe('WorkerManager — follow-up messages', () => {
       spawn: spawner('two-turn'),
     });
     try {
-      const worker = await mgr.spawn(cfg('w-2turn'));
+      const worker = await mgr.spawn(cfg('w-2turn', { keepStdinOpen: true }));
       const received: StreamEvent[] = [];
       const consumer = (async () => {
         for await (const ev of worker.events) {

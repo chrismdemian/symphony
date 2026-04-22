@@ -172,7 +172,7 @@ export class WorkerManager {
     });
 
     this.workers.set(cfg.id, worker);
-    worker.begin(cfg.prompt);
+    worker.begin(cfg.prompt, cfg.keepStdinOpen ?? false);
 
     if (cfg.timeoutMs !== undefined && cfg.timeoutMs > 0) {
       worker.armTimeout(cfg.timeoutMs);
@@ -238,6 +238,8 @@ class WorkerImpl implements Worker {
   private readonly startTime = Date.now();
   private readonly onExit: WorkerImplOptions['onExit'];
   private readonly onStderr?: WorkerImplOptions['onStderr'];
+  private keepStdinOpen = false;
+  private stdinEnded = false;
 
   constructor(opts: WorkerImplOptions) {
     this.id = opts.id;
@@ -297,7 +299,22 @@ class WorkerImpl implements Worker {
     if (this._status !== 'running') {
       throw new Error(`worker ${this.id} is ${this._status}; cannot send follow-up`);
     }
+    if (this.stdinEnded) {
+      throw new Error(
+        `worker ${this.id}: stdin is closed; spawn with keepStdinOpen=true for multi-turn sessions`,
+      );
+    }
     this.writeUserMessage(text);
+  }
+
+  endInput(): void {
+    if (this.stdinEnded) return;
+    this.stdinEnded = true;
+    try {
+      this.child.stdin?.end();
+    } catch {
+      // best effort
+    }
   }
 
   kill(signal: KillSignal = 'SIGTERM'): void {
@@ -328,8 +345,9 @@ class WorkerImpl implements Worker {
     return this.exitPromise;
   }
 
-  begin(prompt: string): void {
+  begin(prompt: string, keepStdinOpen: boolean): void {
     this._status = 'running';
+    this.keepStdinOpen = keepStdinOpen;
     this.writeUserMessage(prompt);
     void this.drain();
   }
@@ -387,6 +405,14 @@ class WorkerImpl implements Worker {
       this._sessionId = event.sessionId;
       this.resultSeen = true;
       this.resultIsError = event.isError;
+      if (!this.keepStdinOpen && !this.stdinEnded) {
+        this.stdinEnded = true;
+        try {
+          this.child.stdin?.end();
+        } catch {
+          // best effort
+        }
+      }
       return;
     }
     if (event.type === 'control_request') {
@@ -422,6 +448,7 @@ class WorkerImpl implements Worker {
     } catch {
       // best effort
     }
+    this.stdinEnded = true;
     try {
       this.child.stdout?.destroy();
     } catch {

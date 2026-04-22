@@ -146,6 +146,13 @@ export interface WorkerConfig {
   extraEnv?: Record<string, string>;
   timeoutMs?: number;
   signal?: AbortSignal;
+  /**
+   * Keep stdin open after `result` arrives so follow-up user messages can
+   * continue the same `claude -p` session. Default: false (stdin closes on
+   * `result`, letting claude exit cleanly). Callers who set this MUST call
+   * `worker.endInput()` when finished to allow claude to exit.
+   */
+  keepStdinOpen?: boolean;
 }
 
 export interface WorkerExitInfo {
@@ -162,6 +169,8 @@ export interface Worker {
   readonly status: WorkerStatus;
   readonly events: AsyncIterable<StreamEvent>;
   sendFollowup(text: string): void;
+  /** End stdin so claude can exit. Safe to call multiple times. */
+  endInput(): void;
   kill(signal?: KillSignal): void;
   waitForExit(): Promise<WorkerExitInfo>;
 }
