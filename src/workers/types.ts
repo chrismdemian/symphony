@@ -118,3 +118,50 @@ export interface ParseErrorEvent {
   reason: string;
   line?: string;
 }
+
+// ── Worker (Phase 1B) ────────────────────────────────────────────────
+
+export type WorkerStatus =
+  | 'spawning'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'killed'
+  | 'timeout';
+
+export type KillSignal = 'SIGTERM' | 'SIGKILL';
+
+export interface WorkerConfig {
+  id: string;
+  cwd: string;
+  prompt: string;
+  claudePath?: string;
+  model?: string;
+  sessionId?: string;
+  deterministicUuidInput?: string;
+  maxTurns?: number;
+  appendSystemPrompt?: string;
+  mcpConfigPath?: string;
+  extraArgs?: string[];
+  extraEnv?: Record<string, string>;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export interface WorkerExitInfo {
+  status: WorkerStatus;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  sessionId?: string;
+  durationMs: number;
+}
+
+export interface Worker {
+  readonly id: string;
+  readonly sessionId: string | undefined;
+  readonly status: WorkerStatus;
+  readonly events: AsyncIterable<StreamEvent>;
+  sendFollowup(text: string): void;
+  kill(signal?: KillSignal): void;
+  waitForExit(): Promise<WorkerExitInfo>;
+}
