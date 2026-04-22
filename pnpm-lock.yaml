@@ -23,6 +23,9 @@ importers:
       ink:
         specifier: ^7.0.1
         version: 7.0.1(@types/react@19.2.14)(react@19.2.5)
+      minimatch:
+        specifier: ^10.2.5
+        version: 10.2.5
       react:
         specifier: ^19.2.5
         version: 19.2.5
