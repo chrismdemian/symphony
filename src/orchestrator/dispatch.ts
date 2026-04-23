@@ -79,7 +79,16 @@ export function wrapToolHandler<TArgs extends Record<string, unknown>>(
           .filter((c): c is { type: 'text'; text: string } => c.type === 'text')
           .map((c) => c.text)
           .join('\n');
-        if (textParts.length > 0) safety.recordResponseTokens(textParts);
+        // Modern MCP clients surface structuredContent to the LLM alongside
+        // the text block (per 2A.2 review §M3). Charge both against the
+        // budget, otherwise tools that return large structured payloads
+        // (get_worker_output with lines=500) silently exhaust context without
+        // ever tripping `context-cap`.
+        const structuredText =
+          result.structuredContent !== undefined ? JSON.stringify(result.structuredContent) : '';
+        const totalText =
+          structuredText.length > 0 ? `${textParts}\n${structuredText}` : textParts;
+        if (totalText.length > 0) safety.recordResponseTokens(totalText);
       } catch {
         // non-fatal accounting failure
       }

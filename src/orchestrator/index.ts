@@ -20,4 +20,21 @@ export type {
   SafetyRejectionReason,
   ToolMode,
   ToolScope,
+  WorkerRole,
 } from './types.js';
+export { WORKER_ROLES } from './types.js';
+export {
+  WorkerRegistry,
+  CircularBuffer,
+  DEFAULT_OUTPUT_BUFFER_CAP,
+  toSnapshot,
+} from './worker-registry.js';
+export type { WorkerRecord, WorkerRecordSnapshot, WorkerLookupMatch } from './worker-registry.js';
+export { createWorkerLifecycle } from './worker-lifecycle.js';
+export type {
+  WorkerLifecycleHandle,
+  WorkerLifecycleOptions,
+  SpawnWorkerInput,
+  ResumeWorkerInput,
+} from './worker-lifecycle.js';
+export { deriveFeatureIntent, matchesFeatureIntent } from './feature-intent.js';

@@ -2,6 +2,16 @@ export type ToolMode = 'plan' | 'act';
 
 export type ToolScope = 'plan' | 'act' | 'both';
 
+export type WorkerRole = 'implementer' | 'researcher' | 'reviewer' | 'debugger' | 'planner';
+
+export const WORKER_ROLES: readonly WorkerRole[] = [
+  'implementer',
+  'researcher',
+  'reviewer',
+  'debugger',
+  'planner',
+];
+
 export type CapabilityFlag =
   | 'writes-source'
   | 'external-visible'
