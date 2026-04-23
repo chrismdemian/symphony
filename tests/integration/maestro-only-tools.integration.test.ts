@@ -18,6 +18,7 @@ import type {
 import type { WorktreeManager } from '../../src/worktree/manager.js';
 import type { WorkerManager } from '../../src/workers/manager.js';
 import type { StreamEvent, Worker } from '../../src/workers/types.js';
+import type { OneShotRunner } from '../../src/orchestrator/one-shot.js';
 
 /**
  * Integration harness for Phase 2A.4a Maestro-only tools. Covers
@@ -111,7 +112,23 @@ interface Harness {
   server: OrchestratorServerHandle;
 }
 
-async function makeHarness(opts: { mode?: 'plan' | 'act' } = {}): Promise<Harness> {
+function fakeOneShot(text: string): OneShotRunner {
+  return async () => ({
+    rawStdout: JSON.stringify({ result: text, session_id: 'sess' }),
+    text,
+    sessionId: 'sess',
+    exitCode: 0,
+    signaled: false,
+    durationMs: 1,
+    stderrTail: '',
+  });
+}
+
+async function makeHarness(opts: {
+  mode?: 'plan' | 'act';
+  tier?: 1 | 2 | 3;
+  oneShotRunner?: OneShotRunner;
+} = {}): Promise<Harness> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const projectStore = new ProjectRegistry();
   projectStore.register({
@@ -124,12 +141,16 @@ async function makeHarness(opts: { mode?: 'plan' | 'act' } = {}): Promise<Harnes
   const server = await startOrchestratorServer({
     transport: serverTransport,
     initialMode: opts.mode ?? 'act',
+    initialTier: opts.tier,
     defaultProjectPath: '/repos/alpha',
     workerManager: fakeWorkerManager(),
     worktreeManager: fakeWorktreeManager(),
     workerRegistry,
     workerLifecycle: makeFakeLifecycle(workerRegistry),
     projectStore,
+    ...(opts.oneShotRunner !== undefined
+      ? { oneShotRunner: opts.oneShotRunner }
+      : { oneShotRunner: fakeOneShot('{}') }),
   });
   const client = new Client({ name: 'test-client', version: '0.0.0' });
   await client.connect(clientTransport);
@@ -150,7 +171,11 @@ describe('Maestro-only MCP tools (2A.4a integration)', () => {
     for (const h of handles) await h.close().catch(() => {});
   });
 
-  async function connect(opts: { mode?: 'plan' | 'act' } = {}) {
+  async function connect(opts: {
+    mode?: 'plan' | 'act';
+    tier?: 1 | 2 | 3;
+    oneShotRunner?: OneShotRunner;
+  } = {}) {
     const pair = await makeHarness(opts);
     handles.push(pair.server);
     clients.push(pair.client);
@@ -167,8 +192,12 @@ describe('Maestro-only MCP tools (2A.4a integration)', () => {
       expect(names).toContain('global_status');
       if (mode === 'act') {
         expect(names).toContain('review_diff');
+        expect(names).toContain('audit_changes');
+        expect(names).toContain('finalize');
       } else {
         expect(names).not.toContain('review_diff');
+        expect(names).not.toContain('audit_changes');
+        expect(names).not.toContain('finalize');
       }
     }
   });
@@ -325,5 +354,71 @@ describe('Maestro-only MCP tools (2A.4a integration)', () => {
       arguments: {},
     });
     expect(status.isError).toBeUndefined();
+  });
+
+  it('audit_changes + finalize are refused in plan mode', async () => {
+    const { client } = await connect({ mode: 'plan' });
+    const audit = await client.callTool({
+      name: 'audit_changes',
+      arguments: { worker_id: 'wk' },
+    });
+    expect(audit.isError).toBe(true);
+    const finalize = await client.callTool({
+      name: 'finalize',
+      arguments: { worker_id: 'wk' },
+    });
+    expect(finalize.isError).toBe(true);
+  });
+
+  it('audit_changes: unknown worker id → isError', async () => {
+    const { client } = await connect({ mode: 'act' });
+    const res = await client.callTool({
+      name: 'audit_changes',
+      arguments: { worker_id: 'wk-nope' },
+    });
+    expect(res.isError).toBe(true);
+  });
+
+  it('finalize: tier 1 → denied by external-visible capability', async () => {
+    const { client } = await connect({ mode: 'act', tier: 1 });
+    const res = await client.callTool({
+      name: 'finalize',
+      arguments: { worker_id: 'wk-any' },
+    });
+    expect(res.isError).toBe(true);
+    const txt = (res.content as Array<{ text: string }>)[0]?.text ?? '';
+    expect(txt).toMatch(/external-visible|capability/i);
+  });
+
+  it('finalize: tier 2 allows push but tier 3 required for merge_to', async () => {
+    const { client, server } = await connect({ mode: 'act', tier: 2 });
+    // Spawn a real worker so we pass the unknown-worker gate and hit the tier gate.
+    await client.callTool({
+      name: 'spawn_worker',
+      arguments: {
+        role: 'implementer',
+        feature_intent: 'merge-test',
+        task_description: 'merge-test',
+      },
+    });
+    const wid = server.workerRegistry.list()[0]?.id ?? 'missing';
+    const res = await client.callTool({
+      name: 'finalize',
+      arguments: { worker_id: wid, merge_to: 'master' },
+    });
+    expect(res.isError).toBe(true);
+    const txt = (res.content as Array<{ text: string }>)[0]?.text ?? '';
+    expect(txt).toMatch(/tier 3/);
+  });
+
+  it('finalize: unknown worker id → isError regardless of tier', async () => {
+    const { client } = await connect({ mode: 'act', tier: 3 });
+    const res = await client.callTool({
+      name: 'finalize',
+      arguments: { worker_id: 'wk-nope' },
+    });
+    expect(res.isError).toBe(true);
+    const txt = (res.content as Array<{ text: string }>)[0]?.text ?? '';
+    expect(txt).toMatch(/Unknown worker/);
   });
 });
