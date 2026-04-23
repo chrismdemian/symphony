@@ -20,6 +20,15 @@ export interface ProjectRecord {
   readonly baseRef?: string;
   readonly defaultModel?: string;
   readonly createdAt: string;
+  /** Finalize pipeline commands — see Phase 2A.4b. */
+  readonly lintCommand?: string;
+  readonly testCommand?: string;
+  readonly buildCommand?: string;
+  readonly verifyCommand?: string;
+  /** Default 60_000 ms at the consumer — kill subprocess on timeout. */
+  readonly verifyTimeoutMs?: number;
+  /** Hint for prompt composition; not enforced in 2A.4b. */
+  readonly finalizeDefault?: 'push' | 'merge';
 }
 
 export interface ProjectSnapshot {
@@ -31,7 +40,28 @@ export interface ProjectSnapshot {
   readonly baseRef?: string;
   readonly defaultModel?: string;
   readonly createdAt: string;
+  readonly lintCommand?: string;
+  readonly testCommand?: string;
+  readonly buildCommand?: string;
+  readonly verifyCommand?: string;
+  readonly verifyTimeoutMs?: number;
+  readonly finalizeDefault?: 'push' | 'merge';
 }
+
+/** Partial project record used by `OrchestratorServerOptions.projectConfigs`. */
+export type ProjectConfigInput = Pick<
+  ProjectRecord,
+  | 'lintCommand'
+  | 'testCommand'
+  | 'buildCommand'
+  | 'verifyCommand'
+  | 'verifyTimeoutMs'
+  | 'finalizeDefault'
+  | 'defaultModel'
+  | 'gitRemote'
+  | 'gitBranch'
+  | 'baseRef'
+>;
 
 export interface ProjectRegistryListFilter {
   readonly nameContains?: string;

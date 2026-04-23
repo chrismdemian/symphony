@@ -108,6 +108,12 @@ export function toProjectSnapshot(r: ProjectRecord): ProjectSnapshot {
     ...(r.gitBranch !== undefined ? { gitBranch: r.gitBranch } : {}),
     ...(r.baseRef !== undefined ? { baseRef: r.baseRef } : {}),
     ...(r.defaultModel !== undefined ? { defaultModel: r.defaultModel } : {}),
+    ...(r.lintCommand !== undefined ? { lintCommand: r.lintCommand } : {}),
+    ...(r.testCommand !== undefined ? { testCommand: r.testCommand } : {}),
+    ...(r.buildCommand !== undefined ? { buildCommand: r.buildCommand } : {}),
+    ...(r.verifyCommand !== undefined ? { verifyCommand: r.verifyCommand } : {}),
+    ...(r.verifyTimeoutMs !== undefined ? { verifyTimeoutMs: r.verifyTimeoutMs } : {}),
+    ...(r.finalizeDefault !== undefined ? { finalizeDefault: r.finalizeDefault } : {}),
   };
 }
 
@@ -115,19 +121,27 @@ export function toProjectSnapshot(r: ProjectRecord): ProjectSnapshot {
  * Build a `ProjectRegistry` from the legacy `OrchestratorServerOptions.projects`
  * name→path map. `id === name` in this mode; Phase 2B will assign a UUID on
  * DB insert and keep `name` as a unique secondary key.
+ *
+ * Optional `configs` overlay per-project fields (`lintCommand` etc.) — the
+ * name→path map stays load-bearing for existing callers.
  */
 export function projectRegistryFromMap(
   projects: Readonly<Record<string, string>>,
-  opts: ProjectRegistryOptions = {},
+  opts: ProjectRegistryOptions & {
+    configs?: Readonly<Record<string, Partial<ProjectRecord>>>;
+  } = {},
 ): ProjectRegistry {
   const registry = new ProjectRegistry(opts);
+  const configs = opts.configs ?? {};
   for (const [name, pathStr] of Object.entries(projects)) {
     if (!pathStr || typeof pathStr !== 'string') continue;
+    const extra = configs[name] ?? {};
     registry.register({
       id: name,
       name,
       path: pathStr,
       createdAt: '',
+      ...extra,
     });
   }
   return registry;

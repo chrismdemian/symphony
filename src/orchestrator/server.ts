@@ -4,7 +4,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { projectRegistryFromMap } from '../projects/registry.js';
 import type { ProjectRegistry } from '../projects/registry.js';
-import type { ProjectStore } from '../projects/types.js';
+import type { ProjectConfigInput, ProjectRecord, ProjectStore } from '../projects/types.js';
 import { QuestionRegistry, type QuestionStore } from '../state/question-registry.js';
 import { TaskRegistry } from '../state/task-registry.js';
 import type { TaskStore } from '../state/types.js';
@@ -37,6 +37,9 @@ import { makeAskUserTool } from './tools/ask-user.js';
 import { makeReviewDiffTool } from './tools/review-diff.js';
 import { makeResearchWaveTool } from './tools/research-wave.js';
 import { makeGlobalStatusTool } from './tools/global-status.js';
+import { makeAuditChangesTool } from './tools/audit-changes.js';
+import { makeFinalizeTool } from './tools/finalize.js';
+import { defaultOneShotRunner, type OneShotRunner } from './one-shot.js';
 import type { AutonomyTier, DispatchContext, ToolMode } from './types.js';
 import { createWorkerLifecycle, type WorkerLifecycleHandle } from './worker-lifecycle.js';
 import { WorkerRegistry } from './worker-registry.js';
@@ -68,6 +71,14 @@ export interface OrchestratorServerOptions {
   questionStore?: QuestionStore;
   /** Override the research-wave store. Defaults to an in-memory `WaveRegistry`. */
   waveStore?: WaveStore;
+  /**
+   * Per-project configuration overlay (`lintCommand`, `verifyCommand`, etc.).
+   * Keyed by project name. Used by `finalize` for the shell-step pipeline.
+   * A `.symphony.json` loader (Phase 5) will populate this at CLI startup.
+   */
+  projectConfigs?: Readonly<Record<string, ProjectConfigInput>>;
+  /** Override the one-shot Claude runner used by `audit_changes` + `finalize`. Test seam. */
+  oneShotRunner?: OneShotRunner;
 }
 
 export interface OrchestratorServerHandle {
@@ -130,8 +141,12 @@ export async function startOrchestratorServer(
   const projectStore: ProjectStore =
     options.projectStore ??
     (() => {
-      const store = projectRegistryFromMap(projects);
-      ensureDefaultProjectRegistered(store, defaultProjectPath);
+      const store = projectRegistryFromMap(projects, {
+        ...(options.projectConfigs !== undefined
+          ? { configs: options.projectConfigs as Record<string, Partial<ProjectRecord>> }
+          : {}),
+      });
+      ensureDefaultProjectRegistered(store, defaultProjectPath, options.projectConfigs);
       return store;
     })();
 
@@ -222,6 +237,22 @@ export async function startOrchestratorServer(
     }),
   );
 
+  const oneShotRunner = options.oneShotRunner ?? defaultOneShotRunner;
+  registry.register(
+    makeAuditChangesTool({
+      registry: workerRegistry,
+      projectStore,
+      oneShotRunner,
+    }),
+  );
+  registry.register(
+    makeFinalizeTool({
+      registry: workerRegistry,
+      projectStore,
+      oneShotRunner,
+    }),
+  );
+
   const transport = options.transport ?? new StdioServerTransport();
   await server.connect(transport);
 
@@ -270,20 +301,24 @@ export async function startOrchestratorServer(
  * If the caller gave a `defaultProjectPath` without registering a matching
  * project, synthesize a `default` entry so MCP tools can address it by
  * name. No-op when the store already contains a project at that path.
+ * Applies `projectConfigs.default` when the synthesized project is created.
  */
 function ensureDefaultProjectRegistered(
   store: ProjectRegistry,
   defaultPath: string,
+  projectConfigs?: Readonly<Record<string, ProjectConfigInput>>,
 ): void {
   for (const record of store.list()) {
     if (path.resolve(record.path) === defaultPath) return;
   }
   const name = pickDefaultProjectName(store);
+  const extra = projectConfigs?.[name] ?? projectConfigs?.['default'];
   store.register({
     id: name,
     name,
     path: defaultPath,
     createdAt: '',
+    ...(extra ?? {}),
   });
 }
 
