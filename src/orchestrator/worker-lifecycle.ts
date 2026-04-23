@@ -62,6 +62,7 @@ function attachEventTap(
   buffer: CircularBuffer<StreamEvent>,
   registry: WorkerRegistry,
   recordId: string,
+  now: () => number,
 ): () => void {
   let stopped = false;
   void (async () => {
@@ -69,6 +70,7 @@ function attachEventTap(
       for await (const event of worker.events) {
         if (stopped) break;
         buffer.push(event);
+        registry.updateLastEventAt(recordId, new Date(now()).toISOString());
         if (event.type === 'system_init') {
           registry.updateSessionId(recordId, event.sessionId);
           registry.updateStatus(recordId, 'running');
@@ -166,7 +168,7 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
       ...(input.model !== undefined ? { model: input.model } : {}),
     };
     registry.register(record);
-    record.detach = attachEventTap(worker, buffer, registry, recordId);
+    record.detach = attachEventTap(worker, buffer, registry, recordId, now);
     wireExit(recordId, worker);
     return record;
   }
@@ -219,7 +221,7 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
     });
     const reloaded = registry.get(record.id);
     if (!reloaded) throw new Error(`worker '${record.id}' disappeared during resume`);
-    reloaded.detach = attachEventTap(worker, reloaded.buffer, registry, record.id);
+    reloaded.detach = attachEventTap(worker, reloaded.buffer, registry, record.id, now);
     wireExit(record.id, worker);
     return reloaded;
   }

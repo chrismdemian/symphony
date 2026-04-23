@@ -27,6 +27,13 @@ export interface WorkerRecord {
   exitInfo?: WorkerExitInfo;
   worker: Worker;
   readonly buffer: CircularBuffer<StreamEvent>;
+  /**
+   * ISO timestamp of the most recent event observed from the worker's
+   * stream. Updated by the lifecycle's event tap on every push. Used by
+   * `global_status` to answer "where was I?". Undefined until the first
+   * event arrives (which happens within ms of a successful spawn).
+   */
+  lastEventAt?: string;
   /** Unsubscribe callback for the event-tap consumer. Called on remove/shutdown. */
   detach: () => void;
 }
@@ -45,6 +52,7 @@ export interface WorkerRecordSnapshot {
   readonly status: WorkerStatus;
   readonly createdAt: string;
   readonly completedAt?: string;
+  readonly lastEventAt?: string;
   readonly exitCode?: number | null;
   readonly exitSignal?: NodeJS.Signals | null;
 }
@@ -187,6 +195,17 @@ export class WorkerRegistry {
   }
 
   /**
+   * Stamp the most recent event timestamp. Called by the lifecycle event
+   * tap on every push. Cheap enough to run per-event — this is just a
+   * property write on an already-loaded record.
+   */
+  updateLastEventAt(id: string, iso: string): void {
+    const record = this.records.get(id);
+    if (!record) return;
+    record.lastEventAt = iso;
+  }
+
+  /**
    * Remove a record. Does NOT kill the worker — caller is responsible for
    * that. Safe to call on unknown ids (no-op).
    */
@@ -230,6 +249,7 @@ export function toSnapshot(r: WorkerRecord): WorkerRecordSnapshot {
     ...(r.model !== undefined ? { model: r.model } : {}),
     ...(r.sessionId !== undefined ? { sessionId: r.sessionId } : {}),
     ...(r.completedAt !== undefined ? { completedAt: r.completedAt } : {}),
+    ...(r.lastEventAt !== undefined ? { lastEventAt: r.lastEventAt } : {}),
     ...(r.exitInfo !== undefined
       ? {
           exitCode: r.exitInfo.exitCode,

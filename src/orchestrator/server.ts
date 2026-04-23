@@ -5,6 +5,7 @@ import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { projectRegistryFromMap } from '../projects/registry.js';
 import type { ProjectRegistry } from '../projects/registry.js';
 import type { ProjectStore } from '../projects/types.js';
+import { QuestionRegistry, type QuestionStore } from '../state/question-registry.js';
 import { TaskRegistry } from '../state/task-registry.js';
 import type { TaskStore } from '../state/types.js';
 import { WorkerManager, type WorkerManagerOptions } from '../workers/manager.js';
@@ -13,6 +14,7 @@ import type { WorktreeManagerConfig } from '../worktree/types.js';
 import { CapabilityEvaluator, DEFAULT_DISPATCH_CONTEXT } from './capabilities.js';
 import { ModeController } from './mode.js';
 import { ToolRegistry } from './registry.js';
+import { WaveRegistry, type WaveStore } from './research-wave-registry.js';
 import { AgentSafetyGuard } from './safety.js';
 import type { SafetyGuardOptions } from './safety.js';
 import { thinkTool } from './tools/think.js';
@@ -31,6 +33,10 @@ import { makeCreateWorktreeTool } from './tools/create-worktree.js';
 import { makeListTasksTool } from './tools/list-tasks.js';
 import { makeCreateTaskTool } from './tools/create-task.js';
 import { makeUpdateTaskTool } from './tools/update-task.js';
+import { makeAskUserTool } from './tools/ask-user.js';
+import { makeReviewDiffTool } from './tools/review-diff.js';
+import { makeResearchWaveTool } from './tools/research-wave.js';
+import { makeGlobalStatusTool } from './tools/global-status.js';
 import type { AutonomyTier, DispatchContext, ToolMode } from './types.js';
 import { createWorkerLifecycle, type WorkerLifecycleHandle } from './worker-lifecycle.js';
 import { WorkerRegistry } from './worker-registry.js';
@@ -58,6 +64,10 @@ export interface OrchestratorServerOptions {
   projectStore?: ProjectStore;
   /** Override the task store. Defaults to an in-memory `TaskRegistry`. */
   taskStore?: TaskStore;
+  /** Override the question store. Defaults to an in-memory `QuestionRegistry`. */
+  questionStore?: QuestionStore;
+  /** Override the research-wave store. Defaults to an in-memory `WaveRegistry`. */
+  waveStore?: WaveStore;
 }
 
 export interface OrchestratorServerHandle {
@@ -72,6 +82,8 @@ export interface OrchestratorServerHandle {
   worktreeManager: WorktreeManager;
   projectStore: ProjectStore;
   taskStore: TaskStore;
+  questionStore: QuestionStore;
+  waveStore: WaveStore;
   defaultProjectPath: string;
   resolveProjectPath: (project?: string) => string;
   setContext: (partial: Partial<DispatchContext>) => void;
@@ -124,6 +136,8 @@ export async function startOrchestratorServer(
     })();
 
   const taskStore: TaskStore = options.taskStore ?? new TaskRegistry();
+  const questionStore: QuestionStore = options.questionStore ?? new QuestionRegistry();
+  const waveStore: WaveStore = options.waveStore ?? new WaveRegistry();
 
   const resolveProjectPath = (project?: string): string => {
     if (project === undefined || project.length === 0) return defaultProjectPath;
@@ -189,6 +203,25 @@ export async function startOrchestratorServer(
   );
   registry.register(makeUpdateTaskTool({ taskStore }));
 
+  registry.register(makeAskUserTool({ questionStore, projectStore }));
+  registry.register(makeReviewDiffTool({ registry: workerRegistry }));
+  registry.register(
+    makeResearchWaveTool({
+      registry: workerRegistry,
+      lifecycle: workerLifecycle,
+      waveStore,
+      projectStore,
+      resolveProjectPath: spawnResolve,
+    }),
+  );
+  registry.register(
+    makeGlobalStatusTool({
+      projectStore,
+      workerRegistry,
+      worktreeManager,
+    }),
+  );
+
   const transport = options.transport ?? new StdioServerTransport();
   await server.connect(transport);
 
@@ -221,6 +254,8 @@ export async function startOrchestratorServer(
     worktreeManager,
     projectStore,
     taskStore,
+    questionStore,
+    waveStore,
     defaultProjectPath,
     resolveProjectPath,
     setContext: (partial) => {

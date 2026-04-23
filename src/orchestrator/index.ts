@@ -72,3 +72,29 @@ export type {
   CreateTaskInput,
   TaskPatch,
 } from '../state/types.js';
+export {
+  QuestionRegistry,
+  AlreadyAnsweredError,
+  UnknownQuestionError,
+  toQuestionSnapshot,
+} from '../state/question-registry.js';
+export type {
+  QuestionRecord,
+  QuestionSnapshot,
+  QuestionStore,
+  QuestionUrgency,
+  QuestionListFilter,
+  EnqueueQuestionInput,
+} from '../state/question-registry.js';
+export {
+  WaveRegistry,
+  UnknownWaveError,
+  toWaveSnapshot,
+} from './research-wave-registry.js';
+export type {
+  WaveRecord,
+  WaveSnapshot,
+  WaveStore,
+  WaveListFilter,
+  EnqueueWaveInput,
+} from './research-wave-registry.js';
