@@ -1,0 +1,371 @@
+import { describe, expect, it } from 'vitest';
+import { createWorkerLifecycle } from '../../src/orchestrator/worker-lifecycle.js';
+import { WorkerRegistry } from '../../src/orchestrator/worker-registry.js';
+import type { WorkerManager } from '../../src/workers/manager.js';
+import type {
+  StreamEvent,
+  Worker,
+  WorkerConfig,
+  WorkerExitInfo,
+} from '../../src/workers/types.js';
+import type { WorktreeManager } from '../../src/worktree/manager.js';
+import type { CreateWorktreeOptions, WorktreeInfo } from '../../src/worktree/types.js';
+
+class ScriptedWorker implements Worker {
+  readonly id: string;
+  sessionId: string | undefined = undefined;
+  status: 'spawning' | 'running' | 'completed' | 'failed' | 'killed' | 'timeout' | 'crashed' =
+    'running';
+  private readonly events_: AsyncIterable<StreamEvent>;
+  private resolveExit: ((info: WorkerExitInfo) => void) | null = null;
+  private killed = false;
+  followups: string[] = [];
+  inputEnded = false;
+  private readonly exitPromise: Promise<WorkerExitInfo>;
+
+  constructor(id: string, events: AsyncIterable<StreamEvent>) {
+    this.id = id;
+    this.events_ = events;
+    this.exitPromise = new Promise<WorkerExitInfo>((resolve) => {
+      this.resolveExit = resolve;
+    });
+  }
+
+  get events(): AsyncIterable<StreamEvent> {
+    return this.events_;
+  }
+
+  sendFollowup(text: string): void {
+    this.followups.push(text);
+  }
+
+  endInput(): void {
+    this.inputEnded = true;
+  }
+
+  kill(): void {
+    this.killed = true;
+    this.complete({
+      status: 'killed',
+      exitCode: null,
+      signal: 'SIGTERM',
+      durationMs: 0,
+    });
+  }
+
+  waitForExit(): Promise<WorkerExitInfo> {
+    return this.exitPromise;
+  }
+
+  complete(info: WorkerExitInfo): void {
+    this.status = info.status;
+    this.resolveExit?.(info);
+  }
+}
+
+async function* emitEvents(events: StreamEvent[]): AsyncGenerator<StreamEvent> {
+  for (const ev of events) {
+    yield ev;
+  }
+}
+
+interface StubWorkerManager {
+  mgr: WorkerManager;
+  spawnCalls: WorkerConfig[];
+  setNextWorker(worker: ScriptedWorker): void;
+  setNextError(err: Error): void;
+}
+
+function stubWorkerManager(): StubWorkerManager {
+  const spawnCalls: WorkerConfig[] = [];
+  let nextWorker: ScriptedWorker | null = null;
+  let nextError: Error | null = null;
+  const mgr = {
+    spawn: async (cfg: WorkerConfig) => {
+      spawnCalls.push(cfg);
+      if (nextError) {
+        const err = nextError;
+        nextError = null;
+        throw err;
+      }
+      if (!nextWorker) throw new Error('stubWorkerManager: no queued worker');
+      const w = nextWorker;
+      nextWorker = null;
+      return w;
+    },
+    list: () => [],
+    get: () => undefined,
+    shutdown: async () => {},
+  } as unknown as WorkerManager;
+  return {
+    mgr,
+    spawnCalls,
+    setNextWorker: (w) => {
+      nextWorker = w;
+    },
+    setNextError: (e) => {
+      nextError = e;
+    },
+  };
+}
+
+function stubWorktreeManager(): {
+  mgr: WorktreeManager;
+  createCalls: CreateWorktreeOptions[];
+} {
+  const createCalls: CreateWorktreeOptions[] = [];
+  const mgr = {
+    create: async (opts: CreateWorktreeOptions): Promise<WorktreeInfo> => {
+      createCalls.push(opts);
+      return {
+        id: opts.workerId,
+        path: `/wt/${opts.workerId}`,
+        branch: `symphony/${opts.workerId}`,
+        baseRef: 'refs/heads/main',
+        projectPath: opts.projectPath,
+        createdAt: '2026-04-23T00:00:00.000Z',
+      };
+    },
+    list: async () => [],
+    remove: async () => {},
+    removeIfClean: async () => true,
+    status: async () => ({
+      hasChanges: false,
+      staged: [],
+      unstaged: [],
+      untracked: [],
+    }),
+  } as unknown as WorktreeManager;
+  return { mgr, createCalls };
+}
+
+describe('createWorkerLifecycle', () => {
+  it('spawn() creates a worktree, spawns, registers, and taps events', async () => {
+    const registry = new WorkerRegistry();
+    const { mgr: wm, spawnCalls } = stubWorkerManager();
+    const { mgr: wt, createCalls } = stubWorktreeManager();
+    const lc = createWorkerLifecycle({
+      registry,
+      workerManager: wm,
+      worktreeManager: wt,
+      idGenerator: () => 'wk-unit',
+    });
+    const events: StreamEvent[] = [
+      {
+        type: 'system_init',
+        sessionId: 'sess-1',
+        model: 'claude-opus',
+      } as StreamEvent,
+      { type: 'assistant_text', text: 'hi' } as StreamEvent,
+    ];
+    const worker = new ScriptedWorker('wk-unit', emitEvents(events));
+    (wm.spawn as unknown as { mockWorker?: unknown }).mockWorker = worker;
+    const stubbed = wm as unknown as {
+      spawn: (cfg: WorkerConfig) => Promise<Worker>;
+    };
+    stubbed.spawn = (async (cfg: WorkerConfig) => {
+      spawnCalls.push(cfg);
+      return worker;
+    }) as unknown as (cfg: WorkerConfig) => Promise<Worker>;
+
+    const record = await lc.spawn({
+      projectPath: '/proj',
+      taskDescription: 'Refactor auth',
+      role: 'implementer',
+      autonomyTier: 2,
+    });
+
+    expect(record.id).toBe('wk-unit');
+    expect(record.worktreePath).toBe('/wt/wk-unit');
+    expect(record.featureIntent).toBe('refactor-auth');
+    expect(registry.has('wk-unit')).toBe(true);
+    expect(createCalls[0]).toMatchObject({
+      projectPath: '/proj',
+      workerId: 'wk-unit',
+      shortDescription: 'refactor-auth',
+    });
+    expect(spawnCalls[0]).toMatchObject({
+      id: 'wk-unit',
+      cwd: '/wt/wk-unit',
+      prompt: 'Refactor auth',
+      keepStdinOpen: true,
+    });
+
+    // Allow the event tap microtask to drain
+    await new Promise((r) => setImmediate(r));
+    const reloaded = registry.get('wk-unit');
+    expect(reloaded?.sessionId).toBe('sess-1');
+    expect(reloaded?.status).toBe('running');
+    expect(reloaded?.buffer.size()).toBeGreaterThan(0);
+  });
+
+  it('spawn() deduplicates concurrent calls with the same id+projectPath', async () => {
+    const registry = new WorkerRegistry();
+    const { mgr: wm, spawnCalls } = stubWorkerManager();
+    const { mgr: wt } = stubWorktreeManager();
+    const worker = new ScriptedWorker('wk-dup', emitEvents([]));
+    const stubbed = wm as unknown as {
+      spawn: (cfg: WorkerConfig) => Promise<Worker>;
+    };
+    stubbed.spawn = (async (cfg: WorkerConfig) => {
+      spawnCalls.push(cfg);
+      return worker;
+    }) as unknown as (cfg: WorkerConfig) => Promise<Worker>;
+
+    const lc = createWorkerLifecycle({
+      registry,
+      workerManager: wm,
+      worktreeManager: wt,
+    });
+    // Fire two spawns concurrently with the same id
+    const [a, b] = await Promise.all([
+      lc.spawn({
+        projectPath: '/proj',
+        taskDescription: 'do',
+        role: 'implementer',
+        id: 'wk-dup',
+      }),
+      lc.spawn({
+        projectPath: '/proj',
+        taskDescription: 'do',
+        role: 'implementer',
+        id: 'wk-dup',
+      }),
+    ]);
+    expect(a).toBe(b);
+    expect(spawnCalls.length).toBe(1);
+  });
+
+  it('spawn() re-raises when workerManager.spawn throws (worktree already created)', async () => {
+    const registry = new WorkerRegistry();
+    const { mgr: wm } = stubWorkerManager();
+    const { mgr: wt, createCalls } = stubWorktreeManager();
+    const stubbed = wm as unknown as {
+      spawn: (cfg: WorkerConfig) => Promise<Worker>;
+    };
+    stubbed.spawn = (async () => {
+      throw new Error('trust failure');
+    }) as unknown as (cfg: WorkerConfig) => Promise<Worker>;
+
+    const lc = createWorkerLifecycle({
+      registry,
+      workerManager: wm,
+      worktreeManager: wt,
+      idGenerator: () => 'wk-fail',
+    });
+    await expect(
+      lc.spawn({ projectPath: '/proj', taskDescription: 'x', role: 'implementer' }),
+    ).rejects.toThrow(/trust failure/);
+    // Worktree was still created — that's intentional; finalize cleans up
+    expect(createCalls.length).toBe(1);
+    expect(registry.has('wk-fail')).toBe(false);
+  });
+
+  it('resume() rejects a running worker and forwards sessionId on terminal', async () => {
+    const registry = new WorkerRegistry();
+    const { mgr: wm, spawnCalls } = stubWorkerManager();
+    const { mgr: wt } = stubWorktreeManager();
+    const first = new ScriptedWorker('wk-r', emitEvents([]));
+    const second = new ScriptedWorker('wk-r', emitEvents([]));
+    const stubbed = wm as unknown as {
+      spawn: (cfg: WorkerConfig) => Promise<Worker>;
+    };
+    let spawnCount = 0;
+    stubbed.spawn = (async (cfg: WorkerConfig) => {
+      spawnCalls.push(cfg);
+      spawnCount += 1;
+      return spawnCount === 1 ? first : second;
+    }) as unknown as (cfg: WorkerConfig) => Promise<Worker>;
+
+    const lc = createWorkerLifecycle({
+      registry,
+      workerManager: wm,
+      worktreeManager: wt,
+      idGenerator: () => 'wk-r',
+    });
+    const rec = await lc.spawn({
+      projectPath: '/proj',
+      taskDescription: 'do',
+      role: 'implementer',
+    });
+    // still "running" via initial status — resume should reject
+    rec.status = 'running';
+    await expect(
+      lc.resume({ recordId: 'wk-r', message: 'more' }),
+    ).rejects.toThrow(/running/);
+
+    // Flip to terminal; resume should now succeed
+    rec.status = 'completed';
+    rec.sessionId = 'sess-old';
+    await lc.resume({ recordId: 'wk-r', message: 'continue' });
+    const resumeCfg = spawnCalls[1];
+    expect(resumeCfg?.sessionId).toBe('sess-old');
+    expect(resumeCfg?.onStaleResume).toBe('warn-and-fresh');
+    expect(resumeCfg?.prompt).toBe('continue');
+  });
+
+  it('shutdown() kills each worker and awaits exit', async () => {
+    const registry = new WorkerRegistry();
+    const { mgr: wm, spawnCalls } = stubWorkerManager();
+    const { mgr: wt } = stubWorktreeManager();
+    const worker = new ScriptedWorker('wk-sh', emitEvents([]));
+    const stubbed = wm as unknown as {
+      spawn: (cfg: WorkerConfig) => Promise<Worker>;
+    };
+    stubbed.spawn = (async (cfg: WorkerConfig) => {
+      spawnCalls.push(cfg);
+      return worker;
+    }) as unknown as (cfg: WorkerConfig) => Promise<Worker>;
+
+    const lc = createWorkerLifecycle({
+      registry,
+      workerManager: wm,
+      worktreeManager: wt,
+      idGenerator: () => 'wk-sh',
+    });
+    await lc.spawn({
+      projectPath: '/proj',
+      taskDescription: 'do',
+      role: 'implementer',
+    });
+    await lc.shutdown();
+    // registry cleared
+    expect(registry.list().length).toBe(0);
+  });
+
+  it('updates status to completed via registry.markCompleted on natural exit', async () => {
+    const registry = new WorkerRegistry();
+    const { mgr: wm } = stubWorkerManager();
+    const { mgr: wt } = stubWorktreeManager();
+    const worker = new ScriptedWorker('wk-nat', emitEvents([]));
+    const stubbed = wm as unknown as {
+      spawn: (cfg: WorkerConfig) => Promise<Worker>;
+    };
+    stubbed.spawn = (async () => worker) as unknown as (
+      cfg: WorkerConfig,
+    ) => Promise<Worker>;
+
+    const lc = createWorkerLifecycle({
+      registry,
+      workerManager: wm,
+      worktreeManager: wt,
+      idGenerator: () => 'wk-nat',
+    });
+    await lc.spawn({
+      projectPath: '/proj',
+      taskDescription: 'do',
+      role: 'implementer',
+    });
+    worker.complete({
+      status: 'completed',
+      exitCode: 0,
+      signal: null,
+      sessionId: 'final',
+      durationMs: 42,
+    });
+    await new Promise((r) => setImmediate(r));
+    const snap = registry.snapshot('wk-nat');
+    expect(snap?.status).toBe('completed');
+    expect(snap?.sessionId).toBe('final');
+  });
+});
