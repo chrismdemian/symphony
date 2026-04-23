@@ -176,6 +176,42 @@ describe('WorktreeManager.create', () => {
     expect(created.id).toBe('w-after-toctou');
     expect(createBlockedUntilRemove).toBe(true);
   });
+
+  it('rejects fast when signal is already aborted at entry (audit 2A.3 M2)', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      manager.create({
+        projectPath: repoPath,
+        workerId: 'w-entry-abort',
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(/aborted before disk IO/);
+    expect(existsSync(path.join(repoPath, '.symphony', 'worktrees', 'w-entry-abort'))).toBe(false);
+  });
+
+  it('cleans up the worktree when signal fires after materialization (audit 2A.3 M2)', async () => {
+    const controller = new AbortController();
+    // Abort immediately AFTER create returns. The internal create finishes,
+    // then the post-create check fires.
+    const origPrune = manager; // just to silence lint on unused
+    void origPrune;
+
+    // Start create, abort on the next tick. Since createInternal runs to
+    // completion before the post-abort check, we schedule the abort to
+    // happen during the short window between internal completion and the
+    // post-check. The post-check sees aborted=true and removes.
+    const promise = manager.create({
+      projectPath: repoPath,
+      workerId: 'w-mid-abort',
+      signal: controller.signal,
+    });
+    // Give createInternal a chance to start before aborting.
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+    await expect(promise).rejects.toThrow(/aborted/);
+    expect(existsSync(path.join(repoPath, '.symphony', 'worktrees', 'w-mid-abort'))).toBe(false);
+  });
 });
 
 describe('WorktreeManager.removeIfClean / remove', () => {
