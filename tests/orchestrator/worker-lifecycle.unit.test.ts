@@ -333,6 +333,55 @@ describe('createWorkerLifecycle', () => {
     expect(registry.list().length).toBe(0);
   });
 
+  it('wireExit guards against resume race — late old-worker exit does not clobber new worker status (M2 fix)', async () => {
+    const registry = new WorkerRegistry();
+    const { mgr: wm } = stubWorkerManager();
+    const { mgr: wt } = stubWorktreeManager();
+    const oldWorker = new ScriptedWorker('wk-race', emitEvents([]));
+    const newWorker = new ScriptedWorker('wk-race', emitEvents([]));
+    let spawnCount = 0;
+    const stubbed = wm as unknown as { spawn: (cfg: WorkerConfig) => Promise<Worker> };
+    stubbed.spawn = (async (cfg: WorkerConfig) => {
+      void cfg;
+      spawnCount += 1;
+      return spawnCount === 1 ? oldWorker : newWorker;
+    }) as unknown as (cfg: WorkerConfig) => Promise<Worker>;
+
+    const lc = createWorkerLifecycle({
+      registry,
+      workerManager: wm,
+      worktreeManager: wt,
+      idGenerator: () => 'wk-race',
+    });
+    const rec = await lc.spawn({
+      projectPath: '/p',
+      taskDescription: 'x',
+      role: 'implementer',
+    });
+    // Simulate the tool-layer precondition: record is terminal by status but
+    // the old worker's waitForExit has NOT yet resolved.
+    rec.status = 'completed';
+
+    const resumePromise = lc.resume({ recordId: 'wk-race', message: 'continue' });
+    // Now resolve the OLD worker's exit — this fires AFTER registry.replace
+    // has swapped in the new worker. The M2 fix's identity check blocks
+    // markCompleted from overwriting the new worker's fresh status.
+    oldWorker.complete({
+      status: 'failed',
+      exitCode: 1,
+      signal: null,
+      sessionId: 'old-sess',
+      durationMs: 0,
+    });
+    await resumePromise;
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    const snap = registry.snapshot('wk-race');
+    expect(snap?.status).not.toBe('failed');
+    expect(snap?.sessionId).not.toBe('old-sess');
+  });
+
   it('updates status to completed via registry.markCompleted on natural exit', async () => {
     const registry = new WorkerRegistry();
     const { mgr: wm } = stubWorkerManager();

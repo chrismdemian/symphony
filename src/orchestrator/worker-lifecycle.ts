@@ -21,12 +21,15 @@ export interface SpawnWorkerInput {
   readonly id?: string;
   readonly featureIntent?: string;
   readonly timeoutMs?: number;
+  /** AbortSignal from the tool dispatch context; cancels worktree+spawn cooperatively. */
+  readonly signal?: AbortSignal;
 }
 
 export interface ResumeWorkerInput {
   readonly recordId: string;
   readonly message: string;
   readonly timeoutMs?: number;
+  readonly signal?: AbortSignal;
 }
 
 export interface WorkerLifecycleOptions {
@@ -115,12 +118,19 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
     if (registry.has(recordId)) {
       throw new Error(`worker '${recordId}' already registered`);
     }
+    // Fast-fail if already aborted — don't touch the filesystem.
+    if (input.signal !== undefined && input.signal.aborted) {
+      throw new Error(`spawn_worker aborted before worktree creation (recordId=${recordId})`);
+    }
     const featureIntent = input.featureIntent ?? deriveFeatureIntent(input.taskDescription);
     const worktree = await worktreeManager.create({
       projectPath: input.projectPath,
       workerId: recordId,
       shortDescription: featureIntent,
     });
+    if (input.signal !== undefined && input.signal.aborted) {
+      throw new Error(`spawn_worker aborted after worktree creation (recordId=${recordId})`);
+    }
 
     const buffer = new CircularBuffer<StreamEvent>(bufferCap);
     const cfg: WorkerConfig = {
@@ -129,6 +139,7 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
       prompt: input.taskDescription,
       keepStdinOpen: true,
       deterministicUuidInput: `${recordId}::${worktree.path}`,
+      ...(input.signal !== undefined ? { signal: input.signal } : {}),
       ...(input.model !== undefined ? { model: input.model } : {}),
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     };
@@ -195,6 +206,7 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
       onStaleResume: 'warn-and-fresh',
       ...(record.sessionId !== undefined ? { sessionId: record.sessionId } : {}),
       ...(record.model !== undefined ? { model: record.model } : {}),
+      ...(input.signal !== undefined ? { signal: input.signal } : {}),
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     };
 
@@ -216,6 +228,11 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
     void worker
       .waitForExit()
       .then((exitInfo) => {
+        // Defend against resume race: if the record was replaced between spawn
+        // and exit, the old worker's exit must not overwrite the new worker's
+        // status or sessionId. Identity check on the live worker handle.
+        const current = registry.get(recordId);
+        if (current === undefined || current.worker !== worker) return;
         registry.markCompleted(recordId, exitInfo, now);
       })
       .catch(() => {

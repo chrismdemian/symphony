@@ -43,12 +43,13 @@ export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typ
     scope: 'act',
     capabilities: [],
     inputSchema: shape,
-    handler: async ({ project, task_description, role, model, depends_on, autonomy_tier }) => {
+    handler: async ({ project, task_description, role, model, depends_on, autonomy_tier }, ctx) => {
       const projectPath = deps.resolveProjectPath(project);
       const input: SpawnWorkerInput = {
         projectPath,
         taskDescription: task_description,
         role,
+        ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
         ...(model !== undefined ? { model } : {}),
         ...(depends_on !== undefined ? { dependsOn: depends_on } : {}),
         ...(autonomy_tier !== undefined ? { autonomyTier: autonomy_tier } : {}),

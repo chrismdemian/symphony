@@ -21,7 +21,7 @@ export function makeResumeWorkerTool(deps: ResumeWorkerDeps): ToolRegistration<t
     scope: 'act',
     capabilities: [],
     inputSchema: shape,
-    handler: async ({ worker_id, message }) => {
+    handler: async ({ worker_id, message }, ctx) => {
       const record = deps.registry.get(worker_id);
       if (!record) {
         return {
@@ -41,7 +41,11 @@ export function makeResumeWorkerTool(deps: ResumeWorkerDeps): ToolRegistration<t
         };
       }
       try {
-        const resumed = await deps.lifecycle.resume({ recordId: worker_id, message });
+        const resumed = await deps.lifecycle.resume({
+          recordId: worker_id,
+          message,
+          ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
+        });
         const snap = toSnapshot(resumed);
         return {
           content: [

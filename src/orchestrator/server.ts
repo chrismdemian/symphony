@@ -154,7 +154,13 @@ export async function startOrchestratorServer(
   const close = async (): Promise<void> => {
     offModeChange();
     registry.close();
+    // Order: lifecycle drains registered workers; workerManager shutdown
+    // rejects new spawns AND awaits any child still mid-boot between
+    // `workerManager.spawn` resolving and `registry.register` running.
+    // Without this pair, SIGINT during a `spawn_worker` call leaks the
+    // pending claude subprocess.
     await workerLifecycle.shutdown().catch(() => {});
+    await workerManager.shutdown().catch(() => {});
     try {
       await server.close();
     } catch {

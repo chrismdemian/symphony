@@ -2,15 +2,20 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  createWorkerLifecycle,
   startOrchestratorServer,
+  WorkerRegistry,
   type OrchestratorServerHandle,
 } from '../../src/orchestrator/index.js';
-import {
-  CircularBuffer,
-  type WorkerRecord,
-} from '../../src/orchestrator/worker-registry.js';
-import type { WorkerLifecycleHandle } from '../../src/orchestrator/worker-lifecycle.js';
-import type { StreamEvent, Worker } from '../../src/workers/types.js';
+import type { WorkerManager } from '../../src/workers/manager.js';
+import type {
+  StreamEvent,
+  Worker,
+  WorkerConfig,
+  WorkerExitInfo,
+} from '../../src/workers/types.js';
+import type { WorktreeManager } from '../../src/worktree/manager.js';
+import type { CreateWorktreeOptions, WorktreeInfo } from '../../src/worktree/types.js';
 
 class FakeWorker implements Worker {
   readonly id: string;
@@ -18,19 +23,27 @@ class FakeWorker implements Worker {
   status: Worker['status'] = 'running';
   followups: string[] = [];
   killed = false;
-  private resolveExit!: (info: Worker extends { waitForExit(): Promise<infer T> } ? T : never) => void;
-  private readonly exitPromise: Promise<Parameters<typeof this.resolveExit>[0]>;
+  private readonly exitPromise: Promise<WorkerExitInfo>;
+  private resolveExit!: (info: WorkerExitInfo) => void;
+  readonly events: AsyncIterable<StreamEvent>;
 
   constructor(id: string) {
     this.id = id;
-    this.exitPromise = new Promise((resolve) => {
+    this.exitPromise = new Promise<WorkerExitInfo>((resolve) => {
       this.resolveExit = resolve;
     });
+    // Emit a single system_init so the real lifecycle's event tap flips
+    // registry status from 'spawning' → 'running'. Matches the first event
+    // `claude -p` emits on boot.
+    const sessionId = `fake-session-${id}`;
+    this.events = (async function* (): AsyncGenerator<StreamEvent> {
+      yield {
+        type: 'system_init',
+        sessionId,
+        model: 'fake',
+      };
+    })();
   }
-
-  readonly events: AsyncIterable<StreamEvent> = (async function* () {
-    /* no events for integration */
-  })();
 
   sendFollowup(text: string): void {
     this.followups.push(text);
@@ -41,6 +54,7 @@ class FakeWorker implements Worker {
   }
 
   kill(): void {
+    if (this.killed) return;
     this.killed = true;
     this.status = 'killed';
     this.resolveExit({
@@ -51,109 +65,95 @@ class FakeWorker implements Worker {
     });
   }
 
-  waitForExit(): Promise<Parameters<typeof this.resolveExit>[0]> {
+  complete(info: WorkerExitInfo): void {
+    this.status = info.status;
+    this.resolveExit(info);
+  }
+
+  waitForExit(): Promise<WorkerExitInfo> {
     return this.exitPromise;
   }
 }
 
-function makeFakeLifecycle(): {
-  lifecycle: WorkerLifecycleHandle;
+interface FakePrimitives {
+  workerManager: WorkerManager;
+  worktreeManager: WorktreeManager;
   spawned: FakeWorker[];
-  records: WorkerRecord[];
-} {
-  const spawned: FakeWorker[] = [];
-  const records: WorkerRecord[] = [];
-  let idCounter = 0;
-  const lifecycle: WorkerLifecycleHandle = {
-    spawn: async (input) => {
-      idCounter += 1;
-      const id = `wk-fake-${idCounter}`;
-      const worker = new FakeWorker(id);
-      spawned.push(worker);
-      // The real lifecycle would register into registry; for this harness,
-      // wire the registry directly via the handle returned from start…
-      const rec: WorkerRecord = {
-        id,
-        projectPath: input.projectPath,
-        worktreePath: `${input.projectPath}/.symphony/worktrees/${id}`,
-        role: input.role,
-        featureIntent: input.featureIntent ?? 'integration-fake',
-        taskDescription: input.taskDescription,
-        autonomyTier: input.autonomyTier ?? 1,
-        dependsOn: input.dependsOn ?? [],
-        status: 'running',
-        createdAt: new Date().toISOString(),
-        worker,
-        buffer: new CircularBuffer<StreamEvent>(100),
-        detach: () => {},
-        sessionId: 'fake-session-id',
-      };
-      records.push(rec);
-      return rec;
-    },
-    resume: async (input) => {
-      const rec = records.find((r) => r.id === input.recordId);
-      if (!rec) throw new Error('unknown record');
-      const worker = new FakeWorker(rec.id);
-      spawned.push(worker);
-      rec.worker = worker;
-      rec.status = 'spawning';
-      return rec;
-    },
-    cleanup: () => {},
-    shutdown: async () => {
-      for (const w of spawned) {
-        if (!w.killed) w.kill();
-      }
-    },
-  };
-  return { lifecycle, spawned, records };
+  spawnCalls: WorkerConfig[];
+  createCalls: CreateWorktreeOptions[];
 }
 
-async function makePair(): Promise<{
+function makeFakePrimitives(): FakePrimitives {
+  const spawned: FakeWorker[] = [];
+  const spawnCalls: WorkerConfig[] = [];
+  const createCalls: CreateWorktreeOptions[] = [];
+  const workerManager = {
+    spawn: async (cfg: WorkerConfig): Promise<Worker> => {
+      spawnCalls.push(cfg);
+      const w = new FakeWorker(cfg.id);
+      spawned.push(w);
+      return w;
+    },
+    list: () => [],
+    get: () => undefined,
+    shutdown: async () => {
+      for (const w of spawned) if (!w.killed) w.kill();
+    },
+  } as unknown as WorkerManager;
+  const worktreeManager = {
+    create: async (opts: CreateWorktreeOptions): Promise<WorktreeInfo> => {
+      createCalls.push(opts);
+      return {
+        id: opts.workerId,
+        path: `/fake/${opts.workerId}`,
+        branch: `symphony/${opts.workerId}`,
+        baseRef: 'refs/heads/main',
+        projectPath: opts.projectPath,
+        createdAt: '2026-04-23T00:00:00.000Z',
+      };
+    },
+    list: async () => [],
+    remove: async () => {},
+    removeIfClean: async () => true,
+    status: async () => ({
+      hasChanges: false,
+      staged: [],
+      unstaged: [],
+      untracked: [],
+    }),
+  } as unknown as WorktreeManager;
+  return { workerManager, worktreeManager, spawned, spawnCalls, createCalls };
+}
+
+async function makePair(opts: { mode?: 'plan' | 'act' } = {}): Promise<{
   client: Client;
   server: OrchestratorServerHandle;
-  fake: ReturnType<typeof makeFakeLifecycle>;
+  prims: FakePrimitives;
 }> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const fake = makeFakeLifecycle();
+  const prims = makeFakePrimitives();
+  const registry = new WorkerRegistry();
+  const lifecycle = createWorkerLifecycle({
+    registry,
+    workerManager: prims.workerManager,
+    worktreeManager: prims.worktreeManager,
+    idGenerator: (() => {
+      let i = 0;
+      return () => `wk-fake-${++i}`;
+    })(),
+  });
   const server = await startOrchestratorServer({
     transport: serverTransport,
-    initialMode: 'act',
+    initialMode: opts.mode ?? 'act',
     defaultProjectPath: '/proj',
-    workerLifecycle: fake.lifecycle,
+    workerManager: prims.workerManager,
+    worktreeManager: prims.worktreeManager,
+    workerRegistry: registry,
+    workerLifecycle: lifecycle,
   });
-  // Hand the stubbed lifecycle the actual registry from the server so
-  // spawn_worker's handler, which goes through the server-owned lifecycle,
-  // stays wired to server.workerRegistry. The spawn closure above registers
-  // INTO its own ephemeral map; we instead register into server.workerRegistry
-  // so list/get/kill observations work.
-  const origSpawn = fake.lifecycle.spawn;
-  fake.lifecycle.spawn = async (input) => {
-    const rec = await origSpawn(input);
-    server.workerRegistry.register(rec);
-    void rec.worker
-      .waitForExit()
-      .then((info) => server.workerRegistry.markCompleted(rec.id, info))
-      .catch(() => {});
-    return rec;
-  };
-  const origResume = fake.lifecycle.resume;
-  fake.lifecycle.resume = async (input) => {
-    const rec = await origResume(input);
-    // ensure registry reflects the new worker handle
-    server.workerRegistry.replace(rec.id, {
-      worker: rec.worker,
-      buffer: rec.buffer,
-      detach: rec.detach,
-      ...(rec.sessionId !== undefined ? { sessionId: rec.sessionId } : {}),
-    });
-    return server.workerRegistry.get(rec.id)!;
-  };
-
   const client = new Client({ name: 'test-client', version: '0.0.0' });
   await client.connect(clientTransport);
-  return { client, server, fake };
+  return { client, server, prims };
 }
 
 describe('worker-lifecycle tools (integration)', () => {
@@ -170,38 +170,24 @@ describe('worker-lifecycle tools (integration)', () => {
     for (const h of handles) await h.close().catch(() => {});
   });
 
-  async function connect() {
-    const pair = await makePair();
+  async function connect(opts: { mode?: 'plan' | 'act' } = {}) {
+    const pair = await makePair(opts);
     handles.push(pair.server);
     clients.push(pair.client);
     return pair;
   }
 
   it('hides worker-lifecycle tools in plan mode and exposes them in act', async () => {
-    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-    const fake = makeFakeLifecycle();
-    const server = await startOrchestratorServer({
-      transport: serverTransport,
-      initialMode: 'plan',
-      defaultProjectPath: '/proj',
-      workerLifecycle: fake.lifecycle,
-    });
-    handles.push(server);
-    const client = new Client({ name: 'test-client', version: '0.0.0' });
-    await client.connect(clientTransport);
-    clients.push(client);
-    const { tools } = await client.listTools();
-    const names = tools.map((t) => t.name);
-    expect(names).not.toContain('spawn_worker');
-    expect(names).not.toContain('list_workers');
-    expect(names).toContain('think');
-    expect(names).toContain('propose_plan');
-  });
+    const planPair = await connect({ mode: 'plan' });
+    const planList = await planPair.client.listTools();
+    const planNames = planList.tools.map((t) => t.name);
+    expect(planNames).not.toContain('spawn_worker');
+    expect(planNames).toContain('think');
+    expect(planNames).toContain('propose_plan');
 
-  it('lists all 7 worker tools in act mode', async () => {
-    const { client } = await connect();
-    const { tools } = await client.listTools();
-    const names = tools.map((t) => t.name);
+    const actPair = await connect({ mode: 'act' });
+    const actList = await actPair.client.listTools();
+    const actNames = actList.tools.map((t) => t.name);
     for (const n of [
       'spawn_worker',
       'list_workers',
@@ -211,12 +197,12 @@ describe('worker-lifecycle tools (integration)', () => {
       'resume_worker',
       'find_worker',
     ]) {
-      expect(names).toContain(n);
+      expect(actNames).toContain(n);
     }
   });
 
-  it('spawn_worker → list_workers → kill_worker round-trip', async () => {
-    const { client } = await connect();
+  it('spawn_worker → list_workers → kill_worker round-trip (real lifecycle, fake primitives)', async () => {
+    const { client, prims } = await connect();
     const spawnRes = await client.callTool({
       name: 'spawn_worker',
       arguments: {
@@ -225,8 +211,10 @@ describe('worker-lifecycle tools (integration)', () => {
       },
     });
     expect(spawnRes.isError).toBeFalsy();
-    const spawned = spawnRes.structuredContent as { id: string };
-    expect(spawned.id).toMatch(/^wk-fake-/);
+    const spawned = spawnRes.structuredContent as { id: string; worktreePath: string };
+    expect(spawned.id).toBe('wk-fake-1');
+    expect(spawned.worktreePath).toBe('/fake/wk-fake-1');
+    expect(prims.spawnCalls[0]?.keepStdinOpen).toBe(true);
 
     const listRes = await client.callTool({ name: 'list_workers', arguments: {} });
     const list = listRes.structuredContent as { workers: Array<{ id: string }> };
@@ -238,7 +226,9 @@ describe('worker-lifecycle tools (integration)', () => {
     });
     expect(killRes.isError).toBeFalsy();
 
-    // After kill, listing shows terminal status
+    // Waiting for the real lifecycle's wireExit → markCompleted microtask
+    await new Promise((r) => setImmediate(r));
+
     const listAfter = await client.callTool({ name: 'list_workers', arguments: {} });
     const listAfterContent = listAfter.structuredContent as {
       workers: Array<{ id: string; status: string }>;
@@ -256,8 +246,8 @@ describe('worker-lifecycle tools (integration)', () => {
     expect(res.isError).toBe(true);
   });
 
-  it('send_to_worker forwards the message to the scripted worker', async () => {
-    const { client, fake } = await connect();
+  it('send_to_worker forwards the message to the real lifecycle-attached worker', async () => {
+    const { client, prims } = await connect();
     const spawn = await client.callTool({
       name: 'spawn_worker',
       arguments: { task_description: 'integration send', role: 'implementer' },
@@ -268,21 +258,21 @@ describe('worker-lifecycle tools (integration)', () => {
       arguments: { worker_id: s.id, message: 'follow up please' },
     });
     expect(send.isError).toBeFalsy();
-    const w = fake.spawned.find((x) => x.id === s.id);
+    const w = prims.spawned.find((x) => x.id === s.id);
     expect(w?.followups).toEqual(['follow up please']);
   });
 
-  it('find_worker resolves feature intent substring', async () => {
+  it('find_worker resolves feature intent substring via real registry', async () => {
     const { client } = await connect();
     const spawn = await client.callTool({
       name: 'spawn_worker',
-      arguments: { task_description: 'integration finder', role: 'implementer' },
+      arguments: { task_description: 'the liquid glass hero', role: 'implementer' },
     });
     const s = spawn.structuredContent as { id: string; featureIntent: string };
-    expect(s.featureIntent).toBe('integration-fake'); // fixed by fake lifecycle
+    expect(s.featureIntent).toBe('the-liquid-glass-hero');
     const find = await client.callTool({
       name: 'find_worker',
-      arguments: { description: 'integration' },
+      arguments: { description: 'liquid glass' },
     });
     const m = find.structuredContent as { matches: Array<{ id: string }> };
     expect(m.matches.map((r) => r.id)).toContain(s.id);
@@ -301,8 +291,16 @@ describe('worker-lifecycle tools (integration)', () => {
     });
     expect(res1.isError).toBe(true);
 
-    // Force terminal state
-    server.workerRegistry.updateStatus(s.id, 'completed');
+    // Force terminal state by completing the fake worker, then resume.
+    const rec = server.workerRegistry.get(s.id);
+    (rec?.worker as FakeWorker).complete({
+      status: 'completed',
+      exitCode: 0,
+      signal: null,
+      durationMs: 1,
+    });
+    await new Promise((r) => setImmediate(r));
+
     const res2 = await client.callTool({
       name: 'resume_worker',
       arguments: { worker_id: s.id, message: 'continue' },
@@ -317,5 +315,32 @@ describe('worker-lifecycle tools (integration)', () => {
       arguments: { role: 'not-a-role', task_description: '' },
     });
     expect(res.isError).toBe(true);
+  });
+
+  it('spawn_worker fast-fails when dispatch signal is already aborted (M1 fix)', async () => {
+    // Abort via server.close mid-flight: the SDK aborts the request controller,
+    // which the signal-observing lifecycle now honours. We can't easily race
+    // an abort into an in-flight handler from the client side, so instead we
+    // exercise the direct lifecycle path with a pre-aborted signal to prove
+    // the cooperative cancellation wire works.
+    const prims = makeFakePrimitives();
+    const registry = new WorkerRegistry();
+    const lifecycle = createWorkerLifecycle({
+      registry,
+      workerManager: prims.workerManager,
+      worktreeManager: prims.worktreeManager,
+    });
+    const ctrl = new AbortController();
+    ctrl.abort();
+    await expect(
+      lifecycle.spawn({
+        projectPath: '/proj',
+        taskDescription: 'x',
+        role: 'implementer',
+        signal: ctrl.signal,
+      }),
+    ).rejects.toThrow(/aborted/);
+    // No worktree should have been created
+    expect(prims.createCalls.length).toBe(0);
   });
 });
