@@ -34,7 +34,8 @@
     "ink": "^7.0.1",
     "minimatch": "^10.2.5",
     "react": "^19.2.5",
-    "simple-git": "^3.36.0"
+    "simple-git": "^3.36.0",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
