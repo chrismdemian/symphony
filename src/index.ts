@@ -36,6 +36,24 @@ program
     console.log(`[symphony] remove ${name} — not yet implemented`);
   });
 
+program
+  .command('mcp-server')
+  .description('Run the Symphony orchestrator MCP server over stdio. Spawned as a child of claude -p.')
+  .action(async () => {
+    const { startOrchestratorServer } = await import('./orchestrator/index.js');
+    const handle = await startOrchestratorServer();
+    const shutdown = async (_signal: string) => {
+      try {
+        await handle.close();
+      } finally {
+        process.exit(0);
+      }
+    };
+    process.on('SIGINT', () => void shutdown('SIGINT'));
+    process.on('SIGTERM', () => void shutdown('SIGTERM'));
+    process.stdin.on('close', () => void shutdown('stdin-close'));
+  });
+
 program.parseAsync(process.argv).catch((err: unknown) => {
   console.error(err);
   process.exit(1);
