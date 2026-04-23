@@ -2,6 +2,10 @@ import path from 'node:path';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
+import { ProjectRegistry, projectRegistryFromMap } from '../projects/registry.js';
+import type { ProjectStore } from '../projects/types.js';
+import { TaskRegistry } from '../state/task-registry.js';
+import type { TaskStore } from '../state/types.js';
 import { WorkerManager, type WorkerManagerOptions } from '../workers/manager.js';
 import { WorktreeManager } from '../worktree/manager.js';
 import type { WorktreeManagerConfig } from '../worktree/types.js';
@@ -20,6 +24,12 @@ import { makeSendToWorkerTool } from './tools/send-to-worker.js';
 import { makeKillWorkerTool } from './tools/kill-worker.js';
 import { makeResumeWorkerTool } from './tools/resume-worker.js';
 import { makeFindWorkerTool } from './tools/find-worker.js';
+import { makeListProjectsTool } from './tools/list-projects.js';
+import { makeGetProjectInfoTool } from './tools/get-project-info.js';
+import { makeCreateWorktreeTool } from './tools/create-worktree.js';
+import { makeListTasksTool } from './tools/list-tasks.js';
+import { makeCreateTaskTool } from './tools/create-task.js';
+import { makeUpdateTaskTool } from './tools/update-task.js';
 import type { AutonomyTier, DispatchContext, ToolMode } from './types.js';
 import { createWorkerLifecycle, type WorkerLifecycleHandle } from './worker-lifecycle.js';
 import { WorkerRegistry } from './worker-registry.js';
@@ -43,6 +53,10 @@ export interface OrchestratorServerOptions {
   workerRegistry?: WorkerRegistry;
   /** Override the lifecycle composition. Test seam — defaults to one composed from registry + managers. */
   workerLifecycle?: WorkerLifecycleHandle;
+  /** Override the project store. Defaults to a registry seeded from `projects`. */
+  projectStore?: ProjectStore;
+  /** Override the task store. Defaults to an in-memory `TaskRegistry`. */
+  taskStore?: TaskStore;
 }
 
 export interface OrchestratorServerHandle {
@@ -55,6 +69,8 @@ export interface OrchestratorServerHandle {
   workerLifecycle: WorkerLifecycleHandle;
   workerManager: WorkerManager;
   worktreeManager: WorktreeManager;
+  projectStore: ProjectStore;
+  taskStore: TaskStore;
   defaultProjectPath: string;
   resolveProjectPath: (project?: string) => string;
   setContext: (partial: Partial<DispatchContext>) => void;
@@ -98,11 +114,20 @@ export async function startOrchestratorServer(
   const defaultProjectPath = path.resolve(options.defaultProjectPath ?? process.cwd());
   const projects = options.projects ?? {};
 
+  const projectStore: ProjectStore =
+    options.projectStore ??
+    (() => {
+      const store = projectRegistryFromMap(projects);
+      ensureDefaultProjectRegistered(store, defaultProjectPath);
+      return store;
+    })();
+
+  const taskStore: TaskStore = options.taskStore ?? new TaskRegistry();
+
   const resolveProjectPath = (project?: string): string => {
     if (project === undefined || project.length === 0) return defaultProjectPath;
-    if (Object.prototype.hasOwnProperty.call(projects, project)) {
-      return path.resolve(projects[project] as string);
-    }
+    const stored = projectStore.get(project);
+    if (stored) return stored.path;
     // Accept absolute path fallback for Phase 5 pre-registry mode.
     if (path.isAbsolute(project)) return path.resolve(project);
     throw new Error(
@@ -148,6 +173,21 @@ export async function startOrchestratorServer(
   );
   registry.register(makeFindWorkerTool({ registry: workerRegistry }));
 
+  registry.register(makeListProjectsTool({ store: projectStore }));
+  registry.register(
+    makeGetProjectInfoTool({ store: projectStore, workerRegistry }),
+  );
+  registry.register(
+    makeCreateWorktreeTool({ store: projectStore, worktreeManager }),
+  );
+  registry.register(
+    makeListTasksTool({ taskStore, projectStore }),
+  );
+  registry.register(
+    makeCreateTaskTool({ taskStore, projectStore }),
+  );
+  registry.register(makeUpdateTaskTool({ taskStore }));
+
   const transport = options.transport ?? new StdioServerTransport();
   await server.connect(transport);
 
@@ -178,6 +218,8 @@ export async function startOrchestratorServer(
     workerLifecycle,
     workerManager,
     worktreeManager,
+    projectStore,
+    taskStore,
     defaultProjectPath,
     resolveProjectPath,
     setContext: (partial) => {
@@ -186,4 +228,34 @@ export async function startOrchestratorServer(
     getContext: () => context,
     close,
   };
+}
+
+/**
+ * If the caller gave a `defaultProjectPath` without registering a matching
+ * project, synthesize a `default` entry so MCP tools can address it by
+ * name. No-op when the store already contains a project at that path.
+ */
+function ensureDefaultProjectRegistered(
+  store: ProjectRegistry,
+  defaultPath: string,
+): void {
+  for (const record of store.list()) {
+    if (path.resolve(record.path) === defaultPath) return;
+  }
+  const name = pickDefaultProjectName(store);
+  store.register({
+    id: name,
+    name,
+    path: defaultPath,
+    createdAt: '',
+  });
+}
+
+function pickDefaultProjectName(store: ProjectRegistry): string {
+  if (store.get('default') === undefined) return 'default';
+  for (let i = 2; i < 1000; i += 1) {
+    const name = `default-${i}`;
+    if (store.get(name) === undefined) return name;
+  }
+  throw new Error('ensureDefaultProjectRegistered: exhausted default-N naming');
 }

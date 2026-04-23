@@ -38,3 +38,37 @@ export type {
   ResumeWorkerInput,
 } from './worker-lifecycle.js';
 export { deriveFeatureIntent, matchesFeatureIntent } from './feature-intent.js';
+export {
+  ProjectRegistry,
+  DuplicateProjectError,
+  projectRegistryFromMap,
+  toProjectSnapshot,
+} from '../projects/registry.js';
+export type {
+  ProjectRecord,
+  ProjectSnapshot,
+  ProjectStore,
+  ProjectRegistryListFilter,
+} from '../projects/types.js';
+export {
+  TaskRegistry,
+  toTaskSnapshot,
+} from '../state/task-registry.js';
+export {
+  TASK_STATUSES,
+  TASK_TRANSITIONS,
+  canTransition,
+  isTerminalStatus,
+  InvalidTaskTransitionError,
+  UnknownTaskError,
+} from '../state/types.js';
+export type {
+  TaskRecord,
+  TaskSnapshot,
+  TaskStore,
+  TaskStatus,
+  TaskNote,
+  TaskListFilter,
+  CreateTaskInput,
+  TaskPatch,
+} from '../state/types.js';

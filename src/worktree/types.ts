@@ -14,6 +14,13 @@ export interface CreateWorktreeOptions {
   readonly shortDescription?: string;
   readonly skipProjectPrep?: boolean;
   readonly skipPreserve?: boolean;
+  /**
+   * Cooperative-cancellation signal. Checked at entry, after worktree creation,
+   * and passed to the underlying git spawn. If aborted mid-flight after the
+   * worktree has materialized on disk, the manager will best-effort remove it
+   * before rejecting. Added in Phase 2A.3 (audit M2).
+   */
+  readonly signal?: AbortSignal;
 }
 
 export interface RemoveWorktreeOptions {

@@ -74,6 +74,36 @@ export class WorktreeManager {
       throw new Error('WorktreeManager.create: workerId is required');
     }
 
+    // Phase 2A.3 audit M2: entrance check lets callers fast-fail without
+    // touching disk. A post-create check below cleans up if the signal
+    // fires while `git worktree add` is running.
+    if (opts.signal?.aborted) {
+      throw new Error(
+        `WorktreeManager.create aborted before disk IO (workerId=${workerId})`,
+      );
+    }
+
+    const info = await this.createInternal(opts);
+
+    if (opts.signal?.aborted) {
+      // Best-effort cleanup. If removal fails, surface the abort error — the
+      // orphan will be swept by `cleanupOrphanedReserves` on next startup.
+      try {
+        await this.remove(info.path);
+      } catch {
+        /* best effort */
+      }
+      throw new Error(
+        `WorktreeManager.create aborted after worktree materialized at ${info.path}; cleanup attempted`,
+      );
+    }
+
+    return info;
+  }
+
+  private async createInternal(opts: CreateWorktreeOptions): Promise<WorktreeInfo> {
+    const { projectPath, workerId } = opts;
+
     const poolEnabled = isPoolEnabled(projectPath);
     if (this.pool && poolEnabled) {
       try {
