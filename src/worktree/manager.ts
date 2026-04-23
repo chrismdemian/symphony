@@ -69,7 +69,7 @@ export class WorktreeManager {
   }
 
   async create(opts: CreateWorktreeOptions): Promise<WorktreeInfo> {
-    const { projectPath, workerId } = opts;
+    const { workerId } = opts;
     if (!workerId.trim()) {
       throw new Error('WorktreeManager.create: workerId is required');
     }
