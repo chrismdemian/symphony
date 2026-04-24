@@ -98,3 +98,13 @@ export type {
   WaveListFilter,
   EnqueueWaveInput,
 } from './research-wave-registry.js';
+export { SymphonyDatabase, validateSchemaContract } from '../state/db.js';
+export type { SymphonyDatabaseOptions } from '../state/db.js';
+export { DatabaseSchemaMismatchError, CorruptRecordError } from '../state/errors.js';
+export { applyMigrations, readMigrationFiles, MigrationError } from '../state/migrations.js';
+export type { MigrationFile, MigrationSummary } from '../state/migrations.js';
+export { resolveDatabasePath, resolveMigrationsPath } from '../state/path.js';
+export { SqliteProjectStore } from '../state/sqlite-project-store.js';
+export { SqliteTaskStore } from '../state/sqlite-task-store.js';
+export { SqliteQuestionStore } from '../state/sqlite-question-store.js';
+export { SqliteWaveStore } from '../state/sqlite-wave-store.js';

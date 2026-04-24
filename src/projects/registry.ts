@@ -29,6 +29,7 @@ export interface ProjectRegistryOptions {
 export class ProjectRegistry implements ProjectStore {
   private readonly byId = new Map<string, ProjectRecord>();
   private readonly byName = new Map<string, string>();
+  private readonly byPath = new Map<string, string>();
   private readonly now: () => number;
 
   constructor(opts: ProjectRegistryOptions = {}) {
@@ -71,13 +72,22 @@ export class ProjectRegistry implements ProjectStore {
     ) {
       throw new DuplicateProjectError(record.name);
     }
+    // Phase 2B.1 audit M2: path-uniqueness — matches the SQL
+    // `projects.path UNIQUE` constraint enforced by the SQLite store.
+    // Without this, `--in-memory` mode accepts two projects at the same
+    // path; SQLite mode rejects. Aligns both behaviors.
+    const resolvedPath = path.resolve(record.path);
+    if (this.byPath.has(resolvedPath)) {
+      throw new DuplicateProjectError(record.name);
+    }
     const resolved: ProjectRecord = {
       ...record,
-      path: path.resolve(record.path),
+      path: resolvedPath,
       createdAt: record.createdAt || new Date(this.now()).toISOString(),
     };
     this.byId.set(resolved.id, resolved);
     this.byName.set(resolved.name, resolved.id);
+    this.byPath.set(resolvedPath, resolved.id);
     return resolved;
   }
 

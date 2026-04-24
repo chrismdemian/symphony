@@ -3,11 +3,15 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { Transport } from '@modelcontextprotocol/sdk/shared/transport.js';
 import { projectRegistryFromMap } from '../projects/registry.js';
-import type { ProjectRegistry } from '../projects/registry.js';
 import type { ProjectConfigInput, ProjectRecord, ProjectStore } from '../projects/types.js';
 import { QuestionRegistry, type QuestionStore } from '../state/question-registry.js';
 import { TaskRegistry } from '../state/task-registry.js';
 import type { TaskStore } from '../state/types.js';
+import type { SymphonyDatabase } from '../state/db.js';
+import { SqliteProjectStore } from '../state/sqlite-project-store.js';
+import { SqliteTaskStore } from '../state/sqlite-task-store.js';
+import { SqliteQuestionStore } from '../state/sqlite-question-store.js';
+import { SqliteWaveStore } from '../state/sqlite-wave-store.js';
 import { WorkerManager, type WorkerManagerOptions } from '../workers/manager.js';
 import { WorktreeManager } from '../worktree/manager.js';
 import type { WorktreeManagerConfig } from '../worktree/types.js';
@@ -79,6 +83,12 @@ export interface OrchestratorServerOptions {
   projectConfigs?: Readonly<Record<string, ProjectConfigInput>>;
   /** Override the one-shot Claude runner used by `audit_changes` + `finalize`. Test seam. */
   oneShotRunner?: OneShotRunner;
+  /**
+   * Phase 2B.1 — open a SQLite-backed store set. When provided, default
+   * impls for `{project,task,question,wave}Store` are SQLite-backed.
+   * Explicit store overrides still win. Caller owns `close()`.
+   */
+  database?: SymphonyDatabase;
 }
 
 export interface OrchestratorServerHandle {
@@ -141,6 +151,12 @@ export async function startOrchestratorServer(
   const projectStore: ProjectStore =
     options.projectStore ??
     (() => {
+      if (options.database) {
+        const store = new SqliteProjectStore(options.database.db);
+        seedProjectsFromMap(store, projects, options.projectConfigs);
+        ensureDefaultProjectRegistered(store, defaultProjectPath, options.projectConfigs);
+        return store;
+      }
       const store = projectRegistryFromMap(projects, {
         ...(options.projectConfigs !== undefined
           ? { configs: options.projectConfigs as Record<string, Partial<ProjectRecord>> }
@@ -150,9 +166,15 @@ export async function startOrchestratorServer(
       return store;
     })();
 
-  const taskStore: TaskStore = options.taskStore ?? new TaskRegistry();
-  const questionStore: QuestionStore = options.questionStore ?? new QuestionRegistry();
-  const waveStore: WaveStore = options.waveStore ?? new WaveRegistry();
+  const taskStore: TaskStore =
+    options.taskStore ??
+    (options.database ? new SqliteTaskStore(options.database.db) : new TaskRegistry());
+  const questionStore: QuestionStore =
+    options.questionStore ??
+    (options.database ? new SqliteQuestionStore(options.database.db) : new QuestionRegistry());
+  const waveStore: WaveStore =
+    options.waveStore ??
+    (options.database ? new SqliteWaveStore(options.database.db) : new WaveRegistry());
 
   const resolveProjectPath = (project?: string): string => {
     if (project === undefined || project.length === 0) return defaultProjectPath;
@@ -298,13 +320,46 @@ export async function startOrchestratorServer(
 }
 
 /**
+ * Seed a SQLite-backed project store from a name→path map. Mirrors
+ * `projectRegistryFromMap` for in-memory mode. Skips entries that already
+ * exist (idempotent across restarts — the SQL `UNIQUE` constraints would
+ * otherwise throw on a second run).
+ */
+function seedProjectsFromMap(
+  store: ProjectStore,
+  projects: Readonly<Record<string, string>>,
+  configs?: Readonly<Record<string, ProjectConfigInput>>,
+): void {
+  // Phase 2B.1 audit M3: Skip when the name OR the path already exists.
+  // The in-memory registry rejects both — with the audit-M2 fix,
+  // path-uniqueness is now symmetrical between in-memory and SQLite.
+  // Without this lookup, a re-run of a symphony process with the same
+  // `options.projects` map would crash on the second startup.
+  for (const [name, pathStr] of Object.entries(projects)) {
+    if (!pathStr || typeof pathStr !== 'string') continue;
+    if (store.get(name)) continue;
+    const resolved = path.resolve(pathStr);
+    const existingByPath = store.list().find((r) => path.resolve(r.path) === resolved);
+    if (existingByPath) continue;
+    const extra = configs?.[name] ?? {};
+    store.register({
+      id: name,
+      name,
+      path: pathStr,
+      createdAt: '',
+      ...extra,
+    });
+  }
+}
+
+/**
  * If the caller gave a `defaultProjectPath` without registering a matching
  * project, synthesize a `default` entry so MCP tools can address it by
  * name. No-op when the store already contains a project at that path.
  * Applies `projectConfigs.default` when the synthesized project is created.
  */
 function ensureDefaultProjectRegistered(
-  store: ProjectRegistry,
+  store: ProjectStore,
   defaultPath: string,
   projectConfigs?: Readonly<Record<string, ProjectConfigInput>>,
 ): void {
@@ -322,7 +377,7 @@ function ensureDefaultProjectRegistered(
   });
 }
 
-function pickDefaultProjectName(store: ProjectRegistry): string {
+function pickDefaultProjectName(store: ProjectStore): string {
   if (store.get('default') === undefined) return 'default';
   for (let i = 2; i < 1000; i += 1) {
     const name = `default-${i}`;

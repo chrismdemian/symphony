@@ -39,13 +39,30 @@ program
 program
   .command('mcp-server')
   .description('Run the Symphony orchestrator MCP server over stdio. Spawned as a child of claude -p.')
-  .action(async () => {
-    const { startOrchestratorServer } = await import('./orchestrator/index.js');
-    const handle = await startOrchestratorServer();
+  .option('--in-memory', 'Skip the SQLite store; use in-memory registries only (Phase 2A behavior).')
+  .action(async (opts: { inMemory?: boolean }) => {
+    const { startOrchestratorServer, SymphonyDatabase } = await import('./orchestrator/index.js');
+    const database = opts.inMemory ? undefined : SymphonyDatabase.open();
+    let handle;
+    try {
+      handle = await startOrchestratorServer(
+        database !== undefined ? { database } : {},
+      );
+    } catch (err) {
+      // Phase 2B.1 audit M6 — close the DB on server-start failure
+      // so the WAL/SHM sidecars flush cleanly before the process exits.
+      database?.close();
+      throw err;
+    }
     const shutdown = async (_signal: string) => {
       try {
-        await handle.close();
+        await handle.close().catch((e) => console.error('[symphony] server close failed:', e));
       } finally {
+        try {
+          database?.close();
+        } catch (e) {
+          console.error('[symphony] database close failed:', e);
+        }
         process.exit(0);
       }
     };
