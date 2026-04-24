@@ -98,7 +98,11 @@ export class TaskRegistry implements TaskStore {
         throw new InvalidTaskTransitionError(record.status, patch.status);
       }
       record.status = patch.status;
-      if (isTerminalStatus(patch.status)) {
+      // Phase 2B.1 audit M4: stamp `completedAt` only on FIRST entry into
+      // terminal state. An idempotent same-terminal update (allowed by
+      // `canTransition(x, x) === true`) must NOT re-stamp — the audit
+      // question "when did this task complete?" has one answer.
+      if (isTerminalStatus(patch.status) && record.completedAt === undefined) {
         record.completedAt = iso;
       }
     }
