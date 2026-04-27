@@ -63,6 +63,8 @@ function registerWorker(reg: WorkerRegistry, id: string, dir: string): void {
   const record: WorkerRecord = {
     id,
     projectPath: dir,
+    projectId: null,
+    taskId: null,
     worktreePath: dir,
     role: 'implementer',
     featureIntent: 'ship feature v',

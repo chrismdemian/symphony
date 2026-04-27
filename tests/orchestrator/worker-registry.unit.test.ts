@@ -31,6 +31,8 @@ function makeRecord(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
   return {
     id: overrides.id ?? 'wk-1',
     projectPath: overrides.projectPath ?? '/tmp/p',
+    projectId: overrides.projectId ?? null,
+    taskId: overrides.taskId ?? null,
     worktreePath: overrides.worktreePath ?? '/tmp/p/.symphony/worktrees/wk-1',
     role: overrides.role ?? 'implementer',
     featureIntent: overrides.featureIntent ?? 'refactor-auth',

@@ -66,6 +66,8 @@ function registerWorker(
   const record: WorkerRecord = {
     id,
     projectPath,
+    projectId: null,
+    taskId: null,
     worktreePath,
     role: 'implementer',
     featureIntent: 'ship feature x',
@@ -422,6 +424,8 @@ describe('finalize tool', () => {
     const runningRecord: WorkerRecord = {
       id: 'wk-run',
       projectPath: worktree,
+      projectId: null,
+      taskId: null,
       worktreePath: worktree,
       role: 'implementer',
       featureIntent: 'in flight',
@@ -453,6 +457,8 @@ describe('finalize tool', () => {
     const runningRecord: WorkerRecord = {
       id: 'wk-run',
       projectPath: worktree,
+      projectId: null,
+      taskId: null,
       worktreePath: worktree,
       role: 'implementer',
       featureIntent: 'in flight',

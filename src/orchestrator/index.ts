@@ -28,14 +28,24 @@ export {
   CircularBuffer,
   DEFAULT_OUTPUT_BUFFER_CAP,
   toSnapshot,
+  toPersisted,
+  persistedToSnapshot,
+  mergeLiveAndPersisted,
 } from './worker-registry.js';
-export type { WorkerRecord, WorkerRecordSnapshot, WorkerLookupMatch } from './worker-registry.js';
+export type {
+  WorkerRecord,
+  WorkerRecordSnapshot,
+  WorkerLookupMatch,
+  WorkerRegistryOptions,
+  MergeLiveAndPersistedOptions,
+} from './worker-registry.js';
 export { createWorkerLifecycle } from './worker-lifecycle.js';
 export type {
   WorkerLifecycleHandle,
   WorkerLifecycleOptions,
   SpawnWorkerInput,
   ResumeWorkerInput,
+  RecoveryReport,
 } from './worker-lifecycle.js';
 export { deriveFeatureIntent, matchesFeatureIntent } from './feature-intent.js';
 export {
@@ -108,3 +118,11 @@ export { SqliteProjectStore } from '../state/sqlite-project-store.js';
 export { SqliteTaskStore } from '../state/sqlite-task-store.js';
 export { SqliteQuestionStore } from '../state/sqlite-question-store.js';
 export { SqliteWaveStore } from '../state/sqlite-wave-store.js';
+export { SqliteWorkerStore } from '../state/sqlite-worker-store.js';
+export type {
+  PersistedWorkerRecord,
+  WorkerStore,
+  WorkerStoreListFilter,
+  WorkerStoreUpdatePatch,
+  SqliteWorkerStoreOptions,
+} from '../state/sqlite-worker-store.js';

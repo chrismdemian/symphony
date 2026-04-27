@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { ProjectStore } from '../../projects/types.js';
 import type { ToolRegistration } from '../registry.js';
 import { WORKER_ROLES, type WorkerRole } from '../types.js';
 import type { WorkerLifecycleHandle, SpawnWorkerInput } from '../worker-lifecycle.js';
@@ -33,6 +34,12 @@ export interface SpawnWorkerDeps {
   readonly registry: WorkerRegistry;
   readonly lifecycle: WorkerLifecycleHandle;
   readonly resolveProjectPath: (project?: string) => string;
+  /**
+   * Phase 2B.1b — project store seam used to resolve a stable `projectId`
+   * for SQL persistence. Returns `null` for unregistered absolute paths
+   * (don't fabricate IDs — audit M2 from 2A.4a).
+   */
+  readonly projectStore?: ProjectStore;
 }
 
 export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typeof shape> {
@@ -45,8 +52,10 @@ export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typ
     inputSchema: shape,
     handler: async ({ project, task_description, role, model, depends_on, autonomy_tier }, ctx) => {
       const projectPath = deps.resolveProjectPath(project);
+      const projectId = resolveProjectId(deps.projectStore, project, projectPath);
       const input: SpawnWorkerInput = {
         projectPath,
+        projectId,
         taskDescription: task_description,
         role,
         ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
@@ -67,4 +76,27 @@ export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typ
       };
     },
   };
+}
+
+/**
+ * Resolve a stable `projectId` for SQL persistence. Behavior parity with
+ * `server.ts:resolveProjectPath`: named lookup → store id; absolute path
+ * fallback → look up by path; otherwise `null`. Audit M2 from 2A.4a:
+ * never fabricate IDs for unregistered projects.
+ */
+export function resolveProjectId(
+  store: ProjectStore | undefined,
+  project: string | undefined,
+  projectPath: string,
+): string | null {
+  if (store === undefined) return null;
+  if (project !== undefined && project.length > 0) {
+    const named = store.get(project);
+    if (named) return named.id;
+  }
+  // Absolute-path callers: the project store keys by name, so we match by path.
+  for (const r of store.list()) {
+    if (r.path === projectPath) return r.id;
+  }
+  return null;
 }

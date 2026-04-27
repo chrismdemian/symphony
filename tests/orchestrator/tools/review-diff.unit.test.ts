@@ -55,6 +55,8 @@ function registerWorker(reg: WorkerRegistry, id: string, worktreePath: string): 
   const record: WorkerRecord = {
     id,
     projectPath: path.dirname(worktreePath),
+    projectId: null,
+    taskId: null,
     worktreePath,
     role: 'implementer',
     featureIntent: 'test',
