@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { ProjectStore } from '../../projects/types.js';
 import type { WorktreeManager } from '../../worktree/manager.js';
 import type { ToolRegistration } from '../registry.js';
-import { toSnapshot, type WorkerRegistry } from '../worker-registry.js';
+import { mergeLiveAndPersisted, type WorkerRegistry } from '../worker-registry.js';
 
 const shape = {
   uncommitted: z
@@ -38,7 +38,13 @@ export function makeGlobalStatusTool(
     inputSchema: shape,
     handler: async ({ uncommitted }, ctx) => {
       const projects = deps.projectStore.snapshots();
-      const workers = deps.workerRegistry.snapshots();
+      // Phase 2B.1b — merge live + persisted so crashed/completed
+      // workers from prior orchestrator runs are visible here. The "where
+      // was I?" answer must include workers whose live process is gone.
+      const workers = mergeLiveAndPersisted(deps.workerRegistry, {
+        projectStore: deps.projectStore,
+        includeTerminal: true,
+      });
 
       interface Bucket {
         projectName: string;
@@ -156,10 +162,7 @@ export function makeGlobalStatusTool(
             failed: b.failed,
             ...(b.lastEventAt !== undefined ? { last_event_at: b.lastEventAt } : {}),
           })),
-          workers: workers.map((w) => toSnapshot(deps.workerRegistry.get(w.id)!)) as unknown as Record<
-            string,
-            unknown
-          >[],
+          workers: workers as unknown as Record<string, unknown>[],
           ...(uncommitted === true ? { uncommitted: uncommittedSummaries } : {}),
         },
       };

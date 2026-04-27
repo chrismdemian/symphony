@@ -139,6 +139,7 @@ export function makeResearchWaveTool(
           const subtopic = agenda?.[idx];
           const input: SpawnWorkerInput = {
             projectPath,
+            projectId: projectId ?? null,
             taskDescription: composePrompt(topic, subtopic, idx, n),
             role: 'researcher',
             featureIntent: subtopic

@@ -118,8 +118,30 @@ export function validateSchemaContract(db: BetterSqlite3Database, dbPath: string
     for (const col of ['id', 'topic', 'worker_ids', 'started_at', 'insertion_seq'])
       requireColumn('waves', col);
   }
+  // Phase 2B.1b — `SqliteWorkerStore` writes through every column below.
+  if (requireTable('workers')) {
+    for (const col of [
+      'id',
+      'project_id',
+      'task_id',
+      'session_id',
+      'worktree_path',
+      'status',
+      'role',
+      'feature_intent',
+      'task_description',
+      'autonomy_tier',
+      'depends_on',
+      'created_at',
+      'completed_at',
+      'last_event_at',
+      'exit_code',
+      'exit_signal',
+      'cost_usd',
+    ])
+      requireColumn('workers', col);
+  }
   // Reserved tables — presence check only (no columns yet exercised).
-  requireTable('workers');
   requireTable('conversations');
   requireTable('messages');
   requireTable('sessions');

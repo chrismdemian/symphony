@@ -55,6 +55,8 @@ function makeRecord(reg: WorkerRegistry, overrides: Partial<WorkerRecord> = {}):
   const record: WorkerRecord = {
     id: overrides.id ?? 'wk-1',
     projectPath: overrides.projectPath ?? '/proj',
+    projectId: overrides.projectId ?? null,
+    taskId: overrides.taskId ?? null,
     worktreePath: overrides.worktreePath ?? '/proj/.symphony/worktrees/wk-1',
     role: overrides.role ?? 'implementer',
     featureIntent: overrides.featureIntent ?? 'do-a-thing',
@@ -88,6 +90,7 @@ function fakeLifecycle(): WorkerLifecycleHandle & {
       calls.cleanup.push(id);
     },
     shutdown: async () => {},
+    recoverFromStore: () => ({ crashedIds: [] }),
   };
 }
 

@@ -75,6 +75,8 @@ function makeRealWorktreeFakeSpawnLifecycle(args: {
       const record: WorkerRecord = {
         id,
         projectPath: input.projectPath,
+        projectId: input.projectId ?? null,
+        taskId: input.taskId ?? null,
         worktreePath: worktree.path,
         role: input.role,
         featureIntent: input.featureIntent ?? 'fake',
@@ -99,6 +101,7 @@ function makeRealWorktreeFakeSpawnLifecycle(args: {
     shutdown: async () => {
       args.registry.clear();
     },
+    recoverFromStore: () => ({ crashedIds: [] }),
   };
 }
 

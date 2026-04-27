@@ -69,6 +69,8 @@ function makeFakeLifecycle(registry: WorkerRegistry): {
       const record: WorkerRecord = {
         id,
         projectPath: input.projectPath,
+        projectId: input.projectId ?? null,
+        taskId: input.taskId ?? null,
         worktreePath: `${input.projectPath}/.symphony/worktrees/${id}`,
         role: input.role,
         featureIntent: input.featureIntent ?? 'fake',
@@ -91,6 +93,7 @@ function makeFakeLifecycle(registry: WorkerRegistry): {
       registry.remove(id);
     },
     shutdown: async () => {},
+    recoverFromStore: () => ({ crashedIds: [] }),
   };
   return {
     lifecycle,

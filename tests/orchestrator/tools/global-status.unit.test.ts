@@ -47,6 +47,8 @@ function register(
   const record: WorkerRecord = {
     id: args.id,
     projectPath: args.projectPath,
+    projectId: null,
+    taskId: null,
     worktreePath: `${args.projectPath}/.symphony/worktrees/${args.id}`,
     role: 'implementer',
     featureIntent: 'test',

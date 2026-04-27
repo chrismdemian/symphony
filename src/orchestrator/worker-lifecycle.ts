@@ -1,6 +1,12 @@
 import { randomBytes } from 'node:crypto';
 import type { WorkerManager } from '../workers/manager.js';
-import type { StreamEvent, Worker, WorkerConfig } from '../workers/types.js';
+import type {
+  StreamEvent,
+  Worker,
+  WorkerConfig,
+  WorkerExitInfo,
+  WorkerStatus,
+} from '../workers/types.js';
 import type { WorktreeManager } from '../worktree/manager.js';
 import { deriveFeatureIntent } from './feature-intent.js';
 import {
@@ -9,10 +15,19 @@ import {
   type WorkerRegistry,
   type WorkerRecord,
 } from './worker-registry.js';
+import type { PersistedWorkerRecord } from '../state/sqlite-worker-store.js';
 import type { AutonomyTier, WorkerRole } from './types.js';
 
 export interface SpawnWorkerInput {
   readonly projectPath: string;
+  /**
+   * Resolved project ID for SQL persistence (Phase 2B.1b). Caller looks
+   * it up via `projectStore.get(name).id`. Pass `null` for unregistered
+   * absolute-path projects — consistent with audit M2 from 2A.4a.
+   */
+  readonly projectId?: string | null;
+  /** Optional task association for SQL persistence (Phase 2B.1b). */
+  readonly taskId?: string | null;
   readonly taskDescription: string;
   readonly role: WorkerRole;
   readonly model?: string;
@@ -39,6 +54,18 @@ export interface WorkerLifecycleOptions {
   readonly outputBufferCap?: number;
   readonly now?: () => number;
   readonly idGenerator?: () => string;
+  /**
+   * Phase 2B.1b — used by `recoverFromStore` to map persisted
+   * `projectId` back to a filesystem path when rehydrating in-memory
+   * records. Without it, recovered records have an empty `projectPath`
+   * and won't match `--project` filters in `list_workers`.
+   */
+  readonly resolveProjectPath?: (projectId: string | null) => string;
+}
+
+export interface RecoveryReport {
+  /** Worker IDs whose status was flipped from non-terminal to `crashed`. */
+  readonly crashedIds: readonly string[];
 }
 
 export interface WorkerLifecycleHandle {
@@ -46,6 +73,16 @@ export interface WorkerLifecycleHandle {
   resume(input: ResumeWorkerInput): Promise<WorkerRecord>;
   cleanup(id: string): void;
   shutdown(): Promise<void>;
+  /**
+   * Phase 2B.1b — at startup, mark every persisted worker still in a
+   * non-terminal state (`spawning` | `running`) as `crashed`. The live
+   * subprocess died with the previous orchestrator; user/Maestro resumes
+   * via `resume_worker` with a meaningful follow-up message.
+   *
+   * No-op when the registry was constructed without a store. Safe to
+   * call multiple times — terminal rows are left untouched.
+   */
+  recoverFromStore(): RecoveryReport;
 }
 
 function defaultIdGenerator(): string {
@@ -92,6 +129,7 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
   const bufferCap = opts.outputBufferCap ?? DEFAULT_OUTPUT_BUFFER_CAP;
   const now = opts.now ?? Date.now;
   const genId = opts.idGenerator ?? defaultIdGenerator;
+  const resolveProjectPath = opts.resolveProjectPath ?? (() => '');
   const inflight = new Map<string, Promise<WorkerRecord>>();
 
   function inflightKey(recordId: string, projectPath: string): string {
@@ -154,6 +192,8 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
     const record: WorkerRecord = {
       id: recordId,
       projectPath: input.projectPath,
+      projectId: input.projectId ?? null,
+      taskId: input.taskId ?? null,
       worktreePath: worktree.path,
       role: input.role,
       featureIntent,
@@ -246,20 +286,126 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
     registry.remove(id);
   }
 
+  /**
+   * Order: kill → await exits → clear. Reordered from the original
+   * (which cleared first) so `wireExit` can still observe the live
+   * record and call `markCompleted` — without it, clean shutdowns leave
+   * SQL rows in `running` state, indistinguishable from a true crash.
+   * The 8-second SIGKILL grace from `WorkerManager` still bounds the
+   * wait time.
+   */
   async function shutdown(): Promise<void> {
     const snapshots = registry.list();
-    registry.clear();
+    // 1. Kill first — sets stopIntent so classifier returns 'killed'.
+    for (const r of snapshots) {
+      try {
+        r.worker.kill('SIGTERM');
+      } catch {
+        // best effort
+      }
+    }
+    // 2. Await exits — wireExit fires markCompleted; SQL store gets terminal status.
     await Promise.all(
-      snapshots.map(async (r) => {
-        try {
-          r.worker.kill('SIGTERM');
-        } catch {
-          // best effort
-        }
-        await r.worker.waitForExit().catch(() => {});
-      }),
+      snapshots.map((r) => r.worker.waitForExit().catch(() => {})),
     );
+    // 3. Now drop in-memory state. Rows remain in SQL.
+    registry.clear();
   }
 
-  return { spawn, resume, cleanup, shutdown };
+  function recoverFromStore(): RecoveryReport {
+    const store = registry.getStore();
+    if (store === undefined) return { crashedIds: [] };
+    const survivors = store.list({ status: ['spawning', 'running'] });
+    const iso = nowIso(now);
+    const crashedIds: string[] = [];
+    for (const w of survivors) {
+      // Flip in SQL first.
+      store.update(w.id, { status: 'crashed', completedAt: iso });
+      // Then rehydrate in-memory with a stub record so ID-based tools
+      // (`resume_worker`, `find_worker`, `get_worker_output`, `kill_worker`,
+      // `send_to_worker`) can address the recovered worker. The stub
+      // Worker is non-operational; `resume_worker` is the natural caller
+      // that swaps it for a real handle via `replace()` (C1 fix from
+      // 2B.1b review).
+      const rehydrated = rehydrateRecord(w, bufferCap, resolveProjectPath);
+      registry.rehydrate({
+        ...rehydrated,
+        status: 'crashed',
+        completedAt: iso,
+      });
+      crashedIds.push(w.id);
+    }
+    return { crashedIds };
+  }
+
+  return { spawn, resume, cleanup, shutdown, recoverFromStore };
+}
+
+/**
+ * A non-operational `Worker` used for rehydrated records whose live
+ * subprocess died with the previous orchestrator. Calls to `kill`,
+ * `sendFollowup`, `endInput` no-op; `events` is empty; `waitForExit`
+ * resolves immediately with the recovered status. Tools that DO try to
+ * use the live handle (e.g. `kill_worker`) get a clean no-op rather
+ * than an exception.
+ */
+function makeStubWorker(id: string, status: WorkerStatus, sessionId?: string): Worker {
+  const exitInfo: WorkerExitInfo = {
+    status,
+    exitCode: null,
+    signal: null,
+    durationMs: 0,
+    ...(sessionId !== undefined ? { sessionId } : {}),
+  };
+  return {
+    id,
+    sessionId,
+    status,
+    events: (async function* () {})(),
+    sendFollowup() {
+      throw new Error(`worker ${id} is ${status}; resume_worker first`);
+    },
+    endInput() {},
+    kill() {},
+    waitForExit: async () => exitInfo,
+  };
+}
+
+function rehydrateRecord(
+  persisted: PersistedWorkerRecord,
+  bufferCap: number,
+  resolveProjectPath: (projectId: string | null) => string,
+): WorkerRecord {
+  const stubWorker = makeStubWorker(persisted.id, persisted.status, persisted.sessionId);
+  return {
+    id: persisted.id,
+    projectPath: resolveProjectPath(persisted.projectId),
+    projectId: persisted.projectId,
+    taskId: persisted.taskId,
+    worktreePath: persisted.worktreePath,
+    role: persisted.role,
+    featureIntent: persisted.featureIntent,
+    taskDescription: persisted.taskDescription,
+    autonomyTier: persisted.autonomyTier,
+    dependsOn: persisted.dependsOn,
+    status: persisted.status,
+    createdAt: persisted.createdAt,
+    worker: stubWorker,
+    buffer: new CircularBuffer<StreamEvent>(bufferCap),
+    detach: () => {},
+    ...(persisted.model !== undefined ? { model: persisted.model } : {}),
+    ...(persisted.sessionId !== undefined ? { sessionId: persisted.sessionId } : {}),
+    ...(persisted.completedAt !== undefined ? { completedAt: persisted.completedAt } : {}),
+    ...(persisted.lastEventAt !== undefined ? { lastEventAt: persisted.lastEventAt } : {}),
+    ...(persisted.exitCode !== undefined && persisted.exitCode !== null
+      ? {
+          exitInfo: {
+            status: persisted.status,
+            exitCode: persisted.exitCode,
+            signal: persisted.exitSignal ?? null,
+            durationMs: 0,
+          },
+        }
+      : {}),
+  };
 }

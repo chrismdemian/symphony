@@ -1,4 +1,6 @@
 import type { StreamEvent, Worker, WorkerExitInfo, WorkerStatus } from '../workers/types.js';
+import type { ProjectStore } from '../projects/types.js';
+import type { PersistedWorkerRecord, WorkerStore } from '../state/sqlite-worker-store.js';
 import { matchesFeatureIntent } from './feature-intent.js';
 import type { AutonomyTier, WorkerRole } from './types.js';
 
@@ -13,6 +15,14 @@ export const DEFAULT_OUTPUT_BUFFER_CAP = 2000;
 export interface WorkerRecord {
   readonly id: string;
   readonly projectPath: string;
+  /**
+   * Resolved project ID for SQL persistence. `null` for unregistered
+   * absolute-path projects (consistent with audit M2 from 2A.4a — don't
+   * fabricate IDs for projects the user never registered).
+   */
+  readonly projectId: string | null;
+  /** Optional task association — populated when a tool wires a task to its worker. */
+  readonly taskId: string | null;
   readonly worktreePath: string;
   readonly role: WorkerRole;
   readonly featureIntent: string;
@@ -104,14 +114,32 @@ export interface WorkerLookupMatch extends WorkerRecordSnapshot {
   readonly matchedBy: 'id' | 'featureIntent';
 }
 
+export interface WorkerRegistryOptions {
+  /**
+   * Phase 2B.1b — write-through persistence seam. When supplied, every
+   * mutation also fires the corresponding store call. The registry stays
+   * the authoritative LIVE-state owner (Worker handle + buffer); the
+   * store mirrors metadata for crash recovery and historical queries.
+   *
+   * `clear()` is the one operation that does NOT touch the store —
+   * shutdown leaves rows intact so the next process start can mark them
+   * `crashed` (or restore them as terminal if shutdown ran cleanly).
+   */
+  readonly store?: WorkerStore;
+}
+
 /**
  * In-memory authoritative state for workers managed by the orchestrator.
- * Phase 2B will back this with SQLite; until then, records live only for
- * the orchestrator's lifetime. Integration tests rely on the record
- * surviving `shutdown()` NOT being a goal — shutdown clears state.
+ * Optionally write-throughs to a `WorkerStore` for SQL-backed crash
+ * recovery (Phase 2B.1b).
  */
 export class WorkerRegistry {
   private readonly records = new Map<string, WorkerRecord>();
+  private readonly store: WorkerStore | undefined;
+
+  constructor(opts: WorkerRegistryOptions = {}) {
+    this.store = opts.store;
+  }
 
   has(id: string): boolean {
     return this.records.has(id);
@@ -122,6 +150,25 @@ export class WorkerRegistry {
   }
 
   register(record: WorkerRecord): void {
+    if (this.records.has(record.id)) {
+      throw new Error(`WorkerRegistry: duplicate worker id '${record.id}'`);
+    }
+    // Store insert FIRST — failure (FK violation, schema mismatch, PK
+    // collision) leaves the registry clean rather than orphaned (M3 fix
+    // from 2B.1b review). On success the in-memory entry takes over as
+    // authoritative live state.
+    this.store?.insert(toPersisted(record));
+    this.records.set(record.id, record);
+  }
+
+  /**
+   * Phase 2B.1b — memory-only insert for `recoverFromStore`. The row
+   * already exists in SQL (this is the "rehydrate from disk" path);
+   * skipping the store insert avoids a duplicate-id throw. Tools find
+   * the recovered worker by id; `resume_worker` swaps in a real `Worker`
+   * via `replace()`.
+   */
+  rehydrate(record: WorkerRecord): void {
     if (this.records.has(record.id)) {
       throw new Error(`WorkerRegistry: duplicate worker id '${record.id}'`);
     }
@@ -141,6 +188,17 @@ export class WorkerRegistry {
     if (update.sessionId !== undefined) existing.sessionId = update.sessionId;
     existing.completedAt = undefined;
     existing.exitInfo = undefined;
+    // Explicitly clear prior terminal columns in SQL — without this, a
+    // crashed worker that gets resumed would carry stale completedAt /
+    // exitCode / exitSignal forever, surfacing a misleading audit trail
+    // (M1 fix from 2B.1b review).
+    this.store?.update(id, {
+      status: 'spawning',
+      completedAt: null,
+      exitCode: null,
+      exitSignal: null,
+      ...(update.sessionId !== undefined ? { sessionId: update.sessionId } : {}),
+    });
   }
 
   list(filter: WorkerRegistryListFilter = {}): WorkerRecord[] {
@@ -178,26 +236,39 @@ export class WorkerRegistry {
     if (!record) return;
     record.status = exitInfo.status;
     record.exitInfo = exitInfo;
-    record.completedAt = new Date(now()).toISOString();
+    const completedAt = new Date(now()).toISOString();
+    record.completedAt = completedAt;
     if (exitInfo.sessionId !== undefined) record.sessionId = exitInfo.sessionId;
+    this.store?.update(id, {
+      status: exitInfo.status,
+      completedAt,
+      exitCode: exitInfo.exitCode,
+      exitSignal: exitInfo.signal,
+      ...(exitInfo.sessionId !== undefined ? { sessionId: exitInfo.sessionId } : {}),
+    });
   }
 
   updateSessionId(id: string, sessionId: string): void {
     const record = this.records.get(id);
     if (!record) return;
     record.sessionId = sessionId;
+    this.store?.update(id, { sessionId });
   }
 
   updateStatus(id: string, status: WorkerStatus): void {
     const record = this.records.get(id);
     if (!record) return;
     record.status = status;
+    this.store?.update(id, { status });
   }
 
   /**
    * Stamp the most recent event timestamp. Called by the lifecycle event
-   * tap on every push. Cheap enough to run per-event — this is just a
-   * property write on an already-loaded record.
+   * tap on every push. Stays IN-MEMORY ONLY — per-event SQL writes were
+   * a perf cliff for chatty workers (M4 from 2B.1b review). Phase 2B.2
+   * can re-introduce with throttling if a use case demands it. Persisted
+   * snapshots reflect `lastEventAt` only when the row was inserted; live
+   * snapshots are fresh.
    */
   updateLastEventAt(id: string, iso: string): void {
     const record = this.records.get(id);
@@ -207,13 +278,16 @@ export class WorkerRegistry {
 
   /**
    * Remove a record. Does NOT kill the worker — caller is responsible for
-   * that. Safe to call on unknown ids (no-op).
+   * that. Safe to call on unknown ids (no-op). Deletes the SQL row too —
+   * `remove` is the explicit "this worker is gone" call. Use `clear()` on
+   * shutdown to preserve rows for the next process start.
    */
   remove(id: string): void {
     const record = this.records.get(id);
     if (!record) return;
     record.detach();
     this.records.delete(id);
+    this.store?.delete(id);
   }
 
   snapshot(id: string): WorkerRecordSnapshot | undefined {
@@ -228,7 +302,140 @@ export class WorkerRegistry {
   clear(): void {
     for (const r of this.records.values()) r.detach();
     this.records.clear();
+    // NOTE: deliberately does NOT touch the store. Shutdown leaves SQL
+    // rows alive so next-startup reconciliation can mark survivors crashed.
   }
+
+  /** Read-only view of the persistence seam (Phase 2B.1b). */
+  getStore(): WorkerStore | undefined {
+    return this.store;
+  }
+}
+
+/**
+ * Convert a live `WorkerRecord` to the persisted shape. Drops the
+ * `Worker` handle, `CircularBuffer`, and `detach` callback — none survive
+ * the orchestrator's process boundary.
+ */
+export function toPersisted(record: WorkerRecord): PersistedWorkerRecord {
+  const persisted: PersistedWorkerRecord = {
+    id: record.id,
+    projectId: record.projectId,
+    taskId: record.taskId,
+    worktreePath: record.worktreePath,
+    role: record.role,
+    featureIntent: record.featureIntent,
+    taskDescription: record.taskDescription,
+    autonomyTier: record.autonomyTier,
+    dependsOn: record.dependsOn,
+    status: record.status,
+    createdAt: record.createdAt,
+    ...(record.model !== undefined ? { model: record.model } : {}),
+    ...(record.sessionId !== undefined ? { sessionId: record.sessionId } : {}),
+    ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
+    ...(record.lastEventAt !== undefined ? { lastEventAt: record.lastEventAt } : {}),
+    ...(record.exitInfo !== undefined
+      ? {
+          exitCode: record.exitInfo.exitCode,
+          exitSignal: record.exitInfo.signal,
+        }
+      : {}),
+  };
+  return persisted;
+}
+
+/**
+ * Synthesize a `WorkerRecordSnapshot`-shaped row from a persisted record
+ * (typically a crashed/completed worker whose live handle is gone). Used
+ * by tools that merge live + historical views (`list_workers`,
+ * `global_status`).
+ */
+export function persistedToSnapshot(
+  record: PersistedWorkerRecord,
+  projectPath: string,
+): WorkerRecordSnapshot {
+  return {
+    id: record.id,
+    projectPath,
+    worktreePath: record.worktreePath,
+    role: record.role,
+    featureIntent: record.featureIntent,
+    taskDescription: record.taskDescription,
+    autonomyTier: record.autonomyTier,
+    dependsOn: record.dependsOn,
+    status: record.status,
+    createdAt: record.createdAt,
+    ...(record.model !== undefined ? { model: record.model } : {}),
+    ...(record.sessionId !== undefined ? { sessionId: record.sessionId } : {}),
+    ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
+    ...(record.lastEventAt !== undefined ? { lastEventAt: record.lastEventAt } : {}),
+    ...(record.exitCode !== undefined ? { exitCode: record.exitCode } : {}),
+    ...(record.exitSignal !== undefined ? { exitSignal: record.exitSignal } : {}),
+  };
+}
+
+const TERMINAL_STATUSES: ReadonlySet<WorkerStatus> = new Set<WorkerStatus>([
+  'completed',
+  'failed',
+  'killed',
+  'timeout',
+  'crashed',
+]);
+
+export interface MergeLiveAndPersistedOptions {
+  readonly projectStore?: ProjectStore;
+  readonly projectPath?: string;
+  /** Include persisted-only terminal workers (default true). */
+  readonly includeTerminal?: boolean;
+}
+
+/**
+ * Merge live in-memory snapshots with persisted-only rows from the
+ * `WorkerStore`. Live wins on id collision (live state is fresher).
+ * Persisted-only rows synthesize a snapshot using `projectStore` to
+ * resolve `projectId` → path; rows whose project can't be resolved fall
+ * back to a sentinel `(unregistered)` path so callers can still address
+ * the worktree.
+ */
+export function mergeLiveAndPersisted(
+  registry: WorkerRegistry,
+  opts: MergeLiveAndPersistedOptions = {},
+): WorkerRecordSnapshot[] {
+  const liveAll = registry.snapshots(
+    opts.projectPath !== undefined ? { projectPath: opts.projectPath } : {},
+  );
+  const includeTerminal = opts.includeTerminal ?? true;
+  // Symmetric filter: live + persisted both honor `includeTerminal=false`
+  // (M2 fix from 2B.1b review — flag was useless when live terminal rows
+  // passed through).
+  const live = includeTerminal
+    ? liveAll
+    : liveAll.filter((s) => !TERMINAL_STATUSES.has(s.status));
+  const liveIds = new Set(liveAll.map((s) => s.id));
+  const store = registry.getStore();
+  if (store === undefined) return live;
+
+  const merged = [...live];
+
+  // Build a project-id → path map once. Falls back to the persisted path
+  // when the project is unregistered (audit M2 from 2A.4a — never
+  // fabricate a project name).
+  const idToPath = new Map<string, string>();
+  if (opts.projectStore) {
+    for (const p of opts.projectStore.list()) idToPath.set(p.id, p.path);
+  }
+
+  for (const persisted of store.list()) {
+    if (liveIds.has(persisted.id)) continue;
+    if (!includeTerminal && TERMINAL_STATUSES.has(persisted.status)) continue;
+    const projectPath =
+      persisted.projectId !== null
+        ? (idToPath.get(persisted.projectId) ?? '(unregistered)')
+        : '(unregistered)';
+    if (opts.projectPath !== undefined && projectPath !== opts.projectPath) continue;
+    merged.push(persistedToSnapshot(persisted, projectPath));
+  }
+  return merged;
 }
 
 export function toSnapshot(r: WorkerRecord): WorkerRecordSnapshot {

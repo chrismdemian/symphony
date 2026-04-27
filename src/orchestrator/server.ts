@@ -12,6 +12,7 @@ import { SqliteProjectStore } from '../state/sqlite-project-store.js';
 import { SqliteTaskStore } from '../state/sqlite-task-store.js';
 import { SqliteQuestionStore } from '../state/sqlite-question-store.js';
 import { SqliteWaveStore } from '../state/sqlite-wave-store.js';
+import { SqliteWorkerStore, type WorkerStore } from '../state/sqlite-worker-store.js';
 import { WorkerManager, type WorkerManagerOptions } from '../workers/manager.js';
 import { WorktreeManager } from '../worktree/manager.js';
 import type { WorktreeManagerConfig } from '../worktree/types.js';
@@ -65,6 +66,12 @@ export interface OrchestratorServerOptions {
   worktreeManagerConfig?: WorktreeManagerConfig;
   /** Override the in-memory WorkerRegistry. Test seam. */
   workerRegistry?: WorkerRegistry;
+  /**
+   * Phase 2B.1b — write-through persistence for worker metadata. Defaults
+   * to SQLite when `database` is provided. Pass explicitly to override
+   * (e.g. an in-memory fake for tests).
+   */
+  workerStore?: WorkerStore;
   /** Override the lifecycle composition. Test seam — defaults to one composed from registry + managers. */
   workerLifecycle?: WorkerLifecycleHandle;
   /** Override the project store. Defaults to a registry seeded from `projects`. */
@@ -98,6 +105,7 @@ export interface OrchestratorServerHandle {
   safety: AgentSafetyGuard;
   planStore: ProposePlanStore;
   workerRegistry: WorkerRegistry;
+  workerStore?: WorkerStore;
   workerLifecycle: WorkerLifecycleHandle;
   workerManager: WorkerManager;
   worktreeManager: WorktreeManager;
@@ -191,14 +199,35 @@ export async function startOrchestratorServer(
     options.workerManager ?? new WorkerManager(options.workerManagerOptions ?? {});
   const worktreeManager =
     options.worktreeManager ?? new WorktreeManager(options.worktreeManagerConfig ?? {});
-  const workerRegistry = options.workerRegistry ?? new WorkerRegistry();
+  const workerStore: WorkerStore | undefined =
+    options.workerStore ??
+    (options.database ? new SqliteWorkerStore(options.database.db) : undefined);
+  const workerRegistry =
+    options.workerRegistry ??
+    new WorkerRegistry({
+      ...(workerStore !== undefined ? { store: workerStore } : {}),
+    });
   const workerLifecycle =
     options.workerLifecycle ??
     createWorkerLifecycle({
       registry: workerRegistry,
       workerManager,
       worktreeManager,
+      resolveProjectPath: (projectId) => {
+        if (projectId === null) return '';
+        for (const p of projectStore.list()) {
+          if (p.id === projectId) return p.path;
+        }
+        return '';
+      },
     });
+
+  // Phase 2B.1b — startup reconciliation. Persisted workers stuck in
+  // `running` or `spawning` at last shutdown could not survive the
+  // process boundary; flip them to `crashed` so `list_workers` and
+  // `global_status` reflect reality. User/Maestro revives intentional
+  // ones via `resume_worker`.
+  workerLifecycle.recoverFromStore();
 
   const planStore = createProposePlanStore();
   registry.register(thinkTool);
@@ -212,10 +241,15 @@ export async function startOrchestratorServer(
       registry: workerRegistry,
       lifecycle: workerLifecycle,
       resolveProjectPath: spawnResolve,
+      projectStore,
     }),
   );
   registry.register(
-    makeListWorkersTool({ registry: workerRegistry, resolveProjectPath: listResolve }),
+    makeListWorkersTool({
+      registry: workerRegistry,
+      resolveProjectPath: listResolve,
+      projectStore,
+    }),
   );
   registry.register(makeGetWorkerOutputTool({ registry: workerRegistry }));
   registry.register(makeSendToWorkerTool({ registry: workerRegistry }));
@@ -302,6 +336,7 @@ export async function startOrchestratorServer(
     safety,
     planStore,
     workerRegistry,
+    ...(workerStore !== undefined ? { workerStore } : {}),
     workerLifecycle,
     workerManager,
     worktreeManager,
