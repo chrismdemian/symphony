@@ -102,6 +102,7 @@ function makeRealWorktreeFakeSpawnLifecycle(args: {
       args.registry.clear();
     },
     recoverFromStore: () => ({ crashedIds: [] }),
+    setOnEvent: () => {},
   };
 }
 

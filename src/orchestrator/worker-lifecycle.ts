@@ -61,6 +61,16 @@ export interface WorkerLifecycleOptions {
    * and won't match `--project` filters in `list_workers`.
    */
   readonly resolveProjectPath?: (projectId: string | null) => string;
+  /**
+   * Phase 2B.2 — fired for every stream event the tap observes. The
+   * RPC `WorkerEventBroker` installs itself here to fan out events to
+   * subscribed clients. The lifecycle keeps the single-consumer
+   * iterator; the broker is downstream of the tap.
+   *
+   * Defaults to a no-op. Errors thrown by the callback are swallowed so
+   * a misbehaving consumer can't poison the lifecycle.
+   */
+  readonly onEvent?: (workerId: string, event: StreamEvent) => void;
 }
 
 export interface RecoveryReport {
@@ -83,6 +93,18 @@ export interface WorkerLifecycleHandle {
    * call multiple times — terminal rows are left untouched.
    */
   recoverFromStore(): RecoveryReport;
+  /**
+   * Phase 2B.2 (Audit m12 follow-up) — late-bind the per-event callback
+   * the lifecycle's tap uses to fan out to the RPC broker. The setter
+   * affects all FUTURE taps and previously-attached taps that read the
+   * callback through the lifecycle's closure (this is the path used by
+   * `attachEventTap`). Calling with `undefined` clears the binding.
+   *
+   * Custom lifecycles passed via `WorkerLifecycleOptions.workerLifecycle`
+   * MUST honor this setter so `startOrchestratorServer` can wire the
+   * broker regardless of who constructed the lifecycle.
+   */
+  setOnEvent(callback: ((workerId: string, event: StreamEvent) => void) | undefined): void;
 }
 
 function defaultIdGenerator(): string {
@@ -100,6 +122,7 @@ function attachEventTap(
   registry: WorkerRegistry,
   recordId: string,
   now: () => number,
+  onEventRef: { current: ((workerId: string, event: StreamEvent) => void) | undefined },
 ): () => void {
   let stopped = false;
   void (async () => {
@@ -113,6 +136,16 @@ function attachEventTap(
           registry.updateStatus(recordId, 'running');
         } else if (event.type === 'result') {
           registry.updateSessionId(recordId, event.sessionId);
+        }
+        // Read through the ref so `setOnEvent` late-binding from the
+        // orchestrator wires the broker for taps that started before it.
+        const onEvent = onEventRef.current;
+        if (onEvent !== undefined) {
+          try {
+            onEvent(recordId, event);
+          } catch {
+            // Downstream consumer (RPC broker etc.) must not poison the tap.
+          }
         }
       }
     } catch {
@@ -130,6 +163,13 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
   const now = opts.now ?? Date.now;
   const genId = opts.idGenerator ?? defaultIdGenerator;
   const resolveProjectPath = opts.resolveProjectPath ?? (() => '');
+  // `onEventRef` is a mutable closure cell so `attachEventTap` reads the
+  // CURRENT value on each event push, not the value at attach time. This
+  // lets `setOnEvent` late-bind the broker callback after the lifecycle
+  // is already running (Audit m12).
+  const onEventRef: { current: ((id: string, e: StreamEvent) => void) | undefined } = {
+    current: opts.onEvent,
+  };
   const inflight = new Map<string, Promise<WorkerRecord>>();
 
   function inflightKey(recordId: string, projectPath: string): string {
@@ -208,7 +248,7 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
       ...(input.model !== undefined ? { model: input.model } : {}),
     };
     registry.register(record);
-    record.detach = attachEventTap(worker, buffer, registry, recordId, now);
+    record.detach = attachEventTap(worker, buffer, registry, recordId, now, onEventRef);
     wireExit(recordId, worker);
     return record;
   }
@@ -261,7 +301,7 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
     });
     const reloaded = registry.get(record.id);
     if (!reloaded) throw new Error(`worker '${record.id}' disappeared during resume`);
-    reloaded.detach = attachEventTap(worker, reloaded.buffer, registry, record.id, now);
+    reloaded.detach = attachEventTap(worker, reloaded.buffer, registry, record.id, now, onEventRef);
     wireExit(record.id, worker);
     return reloaded;
   }
@@ -338,7 +378,11 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
     return { crashedIds };
   }
 
-  return { spawn, resume, cleanup, shutdown, recoverFromStore };
+  function setOnEvent(callback: ((workerId: string, event: StreamEvent) => void) | undefined): void {
+    onEventRef.current = callback;
+  }
+
+  return { spawn, resume, cleanup, shutdown, recoverFromStore, setOnEvent };
 }
 
 /**

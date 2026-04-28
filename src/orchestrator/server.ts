@@ -48,6 +48,15 @@ import { defaultOneShotRunner, type OneShotRunner } from './one-shot.js';
 import type { AutonomyTier, DispatchContext, ToolMode } from './types.js';
 import { createWorkerLifecycle, type WorkerLifecycleHandle } from './worker-lifecycle.js';
 import { WorkerRegistry } from './worker-registry.js';
+import { WorkerEventBroker } from '../rpc/event-broker.js';
+import {
+  generateRpcToken,
+  writeRpcDescriptor,
+  deleteRpcDescriptor,
+  defaultRpcTokenFilePath,
+} from '../rpc/auth.js';
+import { startRpcServer, type RpcServerHandle } from '../rpc/server.js';
+import { createSymphonyRouter } from '../rpc/router-impl.js';
 
 export interface OrchestratorServerOptions {
   transport?: Transport;
@@ -96,6 +105,26 @@ export interface OrchestratorServerOptions {
    * Explicit store overrides still win. Caller owns `close()`.
    */
   database?: SymphonyDatabase;
+  /**
+   * Phase 2B.2 — start a parallel WebSocket RPC server alongside the MCP
+   * transport. Default OFF for library callers (zero side effects: no
+   * port, no token file). The `symphony mcp-server` CLI command opts in
+   * explicitly via `{ enabled: true }`. Tests that exercise the RPC
+   * surface pass `{ enabled: true, port: 0, skipDescriptorFile: true }`.
+   */
+  rpc?: RpcOptions;
+}
+
+export interface RpcOptions {
+  readonly enabled?: boolean;
+  readonly host?: string;
+  readonly port?: number;
+  /** Override the generated token. Default: random 32 bytes hex per process. */
+  readonly token?: string;
+  /** Override the token-descriptor file path. Default: `~/.symphony/rpc.json`. */
+  readonly tokenFilePath?: string;
+  /** Skip writing the descriptor file (useful in tests). */
+  readonly skipDescriptorFile?: boolean;
 }
 
 export interface OrchestratorServerHandle {
@@ -117,6 +146,8 @@ export interface OrchestratorServerHandle {
   resolveProjectPath: (project?: string) => string;
   setContext: (partial: Partial<DispatchContext>) => void;
   getContext: () => DispatchContext;
+  /** Phase 2B.2 — present when `options.rpc.enabled !== false`. */
+  rpc?: RpcServerHandle & { token: string; tokenFilePath?: string };
   close: () => Promise<void>;
 }
 
@@ -207,6 +238,9 @@ export async function startOrchestratorServer(
     new WorkerRegistry({
       ...(workerStore !== undefined ? { store: workerStore } : {}),
     });
+  // Phase 2B.2 — single broker per orchestrator. The lifecycle's tap fans
+  // events into the broker; RPC clients subscribe through the dispatcher.
+  const eventBroker = new WorkerEventBroker();
   const workerLifecycle =
     options.workerLifecycle ??
     createWorkerLifecycle({
@@ -221,6 +255,10 @@ export async function startOrchestratorServer(
         return '';
       },
     });
+  // Late-bind the broker callback so it works whether the lifecycle was
+  // default-constructed above OR injected via `options.workerLifecycle`
+  // (Audit m12 — silent broker bypass via the test seam).
+  workerLifecycle.setOnEvent((workerId, event) => eventBroker.publish(workerId, event));
 
   // Phase 2B.1b — startup reconciliation. Persisted workers stuck in
   // `running` or `spawning` at last shutdown could not survive the
@@ -312,14 +350,63 @@ export async function startOrchestratorServer(
   const transport = options.transport ?? new StdioServerTransport();
   await server.connect(transport);
 
+  const rpcConfig = options.rpc ?? {};
+  // Default OFF — library callers must opt in. The `symphony mcp-server`
+  // CLI command sets `{ enabled: true }` explicitly.
+  const rpcEnabled = rpcConfig.enabled === true;
+  let rpcHandle: (RpcServerHandle & { token: string; tokenFilePath?: string }) | undefined;
+  if (rpcEnabled) {
+    const token = rpcConfig.token ?? generateRpcToken();
+    const router = createSymphonyRouter({
+      projectStore,
+      taskStore,
+      questionStore,
+      waveStore,
+      workerRegistry,
+      modeController: mode,
+    });
+    const handle = await startRpcServer({
+      router: router as unknown as Parameters<typeof startRpcServer>[0]['router'],
+      broker: eventBroker,
+      token,
+      ...(rpcConfig.host !== undefined ? { host: rpcConfig.host } : {}),
+      ...(rpcConfig.port !== undefined ? { port: rpcConfig.port } : {}),
+    });
+    let tokenFilePath: string | undefined;
+    if (!rpcConfig.skipDescriptorFile) {
+      tokenFilePath = rpcConfig.tokenFilePath ?? defaultRpcTokenFilePath();
+      await writeRpcDescriptor(
+        {
+          host: handle.host,
+          port: handle.port,
+          token,
+          pid: process.pid,
+          startedAt: new Date().toISOString(),
+        },
+        tokenFilePath,
+      );
+    }
+    rpcHandle = {
+      ...handle,
+      token,
+      ...(tokenFilePath !== undefined ? { tokenFilePath } : {}),
+    };
+  }
+
   const close = async (): Promise<void> => {
     offModeChange();
     registry.close();
-    // Order: lifecycle drains registered workers; workerManager shutdown
-    // rejects new spawns AND awaits any child still mid-boot between
-    // `workerManager.spawn` resolving and `registry.register` running.
-    // Without this pair, SIGINT during a `spawn_worker` call leaks the
-    // pending claude subprocess.
+    // Order: stop accepting RPC clients first so no new reads outlive
+    // stores; then drain lifecycle/workerManager; finally close the MCP
+    // transport. RPC's broker drops listeners on close, so any in-flight
+    // event publishes from late-exiting workers go to /dev/null cleanly.
+    if (rpcHandle !== undefined) {
+      await rpcHandle.close().catch(() => {});
+      eventBroker.clear();
+      if (rpcHandle.tokenFilePath !== undefined) {
+        await deleteRpcDescriptor(rpcHandle.tokenFilePath).catch(() => {});
+      }
+    }
     await workerLifecycle.shutdown().catch(() => {});
     await workerManager.shutdown().catch(() => {});
     try {
@@ -350,6 +437,7 @@ export async function startOrchestratorServer(
       context = { ...context, ...partial, mode: mode.mode };
     },
     getContext: () => context,
+    ...(rpcHandle !== undefined ? { rpc: rpcHandle } : {}),
     close,
   };
 }

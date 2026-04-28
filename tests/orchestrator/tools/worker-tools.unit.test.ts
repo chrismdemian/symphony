@@ -91,6 +91,7 @@ function fakeLifecycle(): WorkerLifecycleHandle & {
     },
     shutdown: async () => {},
     recoverFromStore: () => ({ crashedIds: [] }),
+    setOnEvent: () => {},
   };
 }
 
