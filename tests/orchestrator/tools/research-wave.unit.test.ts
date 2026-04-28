@@ -94,6 +94,7 @@ function makeFakeLifecycle(registry: WorkerRegistry): {
     },
     shutdown: async () => {},
     recoverFromStore: () => ({ crashedIds: [] }),
+    setOnEvent: () => {},
   };
   return {
     lifecycle,

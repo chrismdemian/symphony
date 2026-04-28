@@ -107,6 +107,7 @@ function makeFakeLifecycle(workerRegistry: WorkerRegistry): WorkerLifecycleHandl
       workerRegistry.clear();
     },
     recoverFromStore: () => ({ crashedIds: [] }),
+    setOnEvent: () => {},
   };
 }
 
