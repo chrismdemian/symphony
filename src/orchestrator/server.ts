@@ -193,7 +193,6 @@ export async function startOrchestratorServer(
       if (options.database) {
         const store = new SqliteProjectStore(options.database.db);
         seedProjectsFromMap(store, projects, options.projectConfigs);
-        ensureDefaultProjectRegistered(store, defaultProjectPath, options.projectConfigs);
         return store;
       }
       const store = projectRegistryFromMap(projects, {
@@ -201,13 +200,14 @@ export async function startOrchestratorServer(
           ? { configs: options.projectConfigs as Record<string, Partial<ProjectRecord>> }
           : {}),
       });
-      ensureDefaultProjectRegistered(store, defaultProjectPath, options.projectConfigs);
       return store;
     })();
 
   const taskStore: TaskStore =
     options.taskStore ??
-    (options.database ? new SqliteTaskStore(options.database.db) : new TaskRegistry());
+    (options.database
+      ? new SqliteTaskStore(options.database.db)
+      : new TaskRegistry({ projectStore }));
   const questionStore: QuestionStore =
     options.questionStore ??
     (options.database ? new SqliteQuestionStore(options.database.db) : new QuestionRegistry());
@@ -233,6 +233,14 @@ export async function startOrchestratorServer(
   const workerStore: WorkerStore | undefined =
     options.workerStore ??
     (options.database ? new SqliteWorkerStore(options.database.db) : undefined);
+
+  // Phase 2B.1 m6: prune `default-N` orphan rows that have no live
+  // task / worker references BEFORE we synthesize a new default. Stale
+  // rows accumulate when the cwd shifts across restarts (e.g. running
+  // `symphony mcp-server` from different folders against the same DB).
+  pruneOrphanDefaultProjects(projectStore, taskStore, workerStore, defaultProjectPath);
+  ensureDefaultProjectRegistered(projectStore, defaultProjectPath, options.projectConfigs);
+
   const workerRegistry =
     options.workerRegistry ??
     new WorkerRegistry({
@@ -369,6 +377,12 @@ export async function startOrchestratorServer(
       router: router as unknown as Parameters<typeof startRpcServer>[0]['router'],
       broker: eventBroker,
       token,
+      // Phase 2B.2 m6 — only known workers can subscribe to `workers.events`.
+      // Recovery rehydrates persisted workers BEFORE this server is created
+      // (lifecycle.recoverFromStore is called above), so recovered crashed
+      // workers ARE in the registry here. New workers spawned via MCP after
+      // this point register synchronously before any event fans out.
+      workerExists: (workerId: string) => workerRegistry.get(workerId) !== undefined,
       ...(rpcConfig.host !== undefined ? { host: rpcConfig.host } : {}),
       ...(rpcConfig.port !== undefined ? { port: rpcConfig.port } : {}),
     });
@@ -460,8 +474,21 @@ function seedProjectsFromMap(
   // `options.projects` map would crash on the second startup.
   for (const [name, pathStr] of Object.entries(projects)) {
     if (!pathStr || typeof pathStr !== 'string') continue;
-    if (store.get(name)) continue;
+    const existingByName = store.get(name);
     const resolved = path.resolve(pathStr);
+    if (existingByName) {
+      // Phase 2B.1 m9: surface drift between caller's map and DB-stored
+      // path so the user knows the seed didn't apply. Non-fatal — the DB
+      // wins (existing tasks/workers reference the stored id).
+      if (path.resolve(existingByName.path) !== resolved) {
+        console.warn(
+          `[symphony] seed-map drift: project '${name}' is registered at ` +
+            `'${existingByName.path}' but options.projects pointed to '${pathStr}'. ` +
+            `Keeping the registered path. Remove the stale row or rename the map entry to fix.`,
+        );
+      }
+      continue;
+    }
     const existingByPath = store.list().find((r) => path.resolve(r.path) === resolved);
     if (existingByPath) continue;
     const extra = configs?.[name] ?? {};
@@ -472,6 +499,42 @@ function seedProjectsFromMap(
       createdAt: '',
       ...extra,
     });
+  }
+}
+
+/**
+ * Phase 2B.1 m6 — prune `default-N` orphan rows from prior runs whose
+ * path no longer matches `defaultProjectPath` AND that have no task or
+ * worker references. Stale rows otherwise accumulate when the cwd
+ * shifts across restarts (running `symphony mcp-server` from different
+ * folders against the same SQLite DB).
+ *
+ * Conservative: only `default-N` (N ≥ 2) — the bare `default` row is
+ * never pruned automatically. User-named projects are never touched.
+ * If both stores agree there are zero references, the row is removed.
+ *
+ * Race safety: this runs synchronously during `startOrchestratorServer`
+ * BEFORE any tools register, so no MCP/RPC caller can write tasks or
+ * workers concurrently. A future refactor that moves tool registration
+ * earlier in the boot sequence MUST preserve that invariant or move
+ * this prune step to run after the registration window closes.
+ */
+function pruneOrphanDefaultProjects(
+  projectStore: ProjectStore,
+  taskStore: TaskStore,
+  workerStore: WorkerStore | undefined,
+  defaultProjectPath: string,
+): void {
+  const orphanCandidates = projectStore
+    .list()
+    .filter((p) => /^default-\d+$/.test(p.name))
+    .filter((p) => path.resolve(p.path) !== defaultProjectPath);
+  for (const p of orphanCandidates) {
+    const taskRefs = taskStore.list({ projectId: p.id }).length;
+    const workerRefs = workerStore ? workerStore.list({ projectId: p.id }).length : 0;
+    if (taskRefs === 0 && workerRefs === 0) {
+      projectStore.delete(p.id);
+    }
   }
 }
 

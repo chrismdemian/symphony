@@ -16,9 +16,18 @@ const CURRENT_DB_FILENAME = 'symphony.db';
  * Callers must `mkdirSync(dirname(path), { recursive: true })` before
  * opening the DB — this module only resolves, it doesn't create.
  */
+/**
+ * better-sqlite3 in-memory sentinel — never path-resolve, never mkdir.
+ * Per CLAUDE.md "Discovered during implementation" 2B.1 (m2): the override
+ * branch was `path.resolve`ing `:memory:` into a real path on disk, so
+ * `SYMPHONY_DB_FILE=:memory:` ended up writing to `<cwd>/:memory:`.
+ */
+export const IN_MEMORY_SENTINEL = ':memory:';
+
 export function resolveDatabasePath(): string {
   const override = process.env.SYMPHONY_DB_FILE?.trim();
   if (override && override.length > 0) {
+    if (override === IN_MEMORY_SENTINEL) return IN_MEMORY_SENTINEL;
     return path.resolve(override);
   }
   return path.join(os.homedir(), '.symphony', CURRENT_DB_FILENAME);

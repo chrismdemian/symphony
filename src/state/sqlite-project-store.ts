@@ -47,6 +47,7 @@ export class SqliteProjectStore implements ProjectStore {
     getByName: Statement;
     getByPath: Statement;
     listAll: Statement;
+    deleteById: Statement;
   };
   private readonly now: () => number;
 
@@ -67,6 +68,7 @@ export class SqliteProjectStore implements ProjectStore {
       getByName: db.prepare(`SELECT * FROM projects WHERE name = ?`),
       getByPath: db.prepare(`SELECT * FROM projects WHERE path = ?`),
       listAll: db.prepare(`SELECT * FROM projects ORDER BY created_at ASC`),
+      deleteById: db.prepare(`DELETE FROM projects WHERE id = ?`),
     };
   }
 
@@ -129,6 +131,13 @@ export class SqliteProjectStore implements ProjectStore {
     });
 
     return { ...record, path: resolvedPath, createdAt };
+  }
+
+  delete(idOrName: string): boolean {
+    const record = this.get(idOrName);
+    if (!record) return false;
+    const result = this.stmts.deleteById.run(record.id);
+    return result.changes > 0;
   }
 
   snapshot(nameOrId: string): ProjectSnapshot | undefined {

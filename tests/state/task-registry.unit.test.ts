@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { TaskRegistry } from '../../src/state/task-registry.js';
+import { ProjectRegistry } from '../../src/projects/registry.js';
+import type { ProjectRecord } from '../../src/projects/types.js';
 import {
   InvalidTaskTransitionError,
+  UnknownProjectIdError,
   UnknownTaskError,
   canTransition,
   isTerminalStatus,
@@ -33,6 +36,31 @@ describe('TaskRegistry — creation', () => {
   it('rejects missing projectId', () => {
     const r = new TaskRegistry();
     expect(() => r.create({ projectId: '', description: 'x' })).toThrow(/projectId/);
+  });
+
+  it('rejects unknown projectId when projectStore is wired (2B.1 m4)', () => {
+    const projectStore = new ProjectRegistry();
+    const knownProject: ProjectRecord = {
+      id: 'p-known',
+      name: 'known',
+      path: '/tmp/known',
+      defaultModel: 'sonnet',
+      createdAt: ISO,
+    };
+    projectStore.register(knownProject);
+    const r = new TaskRegistry({ projectStore });
+    expect(() => r.create({ projectId: 'p-known', description: 'ok' })).not.toThrow();
+    expect(() => r.create({ projectId: 'known', description: 'by name' })).not.toThrow();
+    expect(() => r.create({ projectId: 'p-missing', description: 'x' })).toThrow(
+      UnknownProjectIdError,
+    );
+  });
+
+  it('skips projectId validation when no projectStore is wired (back-compat)', () => {
+    const r = new TaskRegistry();
+    // Without a store, any non-empty projectId is accepted — preserves the
+    // 2A unit-test fast path.
+    expect(() => r.create({ projectId: 'anything', description: 'x' })).not.toThrow();
   });
 
   it('preserves dependsOn and priority', () => {

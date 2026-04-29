@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
 import type {
   EventFrame,
   Frame,
@@ -39,6 +40,22 @@ export type DispatcherSend = (
 
 export type DispatcherProtocolViolationCloser = (code: number, reason: string) => void;
 
+/**
+ * 2B.2 m6: optional callback the dispatcher uses to validate that a
+ * `subscribe('workers.events', { workerId })` request targets a known
+ * worker. When supplied, an unknown id triggers a `not_found` envelope
+ * instead of a silent "wait for events that may never come" subscription.
+ *
+ * Recovery rehydrates persisted workers BEFORE the RPC server starts
+ * accepting subscribes (Phase 2B.1b), so a recovered crashed worker IS
+ * known here. Live workers spawned via MCP are also in the registry by
+ * the time their first event would fan out.
+ *
+ * Returning `false` produces `not_found`. When omitted (legacy / unit
+ * tests), no validation runs — preserves prior behavior.
+ */
+export type DispatcherWorkerExistsCheck = (workerId: string) => boolean;
+
 export interface DispatcherOptions {
   readonly router: RouterMap;
   readonly broker: WorkerEventBroker;
@@ -51,6 +68,8 @@ export interface DispatcherOptions {
    * (pure unit-test mode).
    */
   readonly closeOnProtocolError?: DispatcherProtocolViolationCloser;
+  /** 2B.2 m6: optional registry-existence probe for `workers.events` subscribes. */
+  readonly workerExists?: DispatcherWorkerExistsCheck;
 }
 
 interface SubscriptionEntry {
@@ -66,6 +85,7 @@ export class Dispatcher {
   private readonly send: DispatcherSend;
   private readonly signal: AbortSignal;
   private readonly closeOnProtocolError: DispatcherProtocolViolationCloser;
+  private readonly workerExists: DispatcherWorkerExistsCheck | undefined;
   private readonly subscriptions = new Map<string, SubscriptionEntry>();
   private closed = false;
 
@@ -75,6 +95,7 @@ export class Dispatcher {
     this.send = opts.send;
     this.signal = opts.signal;
     this.closeOnProtocolError = opts.closeOnProtocolError ?? (() => {});
+    this.workerExists = opts.workerExists;
   }
 
   /**
@@ -94,10 +115,12 @@ export class Dispatcher {
           : cause instanceof Error
             ? cause.message
             : 'frame decode failed';
-      // Without a frame.id we cannot reply with a typed envelope; emit a
-      // synthetic envelope under id="<unknown>" so the client at least
-      // observes the failure.
-      this.sendResult('<unknown>', err('bad_args', message));
+      // 2B.2 m1: a fixed `'<unknown>'` sentinel collided with arbitrary
+      // client ids — a malicious caller could send `id: '<unknown>'` and
+      // log lines couldn't disambiguate decode failures from real frames.
+      // Use a fresh UUID with a `decode-failure-` prefix so the client
+      // can correlate via logs and the id space stays disjoint.
+      this.sendResult(`decode-failure-${randomUUID()}`, err('bad_args', message));
       return;
     }
     switch (frame.kind) {
@@ -189,6 +212,17 @@ export class Dispatcher {
     const workerId = (args as { workerId: string }).workerId;
     if (workerId.length === 0) {
       this.sendResult(frame.id, err('bad_args', 'workerId must be a non-empty string'));
+      return;
+    }
+    // 2B.2 m6: reject subscribes against unknown worker ids so callers
+    // don't silently wait for events that will never come. Recovered
+    // workers ARE known (rehydrated before RPC accept), so this only
+    // catches typos and stale ids.
+    if (this.workerExists !== undefined && !this.workerExists(workerId)) {
+      this.sendResult(
+        frame.id,
+        err('not_found', `worker '${workerId}' is not registered`),
+      );
       return;
     }
     const eventTopic = `${WORKERS_EVENTS_TOPIC}:${workerId}`;

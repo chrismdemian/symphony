@@ -35,6 +35,13 @@ export interface RpcServerOptions {
   readonly port?: number;
   /** Per-connection bounded send queue (frames). Default 1024. */
   readonly sendQueueLimit?: number;
+  /**
+   * 2B.2 m6: optional `workers.events` workerId existence probe. When
+   * supplied, subscribes against unknown ids return `not_found` instead
+   * of silently never receiving events. Phase 2C wires this from the
+   * `WorkerRegistry`; unit tests omit it.
+   */
+  readonly workerExists?: (workerId: string) => boolean;
 }
 
 export interface RpcServerHandle {
@@ -120,6 +127,7 @@ export async function startRpcServer(opts: RpcServerOptions): Promise<RpcServerH
       closeOnProtocolError: (code, reason) => {
         if (ws.readyState === ws.OPEN) ws.close(code, reason);
       },
+      ...(opts.workerExists !== undefined ? { workerExists: opts.workerExists } : {}),
     });
     ws.on('message', (data) => {
       const text = typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf8')
@@ -185,7 +193,15 @@ export async function startRpcServer(opts: RpcServerOptions): Promise<RpcServerH
 
 function authorizeUpgrade(req: IncomingMessage, expected: string): void {
   const header = req.headers['authorization'];
-  if (typeof header === 'string' && header.length > 0) {
+  if (typeof header === 'string') {
+    // 2B.2 m3: an empty Authorization header (e.g. `Authorization:`) used
+    // to fall through to the query-token branch silently. A client in a
+    // half-broken state where the auth header is dropped to "" but a
+    // stale `?token=` lingers shouldn't authenticate via the wrong path.
+    // Reject explicitly so the misconfiguration surfaces.
+    if (header.length === 0) {
+      throw new UnauthorizedError('empty Authorization header');
+    }
     validateAuthHeader(header, expected);
     return;
   }
