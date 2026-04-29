@@ -38,5 +38,10 @@ test-results/
 # Codex
 AGENTS.md
 
-# Research docs (local only)
-research/
+# Research docs (local only). `research/*` (not `research/`) so the negations
+# below can re-include specific subtrees — git can't descend into a dir that's
+# already excluded by `research/`.
+research/*
+# ...except the Maestro prompt artifacts — they're shipped with the bundle
+# (tsup copies them to dist/prompts/) and need to be in git for CI.
+!research/prompts/
