@@ -13,7 +13,6 @@ import type {
   MaestroStartInput,
   MaestroStartResult,
 } from '../../src/orchestrator/maestro/index.js';
-import type { LauncherRpc } from '../../src/cli/start.js';
 import type { ProjectSnapshot } from '../../src/projects/types.js';
 
 interface CallLog {
@@ -110,13 +109,46 @@ afterEach(() => {
   }
 });
 
-function makeFakeRpc(projects: ProjectSnapshot[]): LauncherRpc & { close: ReturnType<typeof vi.fn> } {
+// Audit M1 (Phase 3A): `LauncherRpc = TuiRpc` widened to include the
+// full TUI surface. These tests use PassThrough streams (non-TTY) so
+// they hit the readline fallback and don't exercise the wider methods —
+// stub them as vi.fn returning trivially-valid shapes for type-check.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type FakeRpc = any;
+
+function makeFakeRpc(projects: ProjectSnapshot[]): FakeRpc {
   return {
     call: {
       projects: {
         list: vi.fn(async () => projects),
+        get: vi.fn(async () => null),
+        register: vi.fn(async () => null),
+      },
+      tasks: {
+        list: vi.fn(async () => []),
+        get: vi.fn(async () => null),
+        create: vi.fn(async () => null),
+        update: vi.fn(async () => null),
+      },
+      workers: {
+        list: vi.fn(async () => []),
+        get: vi.fn(async () => null),
+        kill: vi.fn(async () => ({ killed: false })),
+      },
+      questions: {
+        list: vi.fn(async () => []),
+        get: vi.fn(async () => null),
+        answer: vi.fn(async () => null),
+      },
+      waves: {
+        list: vi.fn(async () => []),
+        get: vi.fn(async () => null),
+      },
+      mode: {
+        get: vi.fn(async () => ({ mode: 'plan' as const })),
       },
     },
+    subscribe: vi.fn(async () => ({ topic: 'noop', unsubscribe: async () => {} })),
     close: vi.fn(async () => undefined),
   };
 }
