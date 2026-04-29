@@ -72,6 +72,13 @@ export interface ProjectStore {
   /** Resolve by name OR id. Returns undefined when not found. */
   get(nameOrId: string): ProjectRecord | undefined;
   register(record: ProjectRecord): ProjectRecord;
+  /**
+   * Remove a project by id OR name. Returns true if a row was deleted.
+   * Phase 2B.1 m6 (`default-N` orphan prune) is the only current caller —
+   * callers MUST verify there are no task or worker references first; the
+   * SQLite implementation enforces FK so a referenced row throws.
+   */
+  delete(idOrName: string): boolean;
   snapshot(nameOrId: string): ProjectSnapshot | undefined;
   snapshots(filter?: ProjectRegistryListFilter): ProjectSnapshot[];
   size(): number;

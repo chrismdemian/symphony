@@ -154,6 +154,42 @@ describe('WorkerRegistry — write-through to WorkerStore', () => {
     });
   });
 
+  it('replace clears prior costUsd in memory and SQL (followups M1 audit fix)', () => {
+    const { store, calls } = makeSpyStore();
+    const reg = new WorkerRegistry({ store });
+    reg.register(makeRecord({ id: 'wk-1' }));
+    // Simulate the prior run accumulating cost then completing.
+    reg.updateCostUsd('wk-1', 0.42);
+    const exit: WorkerExitInfo = {
+      status: 'completed',
+      exitCode: 0,
+      signal: null,
+      durationMs: 100,
+    };
+    reg.markCompleted('wk-1', exit, () => 1_000_000_000);
+    expect(reg.get('wk-1')?.costUsd).toBe(0.42);
+
+    // Resume — without the fix, record.costUsd would carry the 0.42
+    // forward and be re-persisted on the next markCompleted.
+    reg.replace('wk-1', {
+      worker: makeFakeWorker('wk-1'),
+      buffer: new CircularBuffer<StreamEvent>(10),
+      detach: () => {},
+      sessionId: 'sess-resumed',
+    });
+    expect(reg.get('wk-1')?.costUsd).toBeUndefined();
+    const replaceCall = calls
+      .filter((c) => c.op === 'update' && c.id === 'wk-1')
+      .at(-1);
+    expect(replaceCall?.payload).toMatchObject({
+      status: 'spawning',
+      completedAt: null,
+      exitCode: null,
+      exitSignal: null,
+      costUsd: null,
+    });
+  });
+
   it('markCompleted writes terminal status + exit info', () => {
     const { store, calls } = makeSpyStore();
     const reg = new WorkerRegistry({ store });

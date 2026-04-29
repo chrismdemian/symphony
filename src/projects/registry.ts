@@ -91,6 +91,15 @@ export class ProjectRegistry implements ProjectStore {
     return resolved;
   }
 
+  delete(idOrName: string): boolean {
+    const record = this.get(idOrName);
+    if (!record) return false;
+    this.byId.delete(record.id);
+    this.byName.delete(record.name);
+    this.byPath.delete(record.path);
+    return true;
+  }
+
   snapshot(nameOrId: string): ProjectSnapshot | undefined {
     const r = this.get(nameOrId);
     return r ? toProjectSnapshot(r) : undefined;

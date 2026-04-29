@@ -112,6 +112,20 @@ export class InvalidTaskTransitionError extends Error {
   }
 }
 
+/**
+ * Phase 2B.1 m4: in-memory `TaskRegistry.create` accepted any projectId
+ * string while `SqliteTaskStore` enforced FK. Drift-killer thrown when
+ * the DI'd `projectStore.get(projectId)` returns undefined.
+ */
+export class UnknownProjectIdError extends Error {
+  readonly projectId: string;
+  constructor(projectId: string) {
+    super(`No project registered with id or name "${projectId}"`);
+    this.name = 'UnknownProjectIdError';
+    this.projectId = projectId;
+  }
+}
+
 export class UnknownTaskError extends Error {
   readonly taskId: string;
   constructor(taskId: string) {

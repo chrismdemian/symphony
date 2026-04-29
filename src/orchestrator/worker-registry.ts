@@ -44,6 +44,12 @@ export interface WorkerRecord {
    * event arrives (which happens within ms of a successful spawn).
    */
   lastEventAt?: string;
+  /**
+   * Cumulative session cost in USD as reported by the most recent
+   * `result` event's `total_cost_usd`. Persisted via `markCompleted` so
+   * the reserved `workers.cost_usd` SQL column gets populated. Phase 2B.1b m1.
+   */
+  costUsd?: number;
   /** Unsubscribe callback for the event-tap consumer. Called on remove/shutdown. */
   detach: () => void;
 }
@@ -63,6 +69,7 @@ export interface WorkerRecordSnapshot {
   readonly createdAt: string;
   readonly completedAt?: string;
   readonly lastEventAt?: string;
+  readonly costUsd?: number;
   readonly exitCode?: number | null;
   readonly exitSignal?: NodeJS.Signals | null;
 }
@@ -188,6 +195,13 @@ export class WorkerRegistry {
     if (update.sessionId !== undefined) existing.sessionId = update.sessionId;
     existing.completedAt = undefined;
     existing.exitInfo = undefined;
+    // Phase 2B-followups M1 (audit) — also clear in-memory `costUsd`. If
+    // the resumed run never reaches a `result` event (kill, network drop,
+    // crash before turn-complete), the next `markCompleted` would
+    // otherwise re-persist the PRIOR run's cumulative cost stamped with
+    // the new completedAt, producing a misleading audit trail. Pair with
+    // the explicit `costUsd: null` patch below.
+    existing.costUsd = undefined;
     // Explicitly clear prior terminal columns in SQL — without this, a
     // crashed worker that gets resumed would carry stale completedAt /
     // exitCode / exitSignal forever, surfacing a misleading audit trail
@@ -197,6 +211,7 @@ export class WorkerRegistry {
       completedAt: null,
       exitCode: null,
       exitSignal: null,
+      costUsd: null,
       ...(update.sessionId !== undefined ? { sessionId: update.sessionId } : {}),
     });
   }
@@ -238,14 +253,41 @@ export class WorkerRegistry {
     record.exitInfo = exitInfo;
     const completedAt = new Date(now()).toISOString();
     record.completedAt = completedAt;
+    // Phase 2A.4a m5 — for terminal workers, `lastEventAt` is the
+    // timestamp of the final stream event. If a worker exits via SIGKILL
+    // without emitting a final event, `lastEventAt` and `completedAt`
+    // could be seconds apart. Stamping `lastEventAt = completedAt` makes
+    // the "where was I?" semantics unambiguous: terminal records report
+    // their exit time as last activity.
+    record.lastEventAt = completedAt;
     if (exitInfo.sessionId !== undefined) record.sessionId = exitInfo.sessionId;
     this.store?.update(id, {
       status: exitInfo.status,
       completedAt,
+      lastEventAt: completedAt,
       exitCode: exitInfo.exitCode,
       exitSignal: exitInfo.signal,
       ...(exitInfo.sessionId !== undefined ? { sessionId: exitInfo.sessionId } : {}),
+      // Phase 2B.1b m1 — persist the cumulative session cost captured by
+      // the lifecycle event tap. The reserved `workers.cost_usd` column
+      // is finally written. `record.costUsd` may be undefined for workers
+      // that never emit a `result` event (early crash) — the patch's
+      // `T | null` semantics treat absence as "preserve" so we explicitly
+      // pass null in that case to clear stale data on resume.
+      costUsd: record.costUsd ?? null,
     });
+  }
+
+  /**
+   * Phase 2B.1b m1 — capture the cumulative session cost emitted by
+   * `result` events so it can be persisted on completion. Idempotent:
+   * `total_cost_usd` is cumulative across turns, last value wins.
+   */
+  updateCostUsd(id: string, costUsd: number): void {
+    const record = this.records.get(id);
+    if (!record) return;
+    if (!Number.isFinite(costUsd) || costUsd < 0) return;
+    record.costUsd = costUsd;
   }
 
   updateSessionId(id: string, sessionId: string): void {
@@ -334,6 +376,7 @@ export function toPersisted(record: WorkerRecord): PersistedWorkerRecord {
     ...(record.sessionId !== undefined ? { sessionId: record.sessionId } : {}),
     ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
     ...(record.lastEventAt !== undefined ? { lastEventAt: record.lastEventAt } : {}),
+    ...(record.costUsd !== undefined ? { costUsd: record.costUsd } : {}),
     ...(record.exitInfo !== undefined
       ? {
           exitCode: record.exitInfo.exitCode,
@@ -369,6 +412,7 @@ export function persistedToSnapshot(
     ...(record.sessionId !== undefined ? { sessionId: record.sessionId } : {}),
     ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
     ...(record.lastEventAt !== undefined ? { lastEventAt: record.lastEventAt } : {}),
+    ...(record.costUsd !== undefined ? { costUsd: record.costUsd } : {}),
     ...(record.exitCode !== undefined ? { exitCode: record.exitCode } : {}),
     ...(record.exitSignal !== undefined ? { exitSignal: record.exitSignal } : {}),
   };
@@ -457,6 +501,7 @@ export function toSnapshot(r: WorkerRecord): WorkerRecordSnapshot {
     ...(r.sessionId !== undefined ? { sessionId: r.sessionId } : {}),
     ...(r.completedAt !== undefined ? { completedAt: r.completedAt } : {}),
     ...(r.lastEventAt !== undefined ? { lastEventAt: r.lastEventAt } : {}),
+    ...(r.costUsd !== undefined ? { costUsd: r.costUsd } : {}),
     ...(r.exitInfo !== undefined
       ? {
           exitCode: r.exitInfo.exitCode,

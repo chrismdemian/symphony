@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { promises as fsp } from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 
@@ -65,19 +66,58 @@ export function defaultRpcTokenFilePath(home: string = os.homedir()): string {
 }
 
 /**
+ * Phase 2B.2 m10: error thrown when `writeRpcDescriptor` finds a
+ * pre-existing descriptor whose pid is still alive. The caller can
+ * decide whether to abort (default — refuse to start a second
+ * orchestrator pointing at the same descriptor) or to override.
+ */
+export class RpcDescriptorConflictError extends Error {
+  readonly path: string;
+  readonly pid: number;
+  constructor(filePath: string, pid: number) {
+    super(
+      `Another Symphony orchestrator (pid ${pid}) appears to own ${filePath}. ` +
+        `Stop it first, delete the file manually, or pass --rpc-token-file with a different path.`,
+    );
+    this.name = 'RpcDescriptorConflictError';
+    this.path = filePath;
+    this.pid = pid;
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    // `process.kill(pid, 0)` is the canonical liveness probe — it sends
+    // signal 0 (no actual signal), succeeds if the process exists and we
+    // have permission, EPERM if alive but no permission, ESRCH if dead.
+    process.kill(pid, 0);
+    return true;
+  } catch (cause) {
+    const code = (cause as NodeJS.ErrnoException).code;
+    if (code === 'EPERM') return true;
+    return false;
+  }
+}
+
+/**
  * Persist a descriptor to disk with 0o600 perms enforced regardless of
  * pre-existing file state. Returns the absolute path written.
  *
- * Audit M1 (2B.2 review): `fs.writeFile(..., { mode: 0o600 })` only
- * applies the mode on FILE CREATION. A pre-existing 0o644 token file
- * silently keeps its mode, defeating the security model. Defense:
- * unlink-best-effort, write fresh, then `fchmod` defensively. The mode
- * passed to `open(..., 'w', 0o600)` covers the create case; the chmod
- * after write covers any pre-existing-file-with-loose-mode case missed
- * by the kernel.
+ * Audit M1 (2B.2): `fs.writeFile(..., { mode: 0o600 })` only honors mode
+ * on CREATE. A pre-existing 0o644 token file silently kept its mode,
+ * defeating the security model.
  *
- * Win32: `chmod` on Win32 is a no-op for ACL purposes. Documented as a
- * known gotcha — file is FS-permission-only on Windows v1.
+ * Audit m10 (2B.2): two orchestrators starting concurrently with the
+ * same `tokenFilePath` would race-overwrite each other's descriptors;
+ * clients reading the file got the second one's port + token, leaving
+ * the first orphaned (port still bound, nobody discovers it). Fix:
+ * `fs.open(path, 'wx', 0o600)` (O_CREAT | O_EXCL) — fails atomically
+ * if the file exists. On EEXIST, validate the resident pid: if alive,
+ * throw `RpcDescriptorConflictError`; if dead, unlink and retry once.
+ *
+ * Win32: `chmod` is a no-op for ACL purposes; documented as known
+ * gotcha. The atomic-create + pid-liveness invariants still hold.
  */
 export async function writeRpcDescriptor(
   descriptor: RpcDescriptor,
@@ -85,28 +125,43 @@ export async function writeRpcDescriptor(
 ): Promise<string> {
   const absolute = path.resolve(filePath);
   await fsp.mkdir(path.dirname(absolute), { recursive: true, mode: 0o700 });
-  // Best-effort unlink: if a previous file with a permissive mode exists,
-  // remove it so the subsequent open(..., 'w', 0o600) creates fresh and
-  // mode is honored.
-  try {
-    await fsp.unlink(absolute);
-  } catch (cause) {
-    if ((cause as NodeJS.ErrnoException).code !== 'ENOENT') {
-      throw cause;
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let handle: FileHandle | undefined;
+    try {
+      handle = await fsp.open(absolute, 'wx', 0o600);
+    } catch (cause) {
+      if ((cause as NodeJS.ErrnoException).code !== 'EEXIST') throw cause;
+      // EEXIST: validate the resident pid. Live → conflict; dead → unlink + retry.
+      let prior: RpcDescriptor | undefined;
+      try {
+        prior = await readRpcDescriptor(absolute);
+      } catch {
+        // Malformed pre-existing file — treat as stale, unlink + retry.
+      }
+      if (prior !== undefined && isProcessAlive(prior.pid) && prior.pid !== process.pid) {
+        throw new RpcDescriptorConflictError(absolute, prior.pid);
+      }
+      await fsp.unlink(absolute).catch(() => {});
+      continue;
     }
-  }
-  const handle = await fsp.open(absolute, 'w', 0o600);
-  try {
-    await handle.writeFile(JSON.stringify(descriptor, null, 2), { encoding: 'utf8' });
-    // Defensive `fchmod` — covers any platform/edge case where the
-    // open mode wasn't honored exactly.
-    if (process.platform !== 'win32') {
-      await handle.chmod(0o600);
+    try {
+      await handle.writeFile(JSON.stringify(descriptor, null, 2), { encoding: 'utf8' });
+      // Defensive fchmod for platforms where `open(... 'wx', 0o600)`
+      // applied an unexpected mode (e.g. inherited umask quirks).
+      if (process.platform !== 'win32') {
+        await handle.chmod(0o600);
+      }
+    } finally {
+      await handle.close();
     }
-  } finally {
-    await handle.close();
+    return absolute;
   }
-  return absolute;
+  // Both attempts hit EEXIST + alive pid (very rare race: another
+  // process recreated between unlink and reopen). Surface via
+  // `readRpcDescriptor` for a clear error.
+  const prior = await readRpcDescriptor(absolute);
+  throw new RpcDescriptorConflictError(absolute, prior.pid);
 }
 
 export async function readRpcDescriptor(

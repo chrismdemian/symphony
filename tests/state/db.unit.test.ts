@@ -159,4 +159,51 @@ describe('SymphonyDatabase', () => {
     const resolved = resolveDatabasePath();
     expect(resolved.endsWith(path.join('.symphony', 'symphony.db'))).toBe(true);
   });
+
+  it('migration 0003 enforces workers.status CHECK + autonomy_tier DEFAULT 1 (2B.1b m2/m3)', () => {
+    const svc = SymphonyDatabase.open({ filePath: ':memory:' });
+    try {
+      // CHECK constraint rejects unknown statuses.
+      expect(() =>
+        svc.db
+          .prepare(
+            `INSERT INTO workers (id, worktree_path, status, role, feature_intent, task_description, created_at)
+             VALUES ('w1', '/tmp/wt', 'bogus', 'implementer', 'fi', 'td', '2026-01-01T00:00:00Z')`,
+          )
+          .run(),
+      ).toThrow(/CHECK constraint failed/);
+
+      // DEFAULT autonomy_tier is 1 (matches runtime default), not 2.
+      svc.db
+        .prepare(
+          `INSERT INTO workers (id, worktree_path, status, role, feature_intent, task_description, created_at)
+           VALUES ('w2', '/tmp/wt', 'spawning', 'implementer', 'fi', 'td', '2026-01-01T00:00:00Z')`,
+        )
+        .run();
+      const row = svc.db
+        .prepare(`SELECT autonomy_tier FROM workers WHERE id = 'w2'`)
+        .get() as { autonomy_tier: number };
+      expect(row.autonomy_tier).toBe(1);
+    } finally {
+      svc.close();
+    }
+  });
+
+  it('SYMPHONY_DB_FILE=:memory: short-circuits path resolution (2B.1 m2)', () => {
+    process.env.SYMPHONY_DB_FILE = ':memory:';
+    expect(resolveDatabasePath()).toBe(':memory:');
+    const svc = SymphonyDatabase.open();
+    try {
+      expect(svc.dbPath).toBe(':memory:');
+      // No file is created on disk for in-memory.
+      expect(fs.existsSync(':memory:')).toBe(false);
+      // And the schema is still valid in-memory.
+      const tables = svc.db
+        .prepare(`SELECT name FROM sqlite_master WHERE type='table'`)
+        .all() as { name: string }[];
+      expect(tables.map((t) => t.name)).toContain('projects');
+    } finally {
+      svc.close();
+    }
+  });
 });

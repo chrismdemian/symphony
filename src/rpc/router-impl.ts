@@ -152,7 +152,7 @@ export function createSymphonyRouter(deps: RouterDeps) {
     },
     create(input: CreateTaskInput): TaskSnapshot {
       requireString(input?.projectId, 'projectId');
-      requireString(input?.description, 'description');
+      requireBoundedString(input?.description, 'description', TASKS_DESCRIPTION_MAX);
       // Resolve project name → id so the task references a stable id even
       // if Phase 2B swaps in UUID-keyed records (audit M2 from 2A.4a).
       const project = projectStore.get(input.projectId);
@@ -173,6 +173,12 @@ export function createSymphonyRouter(deps: RouterDeps) {
     },
     update(args: TasksUpdateArgs): TaskSnapshot {
       requireString(args?.id, 'id');
+      // Phase 2B.2 m7 — only `notes` is a long-form field on the patch;
+      // `status`/`workerId`/`result` are short. Cap notes; let the rest
+      // pass through to the store's own validation.
+      if (args?.patch?.notes !== undefined) {
+        requireBoundedString(args.patch.notes, 'patch.notes', TASKS_NOTES_MAX);
+      }
       const record = taskStore.update(args.id, args.patch ?? {});
       const snap = taskStore.snapshot(record.id);
       if (snap === undefined) {
@@ -302,6 +308,28 @@ function notFound(message: string): RpcArgError {
 function requireString(value: unknown, name: string): asserts value is string {
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw badArgs(`${name} must be a non-empty string`);
+  }
+}
+
+/**
+ * Phase 2B.2 m7 — defense-in-depth length caps at the RPC router boundary.
+ * The wire-frame cap (`MAX_FRAME_BYTES = 1 MiB`) bounds total per-frame
+ * cost; per-field caps prevent one giant string from exhausting the
+ * SQLite TEXT column in `taskStore.create`/`update` or chewing render
+ * budget in the TUI. Caps are generous; the goal is `bad_args` rejection
+ * for runaway data, not a UX limit.
+ */
+const TASKS_DESCRIPTION_MAX = 16 * 1024;
+const TASKS_NOTES_MAX = 64 * 1024;
+
+function requireBoundedString(
+  value: unknown,
+  name: string,
+  maxBytes: number,
+): asserts value is string {
+  requireString(value, name);
+  if (Buffer.byteLength(value, 'utf8') > maxBytes) {
+    throw badArgs(`${name} exceeds ${maxBytes}-byte cap`);
   }
 }
 

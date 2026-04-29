@@ -18,3 +18,4 @@ export type {
 export { ProtocolError, PROTOCOL_VERSION, decodeFrame, encodeFrame, ok, err } from './protocol.js';
 export { createRPCController, createRPCRouter, createRPCClient } from './router.js';
 export type { IpcClient } from './router.js';
+export { RpcDescriptorConflictError, UnauthorizedError } from './auth.js';

@@ -70,6 +70,7 @@ export {
   canTransition,
   isTerminalStatus,
   InvalidTaskTransitionError,
+  UnknownProjectIdError,
   UnknownTaskError,
 } from '../state/types.js';
 export type {
@@ -115,9 +116,13 @@ export { applyMigrations, readMigrationFiles, MigrationError } from '../state/mi
 export type { MigrationFile, MigrationSummary } from '../state/migrations.js';
 export { resolveDatabasePath, resolveMigrationsPath } from '../state/path.js';
 export { SqliteProjectStore } from '../state/sqlite-project-store.js';
+export type { SqliteProjectStoreOptions } from '../state/sqlite-project-store.js';
 export { SqliteTaskStore } from '../state/sqlite-task-store.js';
+export type { SqliteTaskStoreOptions } from '../state/sqlite-task-store.js';
 export { SqliteQuestionStore } from '../state/sqlite-question-store.js';
+export type { SqliteQuestionStoreOptions } from '../state/sqlite-question-store.js';
 export { SqliteWaveStore } from '../state/sqlite-wave-store.js';
+export type { SqliteWaveStoreOptions } from '../state/sqlite-wave-store.js';
 export { SqliteWorkerStore } from '../state/sqlite-worker-store.js';
 export type {
   PersistedWorkerRecord,
@@ -126,3 +131,5 @@ export type {
   WorkerStoreUpdatePatch,
   SqliteWorkerStoreOptions,
 } from '../state/sqlite-worker-store.js';
+export type { TaskRegistryOptions } from '../state/task-registry.js';
+export type { QuestionRegistryOptions } from '../state/question-registry.js';

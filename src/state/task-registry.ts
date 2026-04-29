@@ -1,8 +1,10 @@
 import { randomBytes } from 'node:crypto';
+import type { ProjectStore } from '../projects/types.js';
 import {
   canTransition,
   InvalidTaskTransitionError,
   isTerminalStatus,
+  UnknownProjectIdError,
   UnknownTaskError,
   type CreateTaskInput,
   type TaskListFilter,
@@ -17,6 +19,12 @@ import {
 export interface TaskRegistryOptions {
   readonly now?: () => number;
   readonly idGenerator?: () => string;
+  /**
+   * Optional `ProjectStore` for FK-parity with `SqliteTaskStore`. When
+   * supplied, `create()` rejects unknown projectIds with
+   * `UnknownProjectIdError` instead of accepting any string. Phase 2B.1 m4.
+   */
+  readonly projectStore?: ProjectStore;
 }
 
 function defaultIdGenerator(): string {
@@ -32,10 +40,12 @@ export class TaskRegistry implements TaskStore {
   private readonly records = new Map<string, TaskRecord>();
   private readonly now: () => number;
   private readonly genId: () => string;
+  private readonly projectStore: ProjectStore | undefined;
 
   constructor(opts: TaskRegistryOptions = {}) {
     this.now = opts.now ?? Date.now;
     this.genId = opts.idGenerator ?? defaultIdGenerator;
+    this.projectStore = opts.projectStore;
   }
 
   list(filter: TaskListFilter = {}): TaskRecord[] {
@@ -70,6 +80,12 @@ export class TaskRegistry implements TaskStore {
     // `z.number().int()` and keeps the 2B swap zero-touch.
     if (!Number.isInteger(priority)) {
       throw new Error(`TaskRegistry.create: priority must be an integer, got ${priority}`);
+    }
+    // Phase 2B.1 m4: FK-parity with SqliteTaskStore. Without DI, in-memory
+    // mode silently accepted unknown projectIds; the `--in-memory` and
+    // SQLite default modes diverged. When a projectStore is wired, reject.
+    if (this.projectStore && !this.projectStore.get(input.projectId)) {
+      throw new UnknownProjectIdError(input.projectId);
     }
     const id = this.freshId();
     const iso = new Date(this.now()).toISOString();

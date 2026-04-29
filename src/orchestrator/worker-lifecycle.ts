@@ -136,6 +136,11 @@ function attachEventTap(
           registry.updateStatus(recordId, 'running');
         } else if (event.type === 'result') {
           registry.updateSessionId(recordId, event.sessionId);
+          // Phase 2B.1b m1 — capture cumulative session cost so
+          // `markCompleted` can persist it into the workers table.
+          if (event.costUsd !== undefined) {
+            registry.updateCostUsd(recordId, event.costUsd);
+          }
         }
         // Read through the ref so `setOnEvent` late-binding from the
         // orchestrator wires the broker for taps that started before it.
@@ -441,6 +446,7 @@ function rehydrateRecord(
     ...(persisted.sessionId !== undefined ? { sessionId: persisted.sessionId } : {}),
     ...(persisted.completedAt !== undefined ? { completedAt: persisted.completedAt } : {}),
     ...(persisted.lastEventAt !== undefined ? { lastEventAt: persisted.lastEventAt } : {}),
+    ...(persisted.costUsd !== undefined ? { costUsd: persisted.costUsd } : {}),
     ...(persisted.exitCode !== undefined && persisted.exitCode !== null
       ? {
           exitInfo: {
