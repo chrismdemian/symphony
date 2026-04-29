@@ -153,6 +153,51 @@ describe('buildWorkerEnv — extraEnv + blocklist', () => {
   });
 });
 
+describe('buildWorkerEnv — allowExtraEnvKeys carve-out (Maestro Stop hook)', () => {
+  it('exempts exact-match keys from the prefix blocklist', () => {
+    const hits: string[] = [];
+    const { env, blockedKeys } = buildWorkerEnv({
+      sourceEnv: {},
+      extraEnv: {
+        SYMPHONY_HOOK_PORT: '54321',
+        SYMPHONY_HOOK_TOKEN: 'tok-abc',
+        SYMPHONY_DB_FILE: '/some/path.db',
+      },
+      allowExtraEnvKeys: ['SYMPHONY_HOOK_PORT', 'SYMPHONY_HOOK_TOKEN'],
+      platform: 'linux',
+      onBlocklistHit: (k) => hits.push(k),
+    });
+    expect(env.SYMPHONY_HOOK_PORT).toBe('54321');
+    expect(env.SYMPHONY_HOOK_TOKEN).toBe('tok-abc');
+    expect(env.SYMPHONY_DB_FILE).toBeUndefined();
+    expect(blockedKeys).toEqual(['SYMPHONY_DB_FILE']);
+    expect(hits).toEqual(['SYMPHONY_DB_FILE']);
+  });
+
+  it('default (no allowExtraEnvKeys) preserves the existing posture', () => {
+    const { env, blockedKeys } = buildWorkerEnv({
+      sourceEnv: {},
+      extraEnv: { SYMPHONY_HOOK_PORT: '1', SYMPHONY_FOO: '2' },
+      platform: 'linux',
+    });
+    expect(env.SYMPHONY_HOOK_PORT).toBeUndefined();
+    expect(env.SYMPHONY_FOO).toBeUndefined();
+    expect(blockedKeys.sort()).toEqual(['SYMPHONY_FOO', 'SYMPHONY_HOOK_PORT']);
+  });
+
+  it('does not exempt non-listed prefixed keys even when allowlist non-empty', () => {
+    const { env, blockedKeys } = buildWorkerEnv({
+      sourceEnv: {},
+      extraEnv: { SYMPHONY_HOOK_PORT: '1', CLAUDECODE_X: '2' },
+      allowExtraEnvKeys: ['SYMPHONY_HOOK_PORT'],
+      platform: 'linux',
+    });
+    expect(env.SYMPHONY_HOOK_PORT).toBe('1');
+    expect(env.CLAUDECODE_X).toBeUndefined();
+    expect(blockedKeys).toEqual(['CLAUDECODE_X']);
+  });
+});
+
 describe('buildWorkerEnv — CLAUDECODE pollution scrub', () => {
   it('strips CLAUDECODE and CLAUDE_CODE_* keys even if they sneak through', () => {
     // Simulate parent Claude Code session leaking CLAUDECODE=1 — must not

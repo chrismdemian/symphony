@@ -13,17 +13,32 @@ export default defineConfig({
   sourcemap: true,
   splitting: false,
   shims: false,
-  // Ship Phase 2B.1 migration SQL files alongside the bundle so the
-  // runtime `resolveMigrationsPath()` finds them next to `dist/index.js`.
+  // Ship Phase 2B.1 migration SQL files + Phase 2C Maestro prompts
+  // alongside the bundle so the runtime resolvers find them next to
+  // `dist/index.js`.
   onSuccess: async () => {
-    const src = path.resolve('src/state/migrations');
-    const dst = path.resolve('dist/migrations');
-    fs.rmSync(dst, { recursive: true, force: true });
-    fs.mkdirSync(dst, { recursive: true });
-    for (const file of fs.readdirSync(src)) {
-      if (file.endsWith('.sql')) {
-        fs.copyFileSync(path.join(src, file), path.join(dst, file));
+    const copyTree = (
+      srcAbs: string,
+      dstAbs: string,
+      predicate: (name: string) => boolean,
+    ): void => {
+      fs.rmSync(dstAbs, { recursive: true, force: true });
+      fs.mkdirSync(dstAbs, { recursive: true });
+      for (const file of fs.readdirSync(srcAbs)) {
+        if (predicate(file)) {
+          fs.copyFileSync(path.join(srcAbs, file), path.join(dstAbs, file));
+        }
       }
-    }
+    };
+    copyTree(
+      path.resolve('src/state/migrations'),
+      path.resolve('dist/migrations'),
+      (f) => f.endsWith('.sql'),
+    );
+    copyTree(
+      path.resolve('research/prompts'),
+      path.resolve('dist/prompts'),
+      (f) => f.endsWith('.md'),
+    );
   },
 });

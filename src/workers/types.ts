@@ -164,6 +164,29 @@ export interface WorkerConfig {
    * Silent substitution breaks observability of session identity.
    */
   onStaleResume?: 'reject' | 'warn-and-fresh' | 'start-fresh';
+  /**
+   * Skip writing `prompt` as the first stream-json user message. The child is
+   * spawned and stdout drained, but stdin sits idle until the caller sends a
+   * message via `worker.sendFollowup()`. Used by Maestro: a long-lived
+   * orchestrator boots silent and waits for the human's first turn rather
+   * than responding to a synthetic empty prompt. `prompt` is ignored when
+   * this flag is set.
+   */
+  skipInitialPrompt?: boolean;
+  /**
+   * Disable the spawn-side timeout entirely. The default 20-minute timeout
+   * exists to bound runaway one-shot workers; long-lived processes (Maestro)
+   * must opt out. Mutually exclusive with a positive `timeoutMs` — if both
+   * are provided, `disableTimeout` wins.
+   */
+  disableTimeout?: boolean;
+  /**
+   * Allowlist of `extraEnv` keys that bypass the SYMPHONY_*-prefix blocklist.
+   * Maestro needs this for `SYMPHONY_HOOK_PORT` / `SYMPHONY_HOOK_TOKEN` so
+   * its Stop hook curl command can resolve them; default empty preserves
+   * the existing prefix block for every other caller.
+   */
+  allowExtraEnvKeys?: readonly string[];
 }
 
 export interface WorkerExitInfo {

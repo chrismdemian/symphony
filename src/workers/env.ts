@@ -64,6 +64,13 @@ export interface BuildWorkerEnvInput {
   sourceEnv?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   onBlocklistHit?: (key: string) => void;
+  /**
+   * Exact-match allowlist that bypasses the prefix blocklist for `extraEnv`
+   * keys. Default empty preserves the existing posture (no escapes). Maestro
+   * passes its `SYMPHONY_HOOK_*` keys here — every other caller leaves it
+   * unset so SYMPHONY_DB_FILE etc. stay blocked.
+   */
+  allowExtraEnvKeys?: readonly string[];
 }
 
 export interface BuildWorkerEnvResult {
@@ -99,9 +106,14 @@ export function buildWorkerEnv(input: BuildWorkerEnvInput = {}): BuildWorkerEnvR
   }
 
   const blocked: string[] = [];
+  const allowSet =
+    input.allowExtraEnvKeys !== undefined && input.allowExtraEnvKeys.length > 0
+      ? new Set(input.allowExtraEnvKeys)
+      : undefined;
   if (input.extraEnv !== undefined) {
     for (const [key, value] of Object.entries(input.extraEnv)) {
-      if (isExtraEnvBlocked(key)) {
+      const exempt = allowSet?.has(key) === true;
+      if (!exempt && isExtraEnvBlocked(key)) {
         blocked.push(key);
         input.onBlocklistHit?.(key);
         continue;
