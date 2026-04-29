@@ -179,6 +179,9 @@ export class WorkerManager {
 
     const { env, blockedKeys } = buildWorkerEnv({
       ...(cfg.extraEnv !== undefined ? { extraEnv: cfg.extraEnv } : {}),
+      ...(cfg.allowExtraEnvKeys !== undefined && cfg.allowExtraEnvKeys.length > 0
+        ? { allowExtraEnvKeys: cfg.allowExtraEnvKeys }
+        : {}),
     });
     for (const key of blockedKeys) this.options.onBlockedEnv?.(cfg.id, key);
 
@@ -212,9 +215,12 @@ export class WorkerManager {
     });
 
     this.workers.set(cfg.id, worker);
-    worker.begin(cfg.prompt, cfg.keepStdinOpen ?? false);
+    worker.begin(cfg.prompt, cfg.keepStdinOpen ?? false, cfg.skipInitialPrompt ?? false);
 
-    if (cfg.timeoutMs !== undefined && cfg.timeoutMs > 0) {
+    if (cfg.disableTimeout === true) {
+      // Long-lived processes (Maestro) opt out of the spawn-side guard.
+      // The caller is responsible for graceful kill on shutdown.
+    } else if (cfg.timeoutMs !== undefined && cfg.timeoutMs > 0) {
       worker.armTimeout(cfg.timeoutMs);
     } else {
       worker.armTimeout(DEFAULT_TIMEOUT_MS);
@@ -406,10 +412,12 @@ class WorkerImpl implements Worker {
     return this.exitPromise;
   }
 
-  begin(prompt: string, keepStdinOpen: boolean): void {
+  begin(prompt: string, keepStdinOpen: boolean, skipInitialPrompt: boolean): void {
     this._status = 'running';
     this.keepStdinOpen = keepStdinOpen;
-    this.writeUserMessage(prompt);
+    if (!skipInitialPrompt) {
+      this.writeUserMessage(prompt);
+    }
     void this.drain();
   }
 

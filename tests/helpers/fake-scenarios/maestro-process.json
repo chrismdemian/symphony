@@ -1,0 +1,93 @@
+{
+  "steps": [
+    {
+      "action": "emit",
+      "line": {
+        "type": "system",
+        "subtype": "init",
+        "session_id": "00000000-0000-4000-8000-000000000060",
+        "cwd": "/tmp/fake-maestro",
+        "model": "claude-opus-4-7",
+        "tools": ["spawn_worker", "list_workers", "ask_user"]
+      }
+    },
+    { "action": "await_user", "matchContainsText": "first turn", "required": true },
+    {
+      "action": "emit",
+      "line": {
+        "type": "assistant",
+        "message": {
+          "role": "assistant",
+          "model": "claude-opus-4-7",
+          "content": [{ "type": "text", "text": "I will spawn one worker." }],
+          "usage": {
+            "input_tokens": 5,
+            "output_tokens": 7,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0
+          }
+        }
+      }
+    },
+    {
+      "action": "emit",
+      "line": {
+        "type": "assistant",
+        "message": {
+          "role": "assistant",
+          "model": "claude-opus-4-7",
+          "content": [
+            {
+              "type": "tool_use",
+              "id": "tu-1",
+              "name": "spawn_worker",
+              "input": { "role": "researcher", "task": "demo" }
+            }
+          ],
+          "usage": {
+            "input_tokens": 0,
+            "output_tokens": 5,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0
+          }
+        }
+      }
+    },
+    {
+      "action": "emit",
+      "line": {
+        "type": "user",
+        "message": {
+          "role": "user",
+          "content": [
+            {
+              "type": "tool_result",
+              "tool_use_id": "tu-1",
+              "content": "ok worker started",
+              "is_error": false
+            }
+          ]
+        }
+      }
+    },
+    {
+      "action": "emit",
+      "line": {
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "duration_ms": 80,
+        "num_turns": 1,
+        "result": "I will spawn one worker.",
+        "session_id": "00000000-0000-4000-8000-000000000060",
+        "usage": {
+          "input_tokens": 5,
+          "output_tokens": 12,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0
+        }
+      }
+    },
+    { "action": "exit", "code": 0 }
+  ]
+}

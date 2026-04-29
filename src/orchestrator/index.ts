@@ -133,3 +133,37 @@ export type {
 } from '../state/sqlite-worker-store.js';
 export type { TaskRegistryOptions } from '../state/task-registry.js';
 export type { QuestionRegistryOptions } from '../state/question-registry.js';
+export {
+  MaestroProcess,
+  MaestroTurnInFlightError,
+  ensureMaestroWorkspace,
+  writeMaestroClaudeMd,
+  MAESTRO_CLAUDE_MD_HEADER,
+  composeMaestroPrompt,
+  resolveMaestroPromptsDir,
+  MaestroPromptLoadError,
+  writeMaestroMcpConfig,
+  resolveMaestroSession,
+  MAESTRO_SESSION_UUID,
+  awaitRpcReady,
+  connectMaestroRpc,
+  RpcReadyTimeoutError,
+  RpcReadyAbortedError,
+} from './maestro/index.js';
+export type {
+  MaestroWorkspace,
+  EnsureMaestroWorkspaceOptions,
+  MaestroPromptVars,
+  WriteMaestroMcpConfigInput,
+  MaestroMcpConfigResult,
+  McpServerEntry,
+  ResolveMaestroSessionInput,
+  ResolvedMaestroSession,
+  AwaitRpcReadyInput,
+  RpcReadyDescriptor,
+  ConnectMaestroRpcInput,
+  MaestroProcessDeps,
+  MaestroStartInput,
+  MaestroStartResult,
+  MaestroEvent,
+} from './maestro/index.js';
