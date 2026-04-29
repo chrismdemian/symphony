@@ -27,6 +27,22 @@ export interface AwaitRpcReadyInput {
   acceptOnlyPid?: number;
   /** Optional abort signal (e.g. parent shutting down mid-wait). */
   signal?: AbortSignal;
+  /**
+   * Optional callback invoked when polling reads a descriptor whose pid
+   * doesn't match `acceptOnlyPid`. The polling loop continues; this is
+   * purely a debug-visibility hook so a forever-stale `acceptOnlyPid`
+   * mismatch doesn't sit silent for 30s (audit 2C.1 m7).
+   */
+  onStaleDescriptor?: (info: { foundPid: number; expectedPid: number }) => void;
+  /**
+   * Snapshot accessor for the most recent `symphony.rpc.ready` advert
+   * captured from the child's stderr (caller-provided line scanner). The
+   * launcher passes a closure that returns the parsed advert (or undefined
+   * if the child hasn't logged it yet). When provided, `RpcReadyTimeoutError`
+   * includes the advert in its message so failures don't strand the user
+   * staring at the descriptor path alone (audit 2C.2 M2).
+   */
+  capturedAdvert?: () => Record<string, unknown> | undefined;
 }
 
 export interface RpcReadyDescriptor extends RpcDescriptor {
@@ -35,14 +51,25 @@ export interface RpcReadyDescriptor extends RpcDescriptor {
 
 export class RpcReadyTimeoutError extends Error {
   readonly descriptorPath: string;
-  constructor(descriptorPath: string, timeoutMs: number) {
+  readonly capturedAdvert: Record<string, unknown> | undefined;
+  constructor(
+    descriptorPath: string,
+    timeoutMs: number,
+    capturedAdvert?: Record<string, unknown>,
+  ) {
+    const advertSuffix =
+      capturedAdvert !== undefined
+        ? `\nLast captured stderr advert: ${JSON.stringify(capturedAdvert)}`
+        : `\nNo \`symphony.rpc.ready\` advert was captured from the child's stderr.`;
     super(
       `Timed out after ${timeoutMs}ms waiting for RPC descriptor at ${descriptorPath}. ` +
         `Verify that \`symphony mcp-server\` started successfully (check stderr for the ` +
-        `"symphony.rpc.ready" advert).`,
+        `"symphony.rpc.ready" advert).` +
+        advertSuffix,
     );
     this.name = 'RpcReadyTimeoutError';
     this.descriptorPath = descriptorPath;
+    this.capturedAdvert = capturedAdvert;
   }
 }
 
@@ -78,6 +105,12 @@ export async function awaitRpcReady(
     try {
       const desc = await readRpcDescriptor(absolute);
       if (input.acceptOnlyPid !== undefined && desc.pid !== input.acceptOnlyPid) {
+        // Audit 2C.1 m7: forever-stale `acceptOnlyPid` mismatches sit silent
+        // for the full 30s timeout otherwise — let callers peek for debug.
+        input.onStaleDescriptor?.({
+          foundPid: desc.pid,
+          expectedPid: input.acceptOnlyPid,
+        });
         return undefined;
       }
       return { ...desc, descriptorPath: absolute };
@@ -150,7 +183,14 @@ export async function awaitRpcReady(
 
     pollHandle = setInterval(checkOnce, POLL_INTERVAL_MS);
     timeoutHandle = setTimeout(() => {
-      settle({ kind: 'err', error: new RpcReadyTimeoutError(absolute, timeoutMs) });
+      const advert = input.capturedAdvert?.();
+      settle({
+        kind: 'err',
+        error:
+          advert !== undefined
+            ? new RpcReadyTimeoutError(absolute, timeoutMs, advert)
+            : new RpcReadyTimeoutError(absolute, timeoutMs),
+      });
     }, timeoutMs);
 
     // One immediate check in case the descriptor landed between our initial

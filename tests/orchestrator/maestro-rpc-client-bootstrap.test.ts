@@ -100,6 +100,65 @@ describe('awaitRpcReady', () => {
     expect(desc.pid).toBe(12345);
   });
 
+  it('surfaces the captured advert in RpcReadyTimeoutError (audit M2)', async () => {
+    const descriptorPath = join(sandbox, '.symphony', 'rpc.json');
+    let calls = 0;
+    const advert = { event: 'symphony.rpc.ready', host: '127.0.0.1', port: 4242 };
+    let err: unknown;
+    try {
+      await awaitRpcReady({
+        descriptorPath,
+        timeoutMs: 250,
+        capturedAdvert: () => {
+          calls += 1;
+          return advert;
+        },
+      });
+    } catch (caught) {
+      err = caught;
+    }
+    expect(err).toBeInstanceOf(RpcReadyTimeoutError);
+    expect((err as RpcReadyTimeoutError).capturedAdvert).toEqual(advert);
+    expect((err as Error).message).toContain('"symphony.rpc.ready"');
+    expect((err as Error).message).toContain('"port":4242');
+    expect(calls).toBeGreaterThan(0);
+  });
+
+  it('omits advert text when capturedAdvert returns undefined', async () => {
+    const descriptorPath = join(sandbox, '.symphony', 'rpc.json');
+    let err: unknown;
+    try {
+      await awaitRpcReady({
+        descriptorPath,
+        timeoutMs: 250,
+        capturedAdvert: () => undefined,
+      });
+    } catch (caught) {
+      err = caught;
+    }
+    expect(err).toBeInstanceOf(RpcReadyTimeoutError);
+    expect((err as RpcReadyTimeoutError).capturedAdvert).toBeUndefined();
+    expect((err as Error).message).toContain('No `symphony.rpc.ready` advert was captured');
+  });
+
+  it('fires onStaleDescriptor when pid mismatch persists (audit 2C.1 m7)', async () => {
+    const descriptorPath = join(sandbox, '.symphony', 'rpc.json');
+    writeDescriptor(descriptorPath, { ...SAMPLE, pid: 99999 });
+    const stale: Array<{ foundPid: number; expectedPid: number }> = [];
+    setTimeout(() => writeDescriptor(descriptorPath, { ...SAMPLE, pid: 12345 }), 350);
+    const desc = await awaitRpcReady({
+      descriptorPath,
+      timeoutMs: 5_000,
+      acceptOnlyPid: 12345,
+      onStaleDescriptor: (info) => stale.push(info),
+    });
+    expect(desc.pid).toBe(12345);
+    // We expect at least one mismatch observation while pid was 99999.
+    expect(stale.length).toBeGreaterThan(0);
+    expect(stale[0]?.foundPid).toBe(99999);
+    expect(stale[0]?.expectedPid).toBe(12345);
+  });
+
   it('handles a unlink-then-rewrite (stale descriptor cleared by mcp-server restart)', async () => {
     const descriptorPath = join(sandbox, '.symphony', 'rpc.json');
     writeDescriptor(descriptorPath, { ...SAMPLE, pid: 11111 });

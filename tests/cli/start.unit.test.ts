@@ -4,7 +4,7 @@ import { request } from 'node:http';
 import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runStart } from '../../src/cli/start.js';
+import { runStart, resolveCliEntryFromHere } from '../../src/cli/start.js';
 import { MaestroHookServer } from '../../src/orchestrator/maestro/hook-server.js';
 import type {
   HookPayload,
@@ -149,6 +149,33 @@ async function postToHook(
     req.end();
   });
 }
+
+describe('resolveCliEntryFromHere (audit M4)', () => {
+  it('resolves index.{ts,js} sibling when parent dir basename is `cli`', () => {
+    expect(resolveCliEntryFromHere('/repo/src/cli/start.ts')).toBe(
+      join('/repo/src', 'index.ts'),
+    );
+    expect(resolveCliEntryFromHere('/app/dist/cli/start.js')).toBe(
+      join('/app/dist', 'index.js'),
+    );
+  });
+
+  it('throws when parent dir basename is not `cli` (future bundler inline)', () => {
+    expect(() => resolveCliEntryFromHere('/repo/dist/index.js')).toThrowError(
+      /expected parent dir basename 'cli', got 'dist'/,
+    );
+  });
+
+  it('throws with a useful message that points at the override knob', () => {
+    let err: unknown;
+    try {
+      resolveCliEntryFromHere('/some/odd/layout.js');
+    } catch (caught) {
+      err = caught;
+    }
+    expect((err as Error).message).toContain('RunStartOptions.cliEntryPath');
+  });
+});
 
 describe('runStart wiring (unit)', () => {
   it('calls projects.list, installs the hook, then starts Maestro — in that order', async () => {

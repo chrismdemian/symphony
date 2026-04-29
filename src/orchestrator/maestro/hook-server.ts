@@ -11,6 +11,13 @@ const TOKEN_HEADER = 'x-symphony-hook-token';
 const EVENT_HEADER = 'x-symphony-hook-event';
 const WWW_AUTH_VALUE = 'Bearer realm="symphony"';
 
+// Defense-in-depth slow-loris guards (audit m8). 127.0.0.1-only attack
+// surface is the same as native code execution, but a hung curl from a
+// crashed Maestro could otherwise pin a request handle indefinitely.
+const HEADERS_TIMEOUT_MS = 10_000;
+const REQUEST_TIMEOUT_MS = 30_000;
+const KEEP_ALIVE_TIMEOUT_MS = 5_000;
+
 export interface HookPayload {
   /** `session_id` from Claude Code's hook payload, when present. */
   sessionId?: string;
@@ -22,7 +29,7 @@ export interface HookPayload {
   raw: Record<string, unknown>;
 }
 
-export type HookEventType = 'stop';
+export type HookEventType = 'stop' | 'subagent_stop' | (string & {});
 
 export interface MaestroHookServerOptions {
   /** Override the bearer token (tests). Defaults to `crypto.randomUUID()`. */
@@ -100,6 +107,10 @@ export class MaestroHookServer {
       server.once('listening', onListening);
       server.listen(0, '127.0.0.1');
     });
+    // Defense-in-depth: bound how long a request may pin handles (audit m8).
+    server.headersTimeout = HEADERS_TIMEOUT_MS;
+    server.requestTimeout = REQUEST_TIMEOUT_MS;
+    server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS;
     // Don't keep the event loop alive solely for the hook server — vitest
     // cleanup paths sometimes forget to call `stop()` (audit m13).
     server.unref();
@@ -126,13 +137,26 @@ export class MaestroHookServer {
     return this.token;
   }
 
-  on(type: HookEventType, listener: (payload: HookPayload) => void): this {
-    this.emitter.on(type, listener as (payload: HookPayload) => void);
+  /**
+   * Subscribe to hook events. The listener receives the parsed payload AND
+   * the event-type literal as the second argument so callers can multiplex
+   * future event types (`subagent_stop`, etc.) through one handler without
+   * checking which `on()` channel fired (audit m11). Existing 1-arg
+   * listeners keep working — JS silently ignores extra arguments.
+   */
+  on(
+    type: HookEventType,
+    listener: (payload: HookPayload, type: HookEventType) => void,
+  ): this {
+    this.emitter.on(type, listener as (...args: unknown[]) => void);
     return this;
   }
 
-  off(type: HookEventType, listener: (payload: HookPayload) => void): this {
-    this.emitter.off(type, listener as (payload: HookPayload) => void);
+  off(
+    type: HookEventType,
+    listener: (payload: HookPayload, type: HookEventType) => void,
+  ): this {
+    this.emitter.off(type, listener as (...args: unknown[]) => void);
     return this;
   }
 
@@ -142,8 +166,6 @@ export class MaestroHookServer {
     if (req.method !== 'POST' || req.url !== HOOK_PATH) {
       res.writeHead(404);
       res.end();
-      // Drain to avoid leaking the connection in keep-alive scenarios.
-      req.resume();
       return;
     }
 
@@ -151,13 +173,11 @@ export class MaestroHookServer {
     if (tokenHeader === undefined || tokenHeader.length === 0) {
       res.writeHead(401, { 'WWW-Authenticate': WWW_AUTH_VALUE });
       res.end();
-      req.resume();
       return;
     }
     if (!compareTokens(tokenHeader, this.token)) {
       res.writeHead(403, { 'WWW-Authenticate': WWW_AUTH_VALUE });
       res.end();
-      req.resume();
       return;
     }
 
@@ -165,7 +185,6 @@ export class MaestroHookServer {
     if (eventHeader === undefined || eventHeader.length === 0) {
       res.writeHead(400);
       res.end('missing X-Symphony-Hook-Event header');
-      req.resume();
       return;
     }
 
@@ -177,8 +196,25 @@ export class MaestroHookServer {
       total += chunk.length;
       if (total > MAX_BODY_BYTES) {
         destroyed = true;
+        // Audit m4: tear BOTH the request and the response down — a stale
+        // ServerResponse keeps the underlying socket pinned even after
+        // `req.destroy()` returns. The matching test now strictly expects
+        // 0 / 413 (no longer the loose `[0, 400, 413]` ceiling).
+        try {
+          if (!res.headersSent) {
+            res.writeHead(413, { Connection: 'close' });
+          }
+          res.end();
+        } catch {
+          // already responded
+        }
         try {
           req.destroy();
+        } catch {
+          // already destroyed
+        }
+        try {
+          res.destroy();
         } catch {
           // already destroyed
         }
@@ -191,6 +227,8 @@ export class MaestroHookServer {
       const body = Buffer.concat(chunks).toString('utf8');
       let raw: Record<string, unknown>;
       if (body.length === 0) {
+        // Empty body parses as `{}` — Claude Code's Stop hook payload may
+        // legitimately be empty depending on configuration (audit m12).
         raw = {};
       } else {
         try {
@@ -209,11 +247,13 @@ export class MaestroHookServer {
       }
       const payload = normalizePayload(raw);
       // Respond first; defer emit via `setImmediate` so a synchronous slow
-      // listener can't stall Claude Code's `curl -sf` (audit C2).
+      // listener can't stall Claude Code's `curl -sf` (audit C2). Pass the
+      // event-type literal alongside the payload so multiplexing listeners
+      // can branch (audit m11).
       res.writeHead(200);
       res.end();
       setImmediate(() => {
-        this.emitter.emit(eventHeader, payload);
+        this.emitter.emit(eventHeader, payload, eventHeader);
       });
     });
     req.on('error', () => {

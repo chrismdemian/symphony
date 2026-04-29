@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -220,9 +220,43 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
       },
     );
     bootstrap.stdout?.on('data', () => {});
-    // Mirror the bootstrap's stderr through to ours so the user sees errors.
+    // Mirror the bootstrap's stderr through to ours so the user sees errors,
+    // AND scan it for the `symphony.rpc.ready` advert (audit 2C.2 M2). The
+    // advert is a single JSON line prefixed with `[symphony] `; we capture
+    // the most recent one so an `awaitRpcReady` timeout can surface it.
+    let capturedAdvert: Record<string, unknown> | undefined;
+    let stderrTail = '';
     bootstrap.stderr?.on('data', (chunk: Buffer) => {
-      stderr.write(`[bootstrap] ${chunk.toString('utf8')}`);
+      const text = chunk.toString('utf8');
+      stderr.write(`[bootstrap] ${text}`);
+      stderrTail += text;
+      // Cap memory: only retain the trailing 16 KB of stderr for advert
+      // scanning. A single advert line is well under 1 KB.
+      if (stderrTail.length > 16_384) {
+        stderrTail = stderrTail.slice(stderrTail.length - 16_384);
+      }
+      let nl: number;
+      while ((nl = stderrTail.indexOf('\n')) !== -1) {
+        const line = stderrTail.slice(0, nl);
+        stderrTail = stderrTail.slice(nl + 1);
+        const idx = line.indexOf('[symphony] ');
+        if (idx === -1) continue;
+        const json = line.slice(idx + '[symphony] '.length).trim();
+        if (json.length === 0) continue;
+        try {
+          const parsed = JSON.parse(json) as unknown;
+          if (
+            parsed !== null &&
+            typeof parsed === 'object' &&
+            !Array.isArray(parsed) &&
+            (parsed as Record<string, unknown>)['event'] === 'symphony.rpc.ready'
+          ) {
+            capturedAdvert = parsed as Record<string, unknown>;
+          }
+        } catch {
+          // Non-JSON `[symphony]` line — ignore. Adverts are always JSON.
+        }
+      }
     });
     cleanup.push({
       label: 'kill bootstrap mcp-server',
@@ -246,8 +280,15 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
           }
         }, 3_000);
         sigKillTimer.unref?.();
+        // Audit m7: Win32 + `shell:true` SIGTERM kills the cmd.exe wrapper,
+        // not the inner Node child. Use `taskkill /pid /T /F` to walk the
+        // process tree. POSIX paths still use SIGTERM → SIGKILL escalation.
         try {
-          bootstrap.kill('SIGTERM');
+          if (isWin32 && bootstrap.pid !== undefined) {
+            killWin32Tree(bootstrap.pid);
+          } else {
+            bootstrap.kill('SIGTERM');
+          }
         } catch {
           // already dead
         }
@@ -260,6 +301,12 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
     const descriptor = await awaitRpcReady({
       descriptorPath: rpcDescriptorPath,
       ...(bootstrapPid !== undefined ? { acceptOnlyPid: bootstrapPid } : {}),
+      capturedAdvert: () => capturedAdvert,
+      onStaleDescriptor: ({ foundPid, expectedPid }) => {
+        log(
+          `awaitRpcReady: stale descriptor pid=${foundPid} (expected ${expectedPid}); continuing to poll`,
+        );
+      },
     });
     log(`bootstrap RPC ready at ws://${descriptor.host}:${descriptor.port}/`);
 
@@ -440,12 +487,53 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
   return { stop, done };
 }
 
-function defaultCliEntryPath(): string {
-  const here = fileURLToPath(import.meta.url);
+/**
+ * Resolve the CLI entry path (the file `node` should run for `mcp-server`).
+ * Walks `src/cli/start.ts → src/index.ts` (tsx) and `dist/cli/start.js →
+ * dist/index.js` (bundled). The intermediate dir basename MUST be `cli` —
+ * if a future tsup config inlines `start.ts` into `dist/index.js`, this
+ * resolution would compute the wrong root, so we defend with a runtime
+ * invariant (audit 2C.2 M4). Throw rather than silently return a wrong
+ * path; callers can override via `RunStartOptions.cliEntryPath` to ship
+ * a future inlined layout.
+ */
+export function defaultCliEntryPath(): string {
+  return resolveCliEntryFromHere(fileURLToPath(import.meta.url));
+}
+
+/**
+ * Pure helper for `defaultCliEntryPath`. Exposed so the M4 invariant has a
+ * unit test that doesn't depend on `import.meta.url`.
+ */
+export function resolveCliEntryFromHere(here: string): string {
   const cliDir = path.dirname(here);
+  const cliDirName = path.basename(cliDir);
+  if (cliDirName !== 'cli') {
+    throw new Error(
+      `defaultCliEntryPath: expected parent dir basename 'cli', got '${cliDirName}' ` +
+        `(here=${here}). Set RunStartOptions.cliEntryPath explicitly — the bundler ` +
+        `layout has changed (audit 2C.2 M4).`,
+    );
+  }
   const root = path.dirname(cliDir);
   const ext = path.extname(here);
   return path.join(root, `index${ext}`);
+}
+
+/**
+ * Walk + kill a Windows process tree. The bootstrap is sometimes spawned
+ * via `shell: true` (when `process.execPath` resolves to a `.cmd` shim);
+ * SIGTERM in that case kills only the `cmd.exe` wrapper, leaving the
+ * inner `node.exe` orphaned. `taskkill /pid <pid> /T /F` walks the tree
+ * by parent-pid relation and force-kills every node (audit 2C.2 m7).
+ */
+function killWin32Tree(pid: number): void {
+  // Best-effort — taskkill can race with natural exit; non-zero exit is
+  // expected when the process already terminated. We swallow the result.
+  spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], {
+    windowsHide: true,
+    stdio: 'ignore',
+  });
 }
 
 function defaultSpawnBootstrap(nodeBinary: string): BootstrapSpawnFn {

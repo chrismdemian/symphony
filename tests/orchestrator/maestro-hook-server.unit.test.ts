@@ -198,6 +198,8 @@ describe('MaestroHookServer POST /hook', () => {
   it('destroys the connection when the body exceeds 1 MiB', async () => {
     server = new MaestroHookServer({ token: 'tok' });
     const { port } = await server.start();
+    const payloads: HookPayload[] = [];
+    server.on('stop', (p) => payloads.push(p));
     const oversized = Buffer.alloc(1_500_000, 0x7b); // 1.5 MB of `{`
     const res = await http({
       port,
@@ -208,9 +210,50 @@ describe('MaestroHookServer POST /hook', () => {
       },
       body: oversized,
     });
-    // Either a connection reset (0) or a server-aborted response — both are acceptable;
-    // the key invariant is that the listener never sees the payload.
-    expect([0, 400, 413]).toContain(res.status);
+    // m4 tightens this: either a 413 (server replied + closed) or a 0
+    // (socket destroyed before headers landed). 400 is no longer accepted.
+    expect([0, 413]).toContain(res.status);
+    // The handler must NEVER fire on oversized bodies.
+    await new Promise((r) => setImmediate(r));
+    expect(payloads).toHaveLength(0);
+  });
+
+  it('parses an empty body as `{}` (audit m12)', async () => {
+    server = new MaestroHookServer({ token: 'tok' });
+    const { port } = await server.start();
+    const payloads: HookPayload[] = [];
+    server.on('stop', (p) => payloads.push(p));
+    const res = await http({
+      port,
+      headers: {
+        'x-symphony-hook-token': 'tok',
+        'x-symphony-hook-event': 'stop',
+      },
+      // body omitted entirely
+    });
+    expect(res.status).toBe(200);
+    await new Promise((r) => setImmediate(r));
+    expect(payloads).toHaveLength(1);
+    expect(payloads[0]?.raw).toEqual({});
+    expect(payloads[0]?.sessionId).toBeUndefined();
+  });
+
+  it('passes the event-type literal as the listener second argument (audit m11)', async () => {
+    server = new MaestroHookServer({ token: 'tok' });
+    const { port } = await server.start();
+    const captured: Array<[HookPayload, string]> = [];
+    server.on('stop', (p, t) => captured.push([p, t]));
+    await http({
+      port,
+      headers: {
+        'x-symphony-hook-token': 'tok',
+        'x-symphony-hook-event': 'stop',
+      },
+      body: '{}',
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(captured).toHaveLength(1);
+    expect(captured[0]?.[1]).toBe('stop');
   });
 
   it('returns 404 for GET /hook', async () => {
