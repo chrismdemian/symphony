@@ -209,13 +209,21 @@ function filterOutMarker(entries: unknown[], marker: string): unknown[] {
   return entries.filter((entry) => !entryContainsMarker(entry, marker));
 }
 
+/**
+ * Test whether a `Stop` entry contains Symphony's marker substring (default
+ * `SYMPHONY_HOOK_PORT`). Returns `false` for circular / un-stringifiable
+ * entries — Symphony's own entries are always plain JSON, so a serialization
+ * failure CAN'T be ours, but the entry IS preserved (callers strip on `true`,
+ * not on `false`). Unrelated user entries fall into the same `false` bucket
+ * by design (audit 2C.2 m3 — JSDoc previously claimed "not Symphony's,"
+ * which conflated identity with preservation).
+ */
 function entryContainsMarker(entry: unknown, marker: string): boolean {
   try {
     const serialized = JSON.stringify(entry);
     if (typeof serialized !== 'string') return false;
     return serialized.includes(marker);
   } catch {
-    // Circular-ref / un-stringifiable entries are not Symphony's.
     return false;
   }
 }
