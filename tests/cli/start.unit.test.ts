@@ -1,0 +1,307 @@
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { EventEmitter, PassThrough } from 'node:stream';
+import { request } from 'node:http';
+import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { runStart } from '../../src/cli/start.js';
+import { MaestroHookServer } from '../../src/orchestrator/maestro/hook-server.js';
+import type {
+  HookPayload,
+  MaestroProcess,
+  MaestroEvent,
+  MaestroStartInput,
+  MaestroStartResult,
+} from '../../src/orchestrator/maestro/index.js';
+import type { LauncherRpc } from '../../src/cli/start.js';
+import type { ProjectSnapshot } from '../../src/projects/types.js';
+
+interface CallLog {
+  step: string;
+  detail?: string;
+}
+
+class FakeMaestroProcess {
+  readonly events = new EventEmitter();
+  readonly emitter = new EventEmitter();
+  startInput: MaestroStartInput | undefined;
+  killCount = 0;
+  injectIdleCount = 0;
+
+  async start(input: MaestroStartInput): Promise<MaestroStartResult> {
+    this.startInput = input;
+    return {
+      workspace: { cwd: '/fake/cwd', claudeMdPath: '/fake/cwd/CLAUDE.md' },
+      session: {
+        sessionId: 'fake-session',
+        mode: 'fresh',
+        reason: 'missing',
+      },
+      mcpConfigPath: '/fake/cwd/.symphony-mcp.json',
+      systemInit: { sessionId: 'fake-session' },
+    } as unknown as MaestroStartResult;
+  }
+
+  injectIdle(payload: HookPayload): void {
+    this.injectIdleCount += 1;
+    queueMicrotask(() => this.emitter.emit('event', { type: 'idle', payload } as MaestroEvent));
+  }
+
+  on(type: string, listener: (e: unknown) => void): this {
+    this.emitter.on(type, listener);
+    return this;
+  }
+
+  off(type: string, listener: (e: unknown) => void): this {
+    this.emitter.off(type, listener);
+    return this;
+  }
+
+  async kill(): Promise<undefined> {
+    this.killCount += 1;
+    return undefined;
+  }
+
+  async *eventsIter(): AsyncIterable<MaestroEvent> {
+    const queue: MaestroEvent[] = [];
+    const waiters: Array<(e: MaestroEvent | undefined) => void> = [];
+    let stopped = false;
+    const handler = (e: MaestroEvent): void => {
+      if (waiters.length > 0) waiters.shift()!(e);
+      else queue.push(e);
+    };
+    const stopHandler = (): void => {
+      stopped = true;
+      while (waiters.length > 0) waiters.shift()!(undefined);
+    };
+    this.emitter.on('event', handler);
+    this.emitter.once('stopped', stopHandler);
+    try {
+      while (true) {
+        if (queue.length > 0) {
+          yield queue.shift()!;
+          continue;
+        }
+        if (stopped) return;
+        const next = await new Promise<MaestroEvent | undefined>((r) => waiters.push(r));
+        if (next === undefined) return;
+        yield next;
+      }
+    } finally {
+      this.emitter.off('event', handler);
+      this.emitter.off('stopped', stopHandler);
+    }
+  }
+}
+
+let sandbox: string;
+let home: string;
+
+beforeEach(() => {
+  sandbox = mkdtempSync(join(tmpdir(), 'symphony-cli-start-'));
+  home = join(sandbox, 'home');
+});
+
+afterEach(() => {
+  try {
+    rmSync(sandbox, { recursive: true, force: true });
+  } catch {
+    // ignore
+  }
+});
+
+function makeFakeRpc(projects: ProjectSnapshot[]): LauncherRpc & { close: ReturnType<typeof vi.fn> } {
+  return {
+    call: {
+      projects: {
+        list: vi.fn(async () => projects),
+      },
+    },
+    close: vi.fn(async () => undefined),
+  };
+}
+
+async function postToHook(
+  port: number,
+  token: string,
+  body: Record<string, unknown>,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        host: '127.0.0.1',
+        port,
+        path: '/hook',
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-symphony-hook-token': token,
+          'x-symphony-hook-event': 'stop',
+        },
+      },
+      (res) => {
+        res.resume();
+        res.on('end', () => resolve());
+      },
+    );
+    req.on('error', reject);
+    req.write(JSON.stringify(body));
+    req.end();
+  });
+}
+
+describe('runStart wiring (unit)', () => {
+  it('calls projects.list, installs the hook, then starts Maestro — in that order', async () => {
+    const calls: CallLog[] = [];
+    const fakeMaestro = new FakeMaestroProcess();
+    // Patch the events() method to delegate to our async iterator
+    const fakeMaestroAsProcess = fakeMaestro as unknown as MaestroProcess;
+    Object.defineProperty(fakeMaestroAsProcess, 'events', {
+      value: () => fakeMaestro.eventsIter(),
+    });
+    const projects: ProjectSnapshot[] = [
+      { id: 'p1', name: 'demo', path: '/repos/demo', createdAt: '2026-04-29T00:00:00Z' },
+    ];
+    const rpc = makeFakeRpc(projects);
+    const projectsListSpy = rpc.call.projects.list;
+
+    const stdin = new PassThrough();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+
+    const hookServer = new MaestroHookServer({ token: 'fixed-tok' });
+    const handle = await runStart({
+      home,
+      cliEntryPath: '/fake/cli/entry.js',
+      io: { stdin, stdout, stderr },
+      skipSignalHandlers: true,
+      rpcOverride: { descriptor: { host: '127.0.0.1', port: 0, token: 't' }, client: rpc },
+      hookServerFactory: () => hookServer,
+      maestroFactory: () => {
+        calls.push({ step: 'maestro-factory' });
+        return fakeMaestroAsProcess;
+      },
+      // Override workerManager so the default factory doesn't try to read ~/.claude.json
+      workerManager: { ensureClaudeTrust: async () => undefined } as never,
+    });
+
+    // The fake Maestro's start() resolved synchronously, so by now the hook
+    // and projects.list have all run.
+    expect(projectsListSpy).toHaveBeenCalledTimes(1);
+    expect(fakeMaestro.startInput).toBeDefined();
+    expect(fakeMaestro.startInput?.extraEnv?.['SYMPHONY_HOOK_PORT']).toBe(
+      String(hookServer.getPort()),
+    );
+    expect(fakeMaestro.startInput?.extraEnv?.['SYMPHONY_HOOK_TOKEN']).toBe('fixed-tok');
+    expect(fakeMaestro.startInput?.promptVars.registeredProjects).toContain('demo');
+    expect(fakeMaestro.startInput?.promptVars.projectName).toBe('demo');
+
+    // Hook was installed in the workspace's .claude dir.
+    const settingsPath = join(home, '.symphony', 'maestro', '.claude', 'settings.local.json');
+    expect(existsSync(settingsPath)).toBe(true);
+    expect(readFileSync(settingsPath, 'utf8')).toContain('SYMPHONY_HOOK_PORT');
+
+    // Trigger a real Stop hook arrival via HTTP → it should call injectIdle.
+    await postToHook(hookServer.getPort(), hookServer.getToken(), {
+      session_id: 'fake-session',
+      stop_reason: 'end_turn',
+    });
+    // Allow the hook server's emit + injectIdle's queueMicrotask to flush.
+    await new Promise((r) => setImmediate(r));
+    expect(fakeMaestro.injectIdleCount).toBe(1);
+
+    // Tear down.
+    await handle.stop('test-shutdown');
+    await handle.done;
+
+    // Hook removed.
+    expect(readFileSync(settingsPath, 'utf8')).not.toContain('SYMPHONY_HOOK_PORT');
+    expect(fakeMaestro.killCount).toBe(1);
+    // RPC client closed.
+    expect(rpc.close).toHaveBeenCalled();
+  });
+
+  it("formats `(none)` for `registered_projects` when no projects exist", async () => {
+    const fakeMaestro = new FakeMaestroProcess();
+    const fakeMaestroAsProcess = fakeMaestro as unknown as MaestroProcess;
+    Object.defineProperty(fakeMaestroAsProcess, 'events', {
+      value: () => fakeMaestro.eventsIter(),
+    });
+    const rpc = makeFakeRpc([]);
+
+    const handle = await runStart({
+      home,
+      cliEntryPath: '/fake/cli/entry.js',
+      io: { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() },
+      skipSignalHandlers: true,
+      rpcOverride: { descriptor: { host: '127.0.0.1', port: 0, token: 't' }, client: rpc },
+      hookServerFactory: () => new MaestroHookServer({ token: 'tok' }),
+      maestroFactory: () => fakeMaestroAsProcess,
+      workerManager: {} as never,
+    });
+
+    expect(fakeMaestro.startInput?.promptVars.registeredProjects).toBe('(none)');
+    expect(fakeMaestro.startInput?.promptVars.projectName).toBe('(no project)');
+
+    await handle.stop();
+    await handle.done;
+  });
+
+  it('on stop(), tears down in reverse order: hook uninstalled → maestro killed → hook server stopped → rpc closed', async () => {
+    const order: string[] = [];
+    const fakeMaestro = new FakeMaestroProcess();
+    const fakeMaestroAsProcess = fakeMaestro as unknown as MaestroProcess;
+    Object.defineProperty(fakeMaestroAsProcess, 'events', {
+      value: () => fakeMaestro.eventsIter(),
+    });
+
+    // Spy on kill via the FakeMaestroProcess.
+    const origKill = fakeMaestro.kill.bind(fakeMaestro);
+    fakeMaestro.kill = async (): Promise<undefined> => {
+      order.push('maestro.kill');
+      return origKill();
+    };
+
+    const hookServer = new MaestroHookServer({ token: 'tok' });
+    const origStop = hookServer.stop.bind(hookServer);
+    hookServer.stop = async (): Promise<void> => {
+      order.push('hookServer.stop');
+      return origStop();
+    };
+
+    const rpc = makeFakeRpc([]);
+    rpc.close = vi.fn(async () => {
+      order.push('rpc.close');
+    });
+
+    const handle = await runStart({
+      home,
+      cliEntryPath: '/fake/cli/entry.js',
+      io: { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() },
+      skipSignalHandlers: true,
+      rpcOverride: { descriptor: { host: '127.0.0.1', port: 0, token: 't' }, client: rpc },
+      hookServerFactory: () => hookServer,
+      maestroFactory: () => fakeMaestroAsProcess,
+      workerManager: {} as never,
+    });
+
+    // Settings file exists with SYMPHONY_HOOK_PORT before stop.
+    const settingsPath = join(home, '.symphony', 'maestro', '.claude', 'settings.local.json');
+    expect(readFileSync(settingsPath, 'utf8')).toContain('SYMPHONY_HOOK_PORT');
+
+    await handle.stop();
+    await handle.done;
+
+    // Cleanup steps run in stack order (reverse of registration). Expected
+    // (last → first): readline → uninstall → maestro.kill → hookServer.stop
+    // → rpc.close. We don't track readline, but the rest must follow.
+    const idxMaestro = order.indexOf('maestro.kill');
+    const idxHook = order.indexOf('hookServer.stop');
+    const idxRpc = order.indexOf('rpc.close');
+    expect(idxMaestro).toBeLessThan(idxHook);
+    expect(idxHook).toBeLessThan(idxRpc);
+
+    // Hook entry was stripped.
+    expect(readFileSync(settingsPath, 'utf8')).not.toContain('SYMPHONY_HOOK_PORT');
+  });
+});

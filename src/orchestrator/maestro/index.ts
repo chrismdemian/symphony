@@ -45,3 +45,21 @@ export type {
   MaestroStartResult,
   MaestroEvent,
 } from './process.js';
+
+export { MaestroHookServer } from './hook-server.js';
+export type {
+  HookPayload,
+  HookEventType,
+  MaestroHookServerOptions,
+  MaestroHookServerStartResult,
+} from './hook-server.js';
+
+export {
+  installStopHook,
+  uninstallStopHook,
+  buildStopHookCommand,
+} from './hook-installer.js';
+export type {
+  InstallStopHookInput,
+  UninstallStopHookInput,
+} from './hook-installer.js';
