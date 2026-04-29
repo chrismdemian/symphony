@@ -10,9 +10,19 @@ program
 
 program
   .command('start')
-  .description('Launch the Symphony TUI and orchestrator.')
-  .action(() => {
-    console.log('[symphony] start — not yet implemented');
+  .description('Launch the Symphony orchestrator (Maestro).')
+  .option('--in-memory', 'Run the bootstrap mcp-server in-memory (debug; no SQLite).')
+  .option('--rpc-port <n>', 'Bootstrap mcp-server RPC port (0 = ephemeral).', (v) =>
+    Number.parseInt(v, 10),
+  )
+  .action(async (opts: { inMemory?: boolean; rpcPort?: number }) => {
+    const { runStart } = await import('./cli/start.js');
+    const startOpts: Parameters<typeof runStart>[0] = {};
+    if (opts.inMemory === true) startOpts.inMemory = true;
+    if (opts.rpcPort !== undefined) startOpts.rpcPort = opts.rpcPort;
+    const handle = await runStart(startOpts);
+    await handle.done;
+    process.exit(0);
   });
 
 program

@@ -16,6 +16,7 @@ import {
   resolveMaestroSession,
   type ResolvedMaestroSession,
 } from './session.js';
+import type { HookPayload } from './hook-server.js';
 
 const MAESTRO_WORKER_ID = 'maestro';
 const MAESTRO_SESSION_SENTINEL = 'maestro::global';
@@ -88,6 +89,7 @@ export type MaestroEvent =
   | { type: 'tool_result'; callId: string; content: string; isError: boolean }
   | { type: 'turn_started' }
   | { type: 'turn_completed'; isError: boolean; resultText: string }
+  | { type: 'idle'; payload: HookPayload }
   | { type: 'error'; reason: string };
 
 /**
@@ -323,6 +325,18 @@ export class MaestroProcess {
       this.emitter.off(ANY_EVENT, handler as (e: MaestroEvent) => void);
       this.emitter.off(STOPPED_EVENT, onStop);
     }
+  }
+
+  /**
+   * Surface a Stop-hook fire as an `idle` event on the same emitter +
+   * backlog ring used by stream-derived events. The launcher (`runStart`)
+   * subscribes `MaestroHookServer.on('stop', ...)` and forwards the payload
+   * through this entry point so concurrent `events()` iterators all see it
+   * uniformly. No-op after `kill()`.
+   */
+  injectIdle(payload: HookPayload): void {
+    if (this.stoppedFlag) return;
+    this.emit({ type: 'idle', payload });
   }
 
   /** Graceful shutdown. Idempotent. */
