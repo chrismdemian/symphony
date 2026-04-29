@@ -8,7 +8,6 @@ import { promises as fsp } from 'node:fs';
 
 import { RpcClient } from '../rpc/client.js';
 import type { SymphonyRouter } from '../rpc/router-impl.js';
-import type { ProjectSnapshot } from '../projects/types.js';
 import { WorkerManager } from '../workers/manager.js';
 import {
   MaestroProcess,
@@ -21,6 +20,10 @@ import {
   type MaestroPromptVars,
   type HookPayload,
 } from '../orchestrator/maestro/index.js';
+import { runTui } from '../ui/runtime/runTui.js';
+import type { TuiRpc } from '../ui/runtime/rpc.js';
+
+const SYMPHONY_VERSION = '0.0.0';
 
 const isWin32 = process.platform === 'win32';
 const SHUTDOWN_DEADLINE_MS = 5_000;
@@ -71,19 +74,21 @@ export interface RunStartOptions {
 }
 
 /**
- * Minimal RPC surface the launcher actually consumes. The production path
- * passes an `RpcClient<SymphonyRouter>` (structurally compatible); tests
- * inject a fake matching this shape so they don't need to construct the
- * full router (which carries 5+ namespaces).
+ * RPC surface the launcher consumes — the union of (a) the readline path's
+ * needs (`projects.list` + `close`) AND (b) the TUI's needs (`TuiRpc` =
+ * call/subscribe/close projection of `RpcClient<SymphonyRouter>`).
+ *
+ * The production path passes the real `RpcClient<SymphonyRouter>`, which
+ * structurally satisfies both. Tests inject a fake matching this shape;
+ * the readline-path scenarios only need `call.projects.list` + `close`
+ * but must provide stub implementations for the wider TUI surface to
+ * type-check.
+ *
+ * Audit M1 (Phase 3A): the previous `LauncherRpc` was narrow and the TUI
+ * call site used `as unknown as TuiRpc` — type drift hidden behind a
+ * double cast. Widening eliminates the cast.
  */
-export interface LauncherRpc {
-  call: {
-    projects: {
-      list: (args: Record<string, unknown>) => Promise<ProjectSnapshot[]>;
-    };
-  };
-  close: () => Promise<void>;
-}
+export type LauncherRpc = TuiRpc;
 
 export type BootstrapSpawnFn = (
   args: readonly string[],
@@ -423,7 +428,42 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
   });
   log(`Maestro ready (session ${startResult.systemInit.sessionId})`);
 
-  // ── 5. Readline loop ───────────────────────────────────────────────────
+  // ── 5. UI loop ─────────────────────────────────────────────────────────
+  // Phase 3A: prefer the Ink TUI. Falls back to the prior 2C.2 readline
+  // path on non-TTY stdout (CI, piped output) — Ink's alt-screen would
+  // otherwise emit ANSI to a pipe.
+  //
+  // Audit C1: `runTui` itself gates on BOTH stdin.isTTY AND stdout.isTTY.
+  // Non-TTY stdin would crash Ink at `useInput` → `setRawMode`. The
+  // readline fallback handles all non-TTY shapes.
+  // Audit M1: `rpc` is `LauncherRpc = TuiRpc` so no cast needed.
+  const tui = runTui({
+    maestro,
+    rpc,
+    version: SYMPHONY_VERSION,
+    onRequestExit: () => {
+      void stop('user exit (Ctrl+C)');
+    },
+    stdin: stdin as NodeJS.ReadStream,
+    stdout: stdout as NodeJS.WriteStream,
+  });
+
+  if (tui.active) {
+    cleanup.push({
+      label: 'unmount TUI',
+      run: tui.unmount,
+    });
+    void tui.exited.then(() => {
+      // Ink unmount → tear the launcher down through the shared cleanup
+      // chain (audit 2C.2 m3 — every shutdown path goes through `stop()`).
+      void stop('TUI exited');
+    });
+    return { stop, done };
+  }
+
+  // ── Fallback: readline loop (non-TTY / CI) ─────────────────────────────
+  log('non-TTY stdio detected — falling back to readline prompt');
+
   const rl = createInterface({
     input: stdin,
     output: stdout,
