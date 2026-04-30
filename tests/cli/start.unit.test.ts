@@ -182,7 +182,7 @@ async function postToHook(
   });
 }
 
-describe('resolveCliEntryFromHere (audit M4)', () => {
+describe('resolveCliEntryFromHere', () => {
   it('resolves index.{ts,js} sibling when parent dir basename is `cli`', () => {
     expect(resolveCliEntryFromHere('/repo/src/cli/start.ts')).toBe(
       join('/repo/src', 'index.ts'),
@@ -192,10 +192,11 @@ describe('resolveCliEntryFromHere (audit M4)', () => {
     );
   });
 
-  it('throws when parent dir basename is not `cli` (future bundler inline)', () => {
-    expect(() => resolveCliEntryFromHere('/repo/dist/index.js')).toThrowError(
-      /expected parent dir basename 'cli', got 'dist'/,
-    );
+  it('returns self when the entry is already an index.{ts,js} (bundled-inline layout)', () => {
+    // tsup with splitting:false inlines `start.ts` into `dist/index.js`;
+    // `mcp-server` dispatches from the same file via Commander.
+    expect(resolveCliEntryFromHere('/repo/dist/index.js')).toBe('/repo/dist/index.js');
+    expect(resolveCliEntryFromHere('/repo/src/index.ts')).toBe('/repo/src/index.ts');
   });
 
   it('throws with a useful message that points at the override knob', () => {

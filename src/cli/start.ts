@@ -8,6 +8,7 @@ import { promises as fsp } from 'node:fs';
 
 import { RpcClient } from '../rpc/client.js';
 import type { SymphonyRouter } from '../rpc/router-impl.js';
+import { prependTsxLoaderIfTs } from '../utils/node-runner.js';
 import { WorkerManager } from '../workers/manager.js';
 import {
   MaestroProcess,
@@ -216,7 +217,8 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
       rpcDescriptorPath,
     ];
     if (options.inMemory === true) bootstrapArgs.push('--in-memory');
-    log(`spawning bootstrap mcp-server: ${nodeBinary} ${bootstrapArgs.join(' ')}`);
+    const loggedArgs = prependTsxLoaderIfTs(bootstrapArgs);
+    log(`spawning bootstrap mcp-server: ${nodeBinary} ${loggedArgs.join(' ')}`);
 
     const bootstrap = (options.spawnBootstrap ?? defaultSpawnBootstrap(nodeBinary))(
       bootstrapArgs,
@@ -529,35 +531,46 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
 
 /**
  * Resolve the CLI entry path (the file `node` should run for `mcp-server`).
- * Walks `src/cli/start.ts → src/index.ts` (tsx) and `dist/cli/start.js →
- * dist/index.js` (bundled). The intermediate dir basename MUST be `cli` —
- * if a future tsup config inlines `start.ts` into `dist/index.js`, this
- * resolution would compute the wrong root, so we defend with a runtime
- * invariant (audit 2C.2 M4). Throw rather than silently return a wrong
- * path; callers can override via `RunStartOptions.cliEntryPath` to ship
- * a future inlined layout.
+ *
+ * Three layouts are valid:
+ *   - Source dev:           `src/cli/start.ts`  → `src/index.ts`
+ *   - Bundled with cli/ dir: `dist/cli/start.js` → `dist/index.js`
+ *   - Bundled inline:        `dist/index.js`     → `dist/index.js` (self)
+ *
+ * The bundled-inline case is what tsup produces today (splitting: false +
+ * single entry; `start.ts` is inlined). The Commander entry in `index.ts`
+ * dispatches `mcp-server` from the same file, so returning self is safe.
+ * Callers can override via `RunStartOptions.cliEntryPath`.
  */
 export function defaultCliEntryPath(): string {
   return resolveCliEntryFromHere(fileURLToPath(import.meta.url));
 }
 
 /**
- * Pure helper for `defaultCliEntryPath`. Exposed so the M4 invariant has a
- * unit test that doesn't depend on `import.meta.url`.
+ * Pure helper for `defaultCliEntryPath`. Exposed so the layout invariant
+ * has a unit test that doesn't depend on `import.meta.url`.
  */
 export function resolveCliEntryFromHere(here: string): string {
-  const cliDir = path.dirname(here);
-  const cliDirName = path.basename(cliDir);
-  if (cliDirName !== 'cli') {
-    throw new Error(
-      `defaultCliEntryPath: expected parent dir basename 'cli', got '${cliDirName}' ` +
-        `(here=${here}). Set RunStartOptions.cliEntryPath explicitly — the bundler ` +
-        `layout has changed (audit 2C.2 M4).`,
-    );
-  }
-  const root = path.dirname(cliDir);
+  const dir = path.dirname(here);
+  const dirName = path.basename(dir);
   const ext = path.extname(here);
-  return path.join(root, `index${ext}`);
+  const baseNoExt = path.basename(here, ext);
+
+  // Bundled-inline case: tsup inlines `start.ts` into the index entry
+  // (`dist/index.js`). `mcp-server` dispatches from the same file via
+  // Commander — return self.
+  if (baseNoExt === 'index') return here;
+
+  // Source / split-bundle case: walk to sibling `index.{ts,js}`.
+  if (dirName === 'cli') {
+    return path.join(path.dirname(dir), `index${ext}`);
+  }
+
+  throw new Error(
+    `defaultCliEntryPath: unable to resolve CLI entry from '${here}'. ` +
+      `Expected an 'index.{ts,js}' file or a file in a 'cli/' subdir. ` +
+      `Set RunStartOptions.cliEntryPath explicitly to override.`,
+  );
 }
 
 /**
@@ -577,12 +590,14 @@ function killWin32Tree(pid: number): void {
 }
 
 function defaultSpawnBootstrap(nodeBinary: string): BootstrapSpawnFn {
-  return (args, opts) =>
-    spawn(nodeBinary, [...args], {
+  return (args, opts) => {
+    const finalArgs = prependTsxLoaderIfTs(args);
+    return spawn(nodeBinary, [...finalArgs], {
       ...opts,
       stdio: ['pipe', 'pipe', 'pipe'],
       shell: isWin32 && nodeBinary.endsWith('.cmd'),
     });
+  };
 }
 
 function defaultWorkerManager(homeDir: string): WorkerManager {

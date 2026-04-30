@@ -99,4 +99,29 @@ describe('writeMaestroMcpConfig', () => {
     const json = JSON.parse(readFileSync(result.path, 'utf8'));
     expect(json.mcpServers.symphony.command).toBe(process.execPath);
   });
+
+  it('prepends `--import tsx` when cliEntryPath is a .ts file (dev mode)', async () => {
+    const result = await writeMaestroMcpConfig({
+      cwd: sandbox,
+      cliEntryPath: '/repo/src/index.ts',
+      nodeBinary: '/abs/node',
+    });
+    const json = JSON.parse(readFileSync(result.path, 'utf8'));
+    expect(json.mcpServers.symphony.args).toEqual([
+      '--import',
+      'tsx',
+      '/repo/src/index.ts',
+      'mcp-server',
+    ]);
+  });
+
+  it('keeps args verbatim when cliEntryPath is a .js file (production)', async () => {
+    const result = await writeMaestroMcpConfig({
+      cwd: sandbox,
+      cliEntryPath: '/abs/dist/index.js',
+      nodeBinary: '/abs/node',
+    });
+    const json = JSON.parse(readFileSync(result.path, 'utf8'));
+    expect(json.mcpServers.symphony.args).toEqual(['/abs/dist/index.js', 'mcp-server']);
+  });
 });
