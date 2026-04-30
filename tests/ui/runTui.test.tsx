@@ -15,6 +15,9 @@ class FakeMaestro implements MaestroSource {
     };
     return it;
   }
+  sendUserMessage(_text: string): void {
+    // runTui smoke tests don't exercise the chat send path.
+  }
 }
 
 function makeFakeRpc(): TuiRpc {

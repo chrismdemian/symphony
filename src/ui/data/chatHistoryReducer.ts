@@ -1,0 +1,214 @@
+import type { MaestroEvent } from '../../orchestrator/maestro/process.js';
+
+/**
+ * Chat history reducer — content-block model.
+ *
+ * Coalesces a stream of MaestroEvents into a `Turn[]` history. Mirrors
+ * Anthropic's content-block layout: a turn is an ordered list of
+ * `text | tool | thinking` blocks, opened/closed by event boundaries.
+ *
+ * Critical invariants (Plan-agent critique, will-be-Known-Gotchas):
+ *
+ *  - `assistant_text` events are CHUNKS — coalesced into the active text
+ *    block by APPENDING to a single `text: string`. NEVER store as
+ *    `chunks: string[]`: joining N chunks across N renders is O(N²).
+ *  - `assistant_text` after a `tool_use` / `assistant_thinking` opens a
+ *    NEW text block in the same turn — break only on `turn_completed`
+ *    and you'll merge bubbles incorrectly.
+ *  - Prior turns keep their object refs across updates so
+ *    `React.memo(Bubble)` with an identity comparator skips unchanged
+ *    bubbles. Use `[...turns.slice(0, -1), newLast]`, not `.map(...)`.
+ *  - Pure reducer: ids derive from `state.nextTurnId`, ts from the
+ *    action. No `Date.now()` inside.
+ *
+ * Suppressed events (no render value): `system_init`, `idle`.
+ */
+
+export interface ToolResult {
+  readonly content: string;
+  readonly isError: boolean;
+}
+
+export type Block =
+  | { readonly kind: 'text'; readonly text: string }
+  | {
+      readonly kind: 'tool';
+      readonly callId: string;
+      readonly name: string;
+      readonly input: Record<string, unknown>;
+      readonly result: ToolResult | null;
+    }
+  | { readonly kind: 'thinking'; readonly text: string };
+
+export type Turn =
+  | { readonly kind: 'user'; readonly id: string; readonly text: string; readonly ts: number }
+  | {
+      readonly kind: 'assistant';
+      readonly id: string;
+      readonly blocks: readonly Block[];
+      readonly complete: boolean;
+      readonly isError: boolean;
+      readonly ts: number;
+    };
+
+export type AssistantTurn = Extract<Turn, { kind: 'assistant' }>;
+
+export interface ChatHistoryState {
+  readonly turns: readonly Turn[];
+  readonly nextTurnId: number;
+}
+
+export const INITIAL_CHAT_HISTORY: ChatHistoryState = {
+  turns: [],
+  nextTurnId: 0,
+};
+
+export type ChatHistoryAction =
+  | { readonly kind: 'event'; readonly event: MaestroEvent; readonly ts: number }
+  | { readonly kind: 'pushUser'; readonly text: string; readonly ts: number };
+
+export function chatHistoryReducer(
+  state: ChatHistoryState,
+  action: ChatHistoryAction,
+): ChatHistoryState {
+  if (action.kind === 'pushUser') {
+    const id = `user-${state.nextTurnId}`;
+    const turn: Turn = { kind: 'user', id, text: action.text, ts: action.ts };
+    return {
+      turns: [...state.turns, turn],
+      nextTurnId: state.nextTurnId + 1,
+    };
+  }
+
+  const { event, ts } = action;
+  switch (event.type) {
+    case 'system_init':
+    case 'idle':
+      return state;
+
+    case 'turn_started': {
+      const id = `assistant-${state.nextTurnId}`;
+      const turn: Turn = {
+        kind: 'assistant',
+        id,
+        blocks: [],
+        complete: false,
+        isError: false,
+        ts,
+      };
+      return {
+        turns: [...state.turns, turn],
+        nextTurnId: state.nextTurnId + 1,
+      };
+    }
+
+    case 'assistant_text':
+    case 'assistant_thinking':
+    case 'tool_use':
+    case 'tool_result':
+    case 'turn_completed':
+    case 'error': {
+      const last = state.turns[state.turns.length - 1];
+      let base: ChatHistoryState;
+      let workingTurn: AssistantTurn;
+
+      if (last !== undefined && last.kind === 'assistant' && !last.complete) {
+        // Continue the in-flight assistant turn.
+        base = state;
+        workingTurn = last;
+      } else {
+        // Defensive: event arrived without a preceding `turn_started`,
+        // OR after the previous turn was closed. Open a fresh assistant
+        // turn so the data isn't dropped.
+        const id = `assistant-${state.nextTurnId}`;
+        workingTurn = {
+          kind: 'assistant',
+          id,
+          blocks: [],
+          complete: false,
+          isError: false,
+          ts,
+        };
+        base = {
+          turns: [...state.turns, workingTurn],
+          nextTurnId: state.nextTurnId + 1,
+        };
+      }
+
+      const updated = applyToAssistantTurn(workingTurn, event);
+      if (updated === workingTurn) return base;
+      return {
+        ...base,
+        turns: [...base.turns.slice(0, -1), updated],
+      };
+    }
+  }
+}
+
+function applyToAssistantTurn(
+  turn: AssistantTurn,
+  event: MaestroEvent,
+): AssistantTurn {
+  switch (event.type) {
+    case 'assistant_text': {
+      if (event.text.length === 0) return turn;
+      const lastBlock = turn.blocks[turn.blocks.length - 1];
+      if (lastBlock !== undefined && lastBlock.kind === 'text') {
+        const merged: Block = { kind: 'text', text: lastBlock.text + event.text };
+        return { ...turn, blocks: [...turn.blocks.slice(0, -1), merged] };
+      }
+      const block: Block = { kind: 'text', text: event.text };
+      return { ...turn, blocks: [...turn.blocks, block] };
+    }
+
+    case 'assistant_thinking': {
+      if (event.text.length === 0) return turn;
+      const block: Block = { kind: 'thinking', text: event.text };
+      return { ...turn, blocks: [...turn.blocks, block] };
+    }
+
+    case 'tool_use': {
+      const block: Block = {
+        kind: 'tool',
+        callId: event.callId,
+        name: event.name,
+        input: event.input,
+        result: null,
+      };
+      return { ...turn, blocks: [...turn.blocks, block] };
+    }
+
+    case 'tool_result': {
+      const idx = turn.blocks.findIndex(
+        (b) => b.kind === 'tool' && b.callId === event.callId,
+      );
+      if (idx === -1) return turn;
+      const target = turn.blocks[idx];
+      if (target === undefined || target.kind !== 'tool') return turn;
+      const updated: Block = {
+        ...target,
+        result: { content: event.content, isError: event.isError },
+      };
+      return {
+        ...turn,
+        blocks: [...turn.blocks.slice(0, idx), updated, ...turn.blocks.slice(idx + 1)],
+      };
+    }
+
+    case 'turn_completed':
+      return { ...turn, complete: true, isError: event.isError };
+
+    case 'error': {
+      const block: Block = { kind: 'text', text: `Error: ${event.reason}` };
+      return {
+        ...turn,
+        blocks: [...turn.blocks, block],
+        complete: true,
+        isError: true,
+      };
+    }
+
+    default:
+      return turn;
+  }
+}

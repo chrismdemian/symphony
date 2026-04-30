@@ -8,7 +8,11 @@ import { Layout } from './layout/Layout.js';
 import { useProjects } from './data/useProjects.js';
 import { useWorkers } from './data/useWorkers.js';
 import { useMode } from './data/useMode.js';
-import { useMaestroEvents, type MaestroSource } from './data/useMaestroEvents.js';
+import {
+  MaestroEventsProvider,
+  useMaestroData,
+  type MaestroController,
+} from './data/MaestroEventsProvider.js';
 import type { TuiRpc } from './runtime/rpc.js';
 
 /**
@@ -23,7 +27,7 @@ import type { TuiRpc } from './runtime/rpc.js';
  */
 
 export interface AppProps {
-  readonly maestro: MaestroSource;
+  readonly maestro: MaestroController;
   readonly rpc: TuiRpc;
   readonly version: string;
   /** Called when user triggers exit (Ctrl+C). Launcher owns the actual teardown. */
@@ -34,7 +38,9 @@ export function App(props: AppProps): React.JSX.Element {
   return (
     <ThemeProvider>
       <FocusProvider>
-        <AppShell {...props} />
+        <MaestroEventsProvider source={props.maestro}>
+          <AppShell {...props} />
+        </MaestroEventsProvider>
       </FocusProvider>
     </ThemeProvider>
   );
@@ -45,7 +51,7 @@ function AppShell(props: AppProps): React.JSX.Element {
   const { projects } = useProjects(props.rpc);
   const { workers } = useWorkers(props.rpc);
   const { mode } = useMode(props.rpc);
-  const { sessionId } = useMaestroEvents(props.maestro);
+  const { sessionId } = useMaestroData();
 
   const commands = useMemo(
     () =>

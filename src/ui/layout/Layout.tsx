@@ -3,7 +3,7 @@ import { Box } from 'ink';
 import type { ProjectSnapshot } from '../../projects/types.js';
 import type { WorkerRecordSnapshot } from '../../orchestrator/worker-registry.js';
 import type { ToolMode } from '../../orchestrator/types.js';
-import { ChatPanel } from '../panels/ChatPanel.js';
+import { ChatPanel } from '../panels/chat/ChatPanel.js';
 import { WorkerPanel } from '../panels/WorkerPanel.js';
 import { OutputPanel } from '../panels/OutputPanel.js';
 import { KeybindBar } from './KeybindBar.js';
