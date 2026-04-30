@@ -17,6 +17,9 @@ class FakeMaestro implements MaestroSource {
     };
     return empty;
   }
+  sendUserMessage(_text: string): void {
+    // 3B.1: Layout test doesn't exercise the chat send path.
+  }
 }
 
 function makeFakeRpc(): TuiRpc {
@@ -86,7 +89,7 @@ afterEach(() => {
 });
 
 describe('<App> Layout', () => {
-  it('renders all three panels with placeholder text on wide terminals', async () => {
+  it('renders all three panels — chat is live (3B.1) + worker/output placeholders (3C/3D)', async () => {
     Object.defineProperty(process.stdout, 'columns', { value: 140, configurable: true });
     Object.defineProperty(process.stdout, 'rows', { value: 40, configurable: true });
     const { lastFrame, unmount } = render(
@@ -103,7 +106,11 @@ describe('<App> Layout', () => {
     expect(frame).toContain('Chat');
     expect(frame).toContain('Workers');
     expect(frame).toContain('Output');
-    expect(frame).toContain('Phase 3B');
+    // 3B.1 replaced the chat placeholder with the real panel — empty
+    // history shows the prompt to type a message.
+    expect(frame).toContain('Start by typing a message below.');
+    expect(frame).toContain('Tell Maestro what to do');
+    // Worker + output panels still show their 3A placeholders.
     expect(frame).toContain('Phase 3C');
     expect(frame).toContain('Phase 3D');
     unmount();

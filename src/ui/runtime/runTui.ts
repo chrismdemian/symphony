@@ -1,7 +1,7 @@
 import React from 'react';
 import { render } from 'ink';
 import { App } from '../App.js';
-import type { MaestroSource } from '../data/useMaestroEvents.js';
+import type { MaestroController } from '../data/MaestroEventsProvider.js';
 import type { TuiRpc } from './rpc.js';
 
 /**
@@ -23,7 +23,7 @@ import type { TuiRpc } from './rpc.js';
  */
 
 export interface RunTuiInput {
-  readonly maestro: MaestroSource;
+  readonly maestro: MaestroController;
   readonly rpc: TuiRpc;
   readonly version: string;
   /** Called when the user presses Ctrl+C. Launcher's `stop()` is the natural target. */
