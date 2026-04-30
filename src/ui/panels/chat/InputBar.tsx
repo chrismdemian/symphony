@@ -58,15 +58,12 @@ export interface InputBarProps {
   readonly isActive?: boolean;
   /** Placeholder shown when the buffer is empty. */
   readonly placeholder?: string;
-  /** Inline error displayed below the input (e.g., "previous turn still streaming"). */
-  readonly errorMessage?: string;
 }
 
 export function InputBar({
   onSubmit,
   isActive = true,
   placeholder = 'Tell Maestro what to do…',
-  errorMessage,
 }: InputBarProps): React.JSX.Element {
   const theme = useTheme();
   const [buf, setBuf] = useState<InputBuffer>(EMPTY_BUFFER);
@@ -203,9 +200,6 @@ export function InputBar({
           <InputLine key={i} line={line} cursor={isActive && i === buf.row ? buf.col : -1} />
         ))
       )}
-      {errorMessage !== undefined ? (
-        <Text color={theme['error']}>{errorMessage}</Text>
-      ) : null}
     </Box>
   );
 }

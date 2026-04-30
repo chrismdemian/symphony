@@ -38,7 +38,12 @@ export type Block =
       readonly input: Record<string, unknown>;
       readonly result: ToolResult | null;
     }
-  | { readonly kind: 'thinking'; readonly text: string };
+  | { readonly kind: 'thinking'; readonly text: string }
+  // Visual review: distinct block kind so the error message renders in
+  // red WITHOUT the prior streamed text in the same bubble inheriting
+  // the error color (turn-level `isError` is kept for hierarchy /
+  // future iconography but no longer drives text coloring).
+  | { readonly kind: 'error'; readonly text: string };
 
 export type Turn =
   | { readonly kind: 'user'; readonly id: string; readonly text: string; readonly ts: number }
@@ -199,7 +204,7 @@ function applyToAssistantTurn(
       return { ...turn, complete: true, isError: event.isError };
 
     case 'error': {
-      const block: Block = { kind: 'text', text: `Error: ${event.reason}` };
+      const block: Block = { kind: 'error', text: `Error: ${event.reason}` };
       return {
         ...turn,
         blocks: [...turn.blocks, block],

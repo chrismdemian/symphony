@@ -26,13 +26,16 @@ function assistantTurn(
 type AssistantBlocks = Extract<Turn, { kind: 'assistant' }>['blocks'];
 
 describe('MessageList', () => {
-  it('renders the empty state when there are no turns', () => {
+  it('renders nothing when there are no turns (input placeholder owns the empty hint)', () => {
     const { lastFrame, unmount } = render(
       <ThemeProvider>
         <MessageList turns={[]} />
       </ThemeProvider>,
     );
-    expect(lastFrame() ?? '').toContain('Start by typing a message below.');
+    // No bubble content; no leaked hint. ChatPanel composes
+    // `MessageList` above `InputBar`, and the InputBar's
+    // "Tell Maestro what to do…" placeholder is the single source.
+    expect(lastFrame() ?? '').not.toContain('Start by typing');
     unmount();
   });
 

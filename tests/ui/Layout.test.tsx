@@ -107,8 +107,9 @@ describe('<App> Layout', () => {
     expect(frame).toContain('Workers');
     expect(frame).toContain('Output');
     // 3B.1 replaced the chat placeholder with the real panel — empty
-    // history shows the prompt to type a message.
-    expect(frame).toContain('Start by typing a message below.');
+    // history shows only the input bar's "Tell Maestro what to do…"
+    // placeholder (no MessageList hint — visual review concluded the
+    // duplicate hint leaked when the user was mid-type).
     expect(frame).toContain('Tell Maestro what to do');
     // Worker + output panels still show their 3A placeholders.
     expect(frame).toContain('Phase 3C');
