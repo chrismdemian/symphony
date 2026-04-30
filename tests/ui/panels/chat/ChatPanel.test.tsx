@@ -96,11 +96,13 @@ function renderChat(maestro: FakeMaestro): Harness {
 }
 
 describe('ChatPanel (3B.1 integration)', () => {
-  it('renders an empty chat with the placeholder + input bar', async () => {
+  it('renders an empty chat with the input bar placeholder', async () => {
     const m = new FakeMaestro();
     const { lastFrame, unmount } = renderChat(m);
     await flush();
-    expect(lastFrame() ?? '').toContain('Start by typing a message below.');
+    // Visual review: the InputBar's placeholder is the single source
+    // of "type something" copy. MessageList no longer emits its own
+    // empty-state hint.
     expect(lastFrame() ?? '').toContain('Tell Maestro what to do');
     unmount();
   });

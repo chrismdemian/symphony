@@ -24,7 +24,8 @@
     "test:watch": "vitest",
     "test:scenarios": "vitest run --config vitest.scenarios.config.ts",
     "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:scenarios && pnpm build",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "visual:3b1": "node tests/visual/run.mjs tests/visual/3b1-frames.tsx"
   },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",

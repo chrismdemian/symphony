@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { Box } from 'ink';
+import { Box, Text } from 'ink';
 import { Panel } from '../../layout/Panel.js';
 import { useFocus } from '../../focus/focus.js';
+import { useTheme } from '../../theme/context.js';
 import { useMaestroData } from '../../data/MaestroEventsProvider.js';
 import { MessageList } from './MessageList.js';
 import { InputBar } from './InputBar.js';
@@ -24,6 +25,7 @@ import { InputBar } from './InputBar.js';
 
 export function ChatPanel(): React.JSX.Element {
   const focus = useFocus();
+  const theme = useTheme();
   const data = useMaestroData();
   const [error, setError] = useState<string | undefined>();
 
@@ -46,11 +48,12 @@ export function ChatPanel(): React.JSX.Element {
     <Panel focusKey="chat" title="Chat" flexGrow={1}>
       <Box flexDirection="column" flexGrow={1}>
         <MessageList turns={data.turns} />
-        <InputBar
-          onSubmit={handleSubmit}
-          isActive={isFocused}
-          {...(error !== undefined ? { errorMessage: error } : {})}
-        />
+        <InputBar onSubmit={handleSubmit} isActive={isFocused} />
+        {error !== undefined ? (
+          // Visual review: error MUST live outside the InputBar's
+          // border — inside reads as user-typed content.
+          <Text color={theme['error']}>{error}</Text>
+        ) : null}
       </Box>
     </Panel>
   );

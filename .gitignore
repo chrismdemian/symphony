@@ -32,6 +32,10 @@ Thumbs.db
 coverage/
 test-results/
 
+# TUI visual snapshots — captured by tests/visual/* harnesses for
+# skeptical-subagent review. Regenerated on demand; never committed.
+.visual-frames/
+
 # Logs
 *.log
 

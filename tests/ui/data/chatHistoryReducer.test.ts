@@ -185,7 +185,7 @@ describe('chatHistoryReducer', () => {
     expect(t.isError).toBe(true);
     expect(t.blocks).toEqual([
       { kind: 'text', text: 'partial' },
-      { kind: 'text', text: 'Error: rate limited' },
+      { kind: 'error', text: 'Error: rate limited' },
     ]);
   });
 

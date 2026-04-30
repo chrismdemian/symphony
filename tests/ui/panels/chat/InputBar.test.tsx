@@ -205,17 +205,6 @@ describe('InputBar', () => {
     unmount();
   });
 
-  it('renders the error message below the input when provided', async () => {
-    const { lastFrame, unmount } = render(
-      <ThemeProvider>
-        <InputBar onSubmit={() => {}} errorMessage="Wait for the previous turn to finish" />
-      </ThemeProvider>,
-    );
-    await flush();
-    expect(lastFrame() ?? '').toContain('Wait for the previous turn to finish');
-    unmount();
-  });
-
   it('does not handle keys when isActive is false', async () => {
     const onSubmit = vi.fn<(text: string) => void>();
     const result = render(

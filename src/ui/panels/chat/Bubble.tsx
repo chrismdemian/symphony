@@ -51,7 +51,7 @@ function BubbleImpl({ turn }: BubbleProps): React.JSX.Element {
         // expand/collapse — at that point, switch to content-derived
         // keys (tool blocks already carry `callId`; text/thinking
         // blocks need a synthetic `blockId` assigned by the reducer).
-        <BlockView key={idx} block={block} isError={turn.isError} />
+        <BlockView key={idx} block={block} />
       ))}
       {turn.complete && turn.blocks.length === 0 ? (
         <Text color={theme['textMuted']} dimColor>
@@ -66,17 +66,29 @@ export const Bubble = memo(BubbleImpl, (prev, next) => prev.turn === next.turn);
 
 interface BlockViewProps {
   readonly block: Block;
-  readonly isError: boolean;
 }
 
-function BlockView({ block, isError }: BlockViewProps): React.JSX.Element {
+function BlockView({ block }: BlockViewProps): React.JSX.Element {
   const theme = useTheme();
   if (block.kind === 'text') {
-    const color = isError ? theme['error'] : theme['text'];
     return (
       <Box flexDirection="column">
         {block.text.split('\n').map((line, i) => (
-          <Text key={i} color={color}>
+          <Text key={i} color={theme['text']}>
+            {line}
+          </Text>
+        ))}
+      </Box>
+    );
+  }
+  if (block.kind === 'error') {
+    // Visual review: the error block is the ONLY thing that goes red.
+    // Prior streamed text in the same turn keeps the default color so
+    // hierarchy ("what the model said" vs "what failed") survives.
+    return (
+      <Box flexDirection="column">
+        {block.text.split('\n').map((line, i) => (
+          <Text key={i} color={theme['error']}>
             {line}
           </Text>
         ))}
