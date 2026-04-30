@@ -245,7 +245,12 @@ describe('Phase 2C.1 production scenario — MaestroProcess + MCP attachment', (
     const mcpConfig = JSON.parse(readFileSync(startResult.mcpConfigPath, 'utf8')) as {
       mcpServers: { symphony: { command: string; args: string[] } };
     };
+    // Dev mode (`.ts` cliEntryPath) prepends the tsx loader so `node`
+    // can run TypeScript without compilation. Production `.js` entries
+    // pass through verbatim.
     expect(mcpConfig.mcpServers.symphony.args).toEqual([
+      '--import',
+      'tsx',
       path.join(REPO_ROOT, 'src', 'index.ts'),
       'mcp-server',
     ]);

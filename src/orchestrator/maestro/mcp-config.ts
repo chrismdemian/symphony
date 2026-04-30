@@ -2,6 +2,8 @@ import path from 'node:path';
 import { promises as fsp } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 
+import { prependTsxLoaderIfTs } from '../../utils/node-runner.js';
+
 const MCP_CONFIG_FILENAME = '.symphony-mcp.json';
 
 export interface WriteMaestroMcpConfigInput {
@@ -54,7 +56,9 @@ export async function writeMaestroMcpConfig(
   input: WriteMaestroMcpConfigInput,
 ): Promise<MaestroMcpConfigResult> {
   const target = input.outputPath ?? path.join(input.cwd, MCP_CONFIG_FILENAME);
-  const args: string[] = [input.cliEntryPath, 'mcp-server'];
+  // Prepend `--import tsx` when cliEntryPath is a `.ts` file so dev mode
+  // (`pnpm dev start`) works without compiling. No-op for bundled `.js`.
+  const args: string[] = [...prependTsxLoaderIfTs([input.cliEntryPath, 'mcp-server'])];
   if (input.inMemory === true) args.push('--in-memory');
 
   const config = {
