@@ -7,5 +7,6 @@ export default defineConfig({
     exclude: ['node_modules/**', 'dist/**', 'tests/scenarios/**'],
     globals: false,
     reporters: ['default'],
+    setupFiles: ['tests/setup.ts'],
   },
 });

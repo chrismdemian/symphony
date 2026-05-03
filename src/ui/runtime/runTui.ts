@@ -5,6 +5,24 @@ import type { MaestroController } from '../data/MaestroEventsProvider.js';
 import type { TuiRpc } from './rpc.js';
 
 /**
+ * Kitty-keyboard pop sequence — sent on process exit as a belt-and-
+ * suspenders safety net. Ink's unmount path emits this for us, but the
+ * launcher's 5 s SIGKILL deadline (audit 2C.2) can skip Ink unmount
+ * entirely. Without the manual pop, the parent shell inherits a stuck
+ * kitty mode and types as garbled escapes until the user manually
+ * resets the terminal.
+ */
+const KITTY_POP = '\x1b[<u';
+
+/**
+ * Tracks stdout streams that already have an `'exit'` listener attached
+ * so re-entry from tests (or hot-reload-style multiple `runTui` calls)
+ * doesn't accumulate listeners. Identity-keyed; multiple `runTui` for
+ * the same stdout register exactly one listener.
+ */
+const exitListenerRegistered = new WeakSet<NodeJS.WriteStream>();
+
+/**
  * `runTui` — entry point. Replaces the readline loop in `cli/start.ts`.
  *
  * Behavior:
@@ -66,6 +84,23 @@ export function runTui(input: RunTuiInput): RunTuiHandle {
     return NOOP_TUI_HANDLE;
   }
 
+  // Belt-and-suspenders kitty pop: register ONCE per stdout. The
+  // launcher's 5s SIGKILL deadline (audit 2C.2) can skip Ink unmount.
+  // Without the manual pop, the parent shell stays in kitty mode and
+  // typed keys arrive as escape garbage until the user manually resets.
+  if (!exitListenerRegistered.has(stdout)) {
+    exitListenerRegistered.add(stdout);
+    process.on('exit', () => {
+      try {
+        if (stdout.isTTY === true && typeof stdout.write === 'function') {
+          stdout.write(KITTY_POP);
+        }
+      } catch {
+        // Best-effort — if stdout is already closed there's nothing to do.
+      }
+    });
+  }
+
   const instance = render(
     React.createElement(App, {
       maestro: input.maestro,
@@ -87,6 +122,17 @@ export function runTui(input: RunTuiInput): RunTuiHandle {
       // calls `new console.Console()` which throws under vitest's
       // sandboxed runtime, breaking unit tests of `runTui`.
       patchConsole: false,
+      // Kitty keyboard protocol — auto-detect on supporting terminals
+      // (Windows Terminal 1.21+, iTerm2 3.5.7+, Ghostty, kitty itself).
+      // `reportAllKeysAsEscapeCodes` (flag 8) is the load-bearing flag:
+      // without it, `key.return && key.shift` can't fire because Enter
+      // arrives as plain `\r` even on supporting terminals. With flag 8,
+      // every keystroke is wrapped in CSI-u so modifiers are explicit.
+      // `Ctrl+J` remains the universal fallback for non-kitty terminals.
+      kittyKeyboard: {
+        mode: 'auto',
+        flags: ['disambiguateEscapeCodes', 'reportEventTypes', 'reportAllKeysAsEscapeCodes'],
+      },
     },
   );
 

@@ -7,6 +7,7 @@ import { useMaestroData } from '../../data/MaestroEventsProvider.js';
 import { useAppActions } from '../../runtime/AppActions.js';
 import { MessageList } from './MessageList.js';
 import { InputBar } from './InputBar.js';
+import { StatusLine } from './StatusLine.js';
 import { buildSlashTable, dispatchSlash } from './slashCommands.js';
 
 /**
@@ -76,6 +77,7 @@ export function ChatPanel(): React.JSX.Element {
     <Panel focusKey="chat" title="Chat" flexGrow={1}>
       <Box flexDirection="column" flexGrow={1}>
         <MessageList turns={data.turns} isFocused={isFocused} />
+        <StatusLine turn={data.turn} turns={data.turns} />
         <InputBar onSubmit={handleSubmit} isActive={isFocused} />
         {error !== undefined ? (
           // Visual review: error MUST live outside the InputBar's

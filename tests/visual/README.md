@@ -51,6 +51,15 @@ which is the only seam that works cross-platform without
 ## When the current stack falls short — upgrade trigger
 
 `ink-testing-library` + `FORCE_COLOR=3` covers static frame snapshots.
+
+**Phase 3B.3 spike outcome (2026-05-03):** confirmed
+`vi.useFakeTimers({toFake: ['setTimeout', 'clearTimeout', 'setInterval',
+'clearInterval', 'performance', 'Date']})` + `vi.advanceTimersByTimeAsync(N)`
+drives `useAnimation` correctly. Synchronous `vi.advanceTimersByTime` does
+NOT — Ink's scheduler subscribes inside `useLayoutEffect`, so callers must
+`await flush()` (an `setImmediate` resolve) before/after advancing. Current
+stack stays for 3B.3.
+
 It does NOT cover:
 
 - **Frame-over-time animation** — Phase 3B.3's Equalizer (sine-staggered

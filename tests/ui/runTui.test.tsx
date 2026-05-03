@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runTui } from '../../src/ui/runtime/runTui.js';
 import type { MaestroSource } from '../../src/ui/data/useMaestroEvents.js';
 import type { TuiRpc } from '../../src/ui/runtime/rpc.js';
@@ -155,5 +155,89 @@ describe('runTui', () => {
     await handle.unmount();
     await handle.exited;
     expect(resolved).toBe(true);
+  });
+
+  it('registers a process.exit listener exactly once per stdout', async () => {
+    // The belt-and-suspenders kitty pop must NOT accumulate listeners
+    // when `runTui` is called multiple times for the same stdout (test
+    // re-entry, hot reload). Track `process.on('exit', …)` registrations
+    // via a spy and assert idempotence.
+    const stdout = makeFakeStdout(true);
+    const stdin = makeFakeStdin();
+    const onSpy = vi.spyOn(process, 'on');
+    try {
+      const before = onSpy.mock.calls.filter(([ev]) => ev === 'exit').length;
+      const h1 = runTui({
+        maestro: new FakeMaestro(),
+        rpc: makeFakeRpc(),
+        version: '0.0.0',
+        onRequestExit: () => {},
+        stdin,
+        stdout,
+      });
+      const afterFirst = onSpy.mock.calls.filter(([ev]) => ev === 'exit').length;
+      expect(afterFirst).toBe(before + 1);
+
+      const h2 = runTui({
+        maestro: new FakeMaestro(),
+        rpc: makeFakeRpc(),
+        version: '0.0.0',
+        onRequestExit: () => {},
+        stdin,
+        stdout,
+      });
+      const afterSecond = onSpy.mock.calls.filter(([ev]) => ev === 'exit').length;
+      // No additional 'exit' registration on second mount with same stdout.
+      expect(afterSecond).toBe(afterFirst);
+
+      await h1.unmount();
+      await h2.unmount();
+    } finally {
+      onSpy.mockRestore();
+    }
+  });
+});
+
+describe('runTui kittyKeyboard wiring', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('passes kittyKeyboard render option with reportAllKeysAsEscapeCodes', async () => {
+    // Mock `ink`'s `render` to capture the options object handed in.
+    const renderSpy = vi.fn().mockImplementation(() => ({
+      unmount: () => {},
+      waitUntilExit: async () => {},
+    }));
+    vi.doMock('ink', async (orig) => {
+      const real = (await orig()) as object;
+      return { ...real, render: renderSpy };
+    });
+    try {
+      const { runTui: freshRunTui } = await import('../../src/ui/runtime/runTui.js');
+      const handle = freshRunTui({
+        maestro: new FakeMaestro(),
+        rpc: makeFakeRpc(),
+        version: '0.0.0',
+        onRequestExit: () => {},
+        stdin: makeFakeStdin(),
+        stdout: makeFakeStdout(true),
+      });
+      expect(renderSpy).toHaveBeenCalledTimes(1);
+      const opts = renderSpy.mock.calls[0]?.[1] as { kittyKeyboard?: { mode?: string; flags?: readonly string[] } };
+      expect(opts.kittyKeyboard).toBeDefined();
+      expect(opts.kittyKeyboard?.mode).toBe('auto');
+      expect(opts.kittyKeyboard?.flags).toContain('reportAllKeysAsEscapeCodes');
+      expect(opts.kittyKeyboard?.flags).toContain('disambiguateEscapeCodes');
+      expect(opts.kittyKeyboard?.flags).toContain('reportEventTypes');
+      await handle.unmount();
+    } finally {
+      // Audit M1: even if any expect() above fails, the `ink` module
+      // mock must NOT leak to subsequent tests in the same vitest worker.
+      vi.doUnmock('ink');
+    }
   });
 });
