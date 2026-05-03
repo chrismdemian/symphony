@@ -25,7 +25,8 @@
     "test:scenarios": "vitest run --config vitest.scenarios.config.ts",
     "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:scenarios && pnpm build",
     "format": "prettier --write .",
-    "visual:3b1": "node tests/visual/run.mjs tests/visual/3b1-frames.tsx"
+    "visual:3b1": "node tests/visual/run.mjs tests/visual/3b1-frames.tsx",
+    "visual:3b2": "node tests/visual/run.mjs tests/visual/3b2-frames.tsx"
   },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",
@@ -38,6 +39,7 @@
     "minimatch": "^10.2.5",
     "react": "^19.2.5",
     "simple-git": "^3.36.0",
+    "strip-ansi": "^7.2.0",
     "ws": "^8.20.0",
     "zod": "^4.3.6"
   },

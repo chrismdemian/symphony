@@ -1,9 +1,10 @@
 import React from 'react';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render } from 'ink-testing-library';
 import { EventEmitter } from 'node:events';
 import { ThemeProvider } from '../../../../src/ui/theme/context.js';
 import { FocusProvider } from '../../../../src/ui/focus/focus.js';
+import { AppActionsProvider } from '../../../../src/ui/runtime/AppActions.js';
 import { ChatPanel } from '../../../../src/ui/panels/chat/ChatPanel.js';
 import {
   MaestroEventsProvider,
@@ -82,13 +83,20 @@ interface Harness {
   readonly unmount: () => void;
 }
 
-function renderChat(maestro: FakeMaestro): Harness {
+interface RenderChatOptions {
+  readonly onRequestExit?: () => void;
+}
+
+function renderChat(maestro: FakeMaestro, opts: RenderChatOptions = {}): Harness {
+  const onRequestExit = opts.onRequestExit ?? (() => {});
   const result = render(
     <ThemeProvider>
       <FocusProvider>
-        <MaestroEventsProvider source={maestro} now={() => 0}>
-          <ChatPanel />
-        </MaestroEventsProvider>
+        <AppActionsProvider value={{ onRequestExit }}>
+          <MaestroEventsProvider source={maestro} now={() => 0}>
+            <ChatPanel />
+          </MaestroEventsProvider>
+        </AppActionsProvider>
       </FocusProvider>
     </ThemeProvider>,
   );
@@ -186,6 +194,94 @@ describe('ChatPanel (3B.1 integration)', () => {
     await flush();
     expect(m.sent).toEqual([]);
     expect(lastFrame() ?? '').toContain('A previous turn is still streaming');
+    unmount();
+  });
+
+  it('renders tool calls with extracted summary and ANSI-stripped result', async () => {
+    const m = new FakeMaestro();
+    const { stdin, lastFrame, unmount } = renderChat(m);
+    await flush();
+    stdin.write('read it');
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+
+    m.emit({ type: 'turn_started' });
+    await flush();
+    m.emit({
+      type: 'tool_use',
+      callId: 'c1',
+      name: 'Read',
+      input: { file_path: '/tmp/example.txt' },
+    });
+    await flush();
+    m.emit({
+      type: 'tool_result',
+      callId: 'c1',
+      content: '\x1b[32mhello\x1b[0m world',
+      isError: false,
+    });
+    await flush();
+    m.emit({ type: 'turn_completed', isError: false, resultText: '' });
+    await flush();
+
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('▸ Read /tmp/example.txt');
+    expect(frame).toContain('hello world');
+    expect(frame).not.toContain('\x1b[32m');
+    unmount();
+  });
+
+  it('intercepts /quit, calls onRequestExit, and does NOT send to Maestro', async () => {
+    const m = new FakeMaestro();
+    const onExit = vi.fn();
+    const { stdin, unmount } = renderChat(m, { onRequestExit: onExit });
+    await flush();
+    stdin.write('/quit');
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    expect(onExit).toHaveBeenCalledOnce();
+    expect(m.sent).toEqual([]);
+    unmount();
+  });
+
+  it('surfaces unknown commands inline rather than sending them', async () => {
+    const m = new FakeMaestro();
+    const { stdin, lastFrame, unmount } = renderChat(m);
+    await flush();
+    stdin.write('/notarealcmd');
+    await flush();
+    stdin.write(ENTER);
+    await flush();
+    expect(m.sent).toEqual([]);
+    expect(lastFrame() ?? '').toContain('Unknown command:');
+    unmount();
+  });
+
+  // Note: multi-line `/quit` (Ctrl+J between command and rest) is
+  // covered at the unit layer:
+  //   - InputBuffer.test.ts proves embedded `\n` survives `insertChunk`
+  //   - slashCommands.test.ts proves `parseSlashCommand` returns null
+  //     for any text containing `\n` (multi-line bypass)
+  // The integration shape would require driving Ink's bracketed-paste
+  // channel through ink-testing-library, which doesn't decode it.
+  // Keeping the contract at the unit level avoids a brittle test that
+  // proves the wrong path (audit 3B.2 M5).
+
+  it('defers onRequestExit so React commit completes before launcher unmount (audit M3)', async () => {
+    const m = new FakeMaestro();
+    const onExit = vi.fn();
+    const { stdin, unmount } = renderChat(m, { onRequestExit: onExit });
+    await flush();
+    stdin.write('/quit');
+    await flush();
+    stdin.write(ENTER);
+    // Synchronously after the keystroke: NOT yet called (deferred via
+    // setImmediate in ChatPanel.handleSubmit).
+    expect(onExit).not.toHaveBeenCalled();
+    await flush();
+    expect(onExit).toHaveBeenCalledOnce();
     unmount();
   });
 

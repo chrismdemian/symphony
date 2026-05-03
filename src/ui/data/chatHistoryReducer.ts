@@ -5,9 +5,9 @@ import type { MaestroEvent } from '../../orchestrator/maestro/process.js';
  *
  * Coalesces a stream of MaestroEvents into a `Turn[]` history. Mirrors
  * Anthropic's content-block layout: a turn is an ordered list of
- * `text | tool | thinking` blocks, opened/closed by event boundaries.
+ * `text | tool | thinking | error` blocks, opened/closed by event boundaries.
  *
- * Critical invariants (Plan-agent critique, will-be-Known-Gotchas):
+ * Critical invariants (Plan-agent critique, Known Gotchas):
  *
  *  - `assistant_text` events are CHUNKS — coalesced into the active text
  *    block by APPENDING to a single `text: string`. NEVER store as
@@ -20,6 +20,11 @@ import type { MaestroEvent } from '../../orchestrator/maestro/process.js';
  *    bubbles. Use `[...turns.slice(0, -1), newLast]`, not `.map(...)`.
  *  - Pure reducer: ids derive from `state.nextTurnId`, ts from the
  *    action. No `Date.now()` inside.
+ *  - Each block carries a stable id: tool blocks reuse `callId`; text /
+ *    thinking / error blocks get a synthetic `blockId` of the form
+ *    `<turnId>::b<seq>` assigned at create time. 3B.2 audit M6: index
+ *    keys are brittle once block components hold local state, so
+ *    callers MUST `key` by id, never by index.
  *
  * Suppressed events (no render value): `system_init`, `idle`.
  */
@@ -30,7 +35,7 @@ export interface ToolResult {
 }
 
 export type Block =
-  | { readonly kind: 'text'; readonly text: string }
+  | { readonly kind: 'text'; readonly blockId: string; readonly text: string }
   | {
       readonly kind: 'tool';
       readonly callId: string;
@@ -38,12 +43,12 @@ export type Block =
       readonly input: Record<string, unknown>;
       readonly result: ToolResult | null;
     }
-  | { readonly kind: 'thinking'; readonly text: string }
+  | { readonly kind: 'thinking'; readonly blockId: string; readonly text: string }
   // Visual review: distinct block kind so the error message renders in
   // red WITHOUT the prior streamed text in the same bubble inheriting
   // the error color (turn-level `isError` is kept for hierarchy /
   // future iconography but no longer drives text coloring).
-  | { readonly kind: 'error'; readonly text: string };
+  | { readonly kind: 'error'; readonly blockId: string; readonly text: string };
 
 export type Turn =
   | { readonly kind: 'user'; readonly id: string; readonly text: string; readonly ts: number }
@@ -51,6 +56,8 @@ export type Turn =
       readonly kind: 'assistant';
       readonly id: string;
       readonly blocks: readonly Block[];
+      /** Monotonic counter for synthetic blockIds within this turn. */
+      readonly nextBlockSeq: number;
       readonly complete: boolean;
       readonly isError: boolean;
       readonly ts: number;
@@ -97,6 +104,7 @@ export function chatHistoryReducer(
         kind: 'assistant',
         id,
         blocks: [],
+        nextBlockSeq: 0,
         complete: false,
         isError: false,
         ts,
@@ -130,6 +138,7 @@ export function chatHistoryReducer(
           kind: 'assistant',
           id,
           blocks: [],
+          nextBlockSeq: 0,
           complete: false,
           isError: false,
           ts,
@@ -147,7 +156,16 @@ export function chatHistoryReducer(
         turns: [...base.turns.slice(0, -1), updated],
       };
     }
+
+    default: {
+      const _exhaustive: never = event;
+      return state;
+    }
   }
+}
+
+function nextBlockId(turn: AssistantTurn): string {
+  return `${turn.id}::b${turn.nextBlockSeq}`;
 }
 
 function applyToAssistantTurn(
@@ -159,17 +177,40 @@ function applyToAssistantTurn(
       if (event.text.length === 0) return turn;
       const lastBlock = turn.blocks[turn.blocks.length - 1];
       if (lastBlock !== undefined && lastBlock.kind === 'text') {
-        const merged: Block = { kind: 'text', text: lastBlock.text + event.text };
+        // Coalesce — preserve the existing blockId so React.memo on
+        // ToolCallSummary / TextBlock can skip identity-equal re-renders
+        // on every chunk after the first.
+        const merged: Block = {
+          kind: 'text',
+          blockId: lastBlock.blockId,
+          text: lastBlock.text + event.text,
+        };
         return { ...turn, blocks: [...turn.blocks.slice(0, -1), merged] };
       }
-      const block: Block = { kind: 'text', text: event.text };
-      return { ...turn, blocks: [...turn.blocks, block] };
+      const block: Block = {
+        kind: 'text',
+        blockId: nextBlockId(turn),
+        text: event.text,
+      };
+      return {
+        ...turn,
+        blocks: [...turn.blocks, block],
+        nextBlockSeq: turn.nextBlockSeq + 1,
+      };
     }
 
     case 'assistant_thinking': {
       if (event.text.length === 0) return turn;
-      const block: Block = { kind: 'thinking', text: event.text };
-      return { ...turn, blocks: [...turn.blocks, block] };
+      const block: Block = {
+        kind: 'thinking',
+        blockId: nextBlockId(turn),
+        text: event.text,
+      };
+      return {
+        ...turn,
+        blocks: [...turn.blocks, block],
+        nextBlockSeq: turn.nextBlockSeq + 1,
+      };
     }
 
     case 'tool_use': {
@@ -204,10 +245,15 @@ function applyToAssistantTurn(
       return { ...turn, complete: true, isError: event.isError };
 
     case 'error': {
-      const block: Block = { kind: 'error', text: `Error: ${event.reason}` };
+      const block: Block = {
+        kind: 'error',
+        blockId: nextBlockId(turn),
+        text: `Error: ${event.reason}`,
+      };
       return {
         ...turn,
         blocks: [...turn.blocks, block],
+        nextBlockSeq: turn.nextBlockSeq + 1,
         complete: true,
         isError: true,
       };
