@@ -2,6 +2,7 @@ import React, {
   createContext,
   useCallback,
   useContext,
+  useEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -34,6 +35,16 @@ interface KeybindController {
   /** The `Command[]` filtered + deduped for the bottom bar. */
   readonly bar: readonly Command[];
   setCommands(commands: readonly Command[]): void;
+  /**
+   * Append a per-panel command set to the active registry. Returns an
+   * unregister function. Re-registering the same `id` replaces the
+   * existing command (no duplicate-error from `selectCommands` because
+   * dedup happens at lookup time on `id`).
+   *
+   * Use the `useRegisterCommands` hook below for the React-correct
+   * mount/unmount lifecycle.
+   */
+  registerCommands(commands: readonly Command[]): () => void;
 }
 
 const KeybindContext = createContext<KeybindController | null>(null);
@@ -83,6 +94,17 @@ export function KeybindProvider({
     [],
   );
 
+  const registerCommands = useCallback((toAdd: readonly Command[]): (() => void) => {
+    const ids = new Set(toAdd.map((c) => c.id));
+    setCommands((prev) => {
+      const filtered = prev.filter((c) => !ids.has(c.id));
+      return [...filtered, ...toAdd];
+    });
+    return () => {
+      setCommands((prev) => prev.filter((c) => !ids.has(c.id)));
+    };
+  }, []);
+
   const active = useMemo(
     () => selectCommands(commands, focus.currentScope, false),
     [commands, focus.currentScope],
@@ -93,8 +115,14 @@ export function KeybindProvider({
   );
 
   const controller = useMemo<KeybindController>(
-    () => ({ commands, active, bar, setCommands: setCommandsCallback }),
-    [commands, active, bar, setCommandsCallback],
+    () => ({
+      commands,
+      active,
+      bar,
+      setCommands: setCommandsCallback,
+      registerCommands,
+    }),
+    [commands, active, bar, setCommandsCallback, registerCommands],
   );
 
   // Single root-level key listener. Walks `active` (already filtered by
@@ -128,4 +156,26 @@ export function useKeybinds(): KeybindController {
     throw new Error('useKeybinds() called outside <KeybindProvider>');
   }
   return ctx;
+}
+
+/**
+ * Register a panel-scoped command set for the lifetime of a component.
+ * Pass the SAME array reference (memoized via `useMemo`) on every render
+ * — re-registration on every render is wasteful but functionally
+ * harmless (replaces by id).
+ *
+ * Use the `enabled` flag to gate registration on focus or other state
+ * — when `false`, the commands are unregistered without remounting the
+ * component.
+ */
+export function useRegisterCommands(
+  commands: readonly Command[],
+  enabled = true,
+): void {
+  const { registerCommands } = useKeybinds();
+  useEffect(() => {
+    if (!enabled) return;
+    if (commands.length === 0) return;
+    return registerCommands(commands);
+  }, [registerCommands, commands, enabled]);
 }

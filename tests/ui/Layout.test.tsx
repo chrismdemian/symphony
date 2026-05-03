@@ -89,7 +89,7 @@ afterEach(() => {
 });
 
 describe('<App> Layout', () => {
-  it('renders all three panels — chat is live (3B.1) + worker/output placeholders (3C/3D)', async () => {
+  it('renders all three panels — chat live (3B.1), workers live (3C), output placeholder (3D)', async () => {
     Object.defineProperty(process.stdout, 'columns', { value: 140, configurable: true });
     Object.defineProperty(process.stdout, 'rows', { value: 40, configurable: true });
     const { lastFrame, unmount } = render(
@@ -106,13 +106,10 @@ describe('<App> Layout', () => {
     expect(frame).toContain('Chat');
     expect(frame).toContain('Workers');
     expect(frame).toContain('Output');
-    // 3B.1 replaced the chat placeholder with the real panel — empty
-    // history shows only the input bar's "Tell Maestro what to do…"
-    // placeholder (no MessageList hint — visual review concluded the
-    // duplicate hint leaked when the user was mid-type).
     expect(frame).toContain('Tell Maestro what to do');
-    // Worker + output panels still show their 3A placeholders.
-    expect(frame).toContain('Phase 3C');
+    // 3C: empty workers panel renders the empty-state hint.
+    expect(frame).toContain('no workers');
+    // Output panel still has its 3A placeholder.
     expect(frame).toContain('Phase 3D');
     unmount();
   });

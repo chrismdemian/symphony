@@ -4,11 +4,13 @@ import type { ProjectSnapshot } from '../../projects/types.js';
 import type { WorkerRecordSnapshot } from '../../orchestrator/worker-registry.js';
 import type { ToolMode } from '../../orchestrator/types.js';
 import { ChatPanel } from '../panels/chat/ChatPanel.js';
-import { WorkerPanel } from '../panels/WorkerPanel.js';
+import { WorkerPanel } from '../panels/workers/WorkerPanel.js';
 import { OutputPanel } from '../panels/OutputPanel.js';
 import { KeybindBar } from './KeybindBar.js';
 import { StatusBar } from './StatusBar.js';
 import { useStdoutDimensions } from './useDimensions.js';
+import type { TuiRpc } from '../runtime/rpc.js';
+import type { UseWorkersResult } from '../data/useWorkers.js';
 
 /**
  * Top-level layout: status bar (top) → main split (chat | workers+output)
@@ -30,11 +32,16 @@ export interface LayoutProps {
   readonly projects: readonly ProjectSnapshot[];
   readonly workers: readonly WorkerRecordSnapshot[];
   readonly sessionId: string | null;
+  readonly rpc: TuiRpc;
+  readonly workersResult: UseWorkersResult;
 }
 
 export function Layout(props: LayoutProps): React.JSX.Element {
   const { columns } = useStdoutDimensions();
   const wide = columns >= NARROW_THRESHOLD;
+  const workersPanel = (
+    <WorkerPanel rpc={props.rpc} workersResult={props.workersResult} />
+  );
 
   return (
     <Box flexDirection="column" width="100%" height="100%">
@@ -45,31 +52,43 @@ export function Layout(props: LayoutProps): React.JSX.Element {
         workers={props.workers}
         sessionId={props.sessionId}
       />
-      {wide ? <WideLayout /> : <NarrowLayout />}
+      {wide ? (
+        <WideLayout workersPanel={workersPanel} />
+      ) : (
+        <NarrowLayout workersPanel={workersPanel} />
+      )}
       <KeybindBar />
     </Box>
   );
 }
 
-function WideLayout(): React.JSX.Element {
+function WideLayout({
+  workersPanel,
+}: {
+  readonly workersPanel: React.JSX.Element;
+}): React.JSX.Element {
   return (
     <Box flexDirection="row" flexGrow={1}>
       <Box flexBasis="55%" flexDirection="column">
         <ChatPanel />
       </Box>
       <Box flexBasis="45%" flexDirection="column">
-        <WorkerPanel />
+        {workersPanel}
         <OutputPanel />
       </Box>
     </Box>
   );
 }
 
-function NarrowLayout(): React.JSX.Element {
+function NarrowLayout({
+  workersPanel,
+}: {
+  readonly workersPanel: React.JSX.Element;
+}): React.JSX.Element {
   return (
     <Box flexDirection="column" flexGrow={1}>
       <ChatPanel />
-      <WorkerPanel />
+      {workersPanel}
       <OutputPanel />
     </Box>
   );
