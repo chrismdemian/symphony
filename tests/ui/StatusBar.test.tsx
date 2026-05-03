@@ -27,11 +27,23 @@ const baseWorker = (status: WorkerRecordSnapshot['status']): WorkerRecordSnapsho
 });
 
 function renderStatusBar(props: React.ComponentProps<typeof StatusBar>) {
-  return render(
+  const result = render(
     <ThemeProvider>
       <StatusBar {...props} />
     </ThemeProvider>,
   );
+  // Phase 3B.3: tests/setup.ts forces chalk.level=3 globally so
+  // gradient-string emits ANSI in non-TTY test envs. Existing
+  // text-content assertions need to strip escapes before regex / contain
+  // checks. Wrapper preserves original signature, augments with a
+  // stripped-frame helper.
+  const stripAnsi = (s: string): string =>
+    // eslint-disable-next-line no-control-regex
+    s.replace(/\x1b\[[\d;]*[a-zA-Z]/g, '');
+  return {
+    ...result,
+    lastFrame: () => stripAnsi(result.lastFrame() ?? ''),
+  };
 }
 
 describe('<StatusBar>', () => {

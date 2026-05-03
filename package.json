@@ -26,7 +26,8 @@
     "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:scenarios && pnpm build",
     "format": "prettier --write .",
     "visual:3b1": "node tests/visual/run.mjs tests/visual/3b1-frames.tsx",
-    "visual:3b2": "node tests/visual/run.mjs tests/visual/3b2-frames.tsx"
+    "visual:3b2": "node tests/visual/run.mjs tests/visual/3b2-frames.tsx",
+    "visual:3b3": "node tests/visual/run.mjs tests/visual/3b3-frames.tsx"
   },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",
@@ -34,6 +35,7 @@
     "better-sqlite3": "^12.9.0",
     "commander": "^14.0.3",
     "figures": "^6.1.0",
+    "gradient-string": "^3.0.0",
     "ink": "^7.0.1",
     "jsonc-parser": "^3.3.1",
     "minimatch": "^10.2.5",
