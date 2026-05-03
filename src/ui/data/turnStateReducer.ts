@@ -65,5 +65,12 @@ export function turnStateReducer(state: TurnState, action: TurnStateAction): Tur
     case 'assistant_text':
     case 'assistant_thinking':
       return state;
+
+    default: {
+      // Audit 3B.1 m9: exhaustive guard — any new MaestroEvent variant
+      // without a case here trips the never-assignment at compile time.
+      const _exhaustive: never = event;
+      return state;
+    }
   }
 }

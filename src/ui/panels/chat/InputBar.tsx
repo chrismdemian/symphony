@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import { Box, Text, useInput, usePaste } from 'ink';
 import { useTheme } from '../../theme/context.js';
 import {
   EMPTY_BUFFER,
@@ -45,10 +45,11 @@ import {
  *   - Ctrl+U           → kill-to-start-of-line
  *   - Ctrl+W           → kill word back
  *
- * Pasted text arrives via `usePaste` (3B.2) on a separate channel —
- * embedded `\n` survives there as real line breaks. Until 3B.2 lands,
- * Ink decodes paste bytes through `useInput` chunked, and embedded
- * newlines pass through `insertChunk`.
+ * Pasted text arrives via `usePaste` on a separate channel — Ink 7
+ * enables bracketed paste mode while a `usePaste` listener is
+ * registered, so the entire paste payload (including embedded `\n`)
+ * arrives as a single string. `insertChunk` already splits on '\n',
+ * so multi-line pastes become real line breaks.
  */
 
 export interface InputBarProps {
@@ -67,6 +68,18 @@ export function InputBar({
 }: InputBarProps): React.JSX.Element {
   const theme = useTheme();
   const [buf, setBuf] = useState<InputBuffer>(EMPTY_BUFFER);
+
+  // Paste channel — Ink 7's bracketed paste mode delivers the entire
+  // paste payload here without it leaking into `useInput`. `isActive`
+  // gating prevents a blurred chat panel from intercepting paste meant
+  // for another focused surface (e.g. Phase 3F command palette).
+  usePaste(
+    (text) => {
+      if (text.length === 0) return;
+      setBuf((b) => insertChunk(b, text));
+    },
+    { isActive },
+  );
 
   useInput(
     (input, key) => {

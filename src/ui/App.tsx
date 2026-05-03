@@ -13,6 +13,7 @@ import {
   useMaestroData,
   type MaestroController,
 } from './data/MaestroEventsProvider.js';
+import { AppActionsProvider } from './runtime/AppActions.js';
 import type { TuiRpc } from './runtime/rpc.js';
 
 /**
@@ -35,12 +36,18 @@ export interface AppProps {
 }
 
 export function App(props: AppProps): React.JSX.Element {
+  const actions = useMemo(
+    () => ({ onRequestExit: props.onRequestExit }),
+    [props.onRequestExit],
+  );
   return (
     <ThemeProvider>
       <FocusProvider>
-        <MaestroEventsProvider source={props.maestro}>
-          <AppShell {...props} />
-        </MaestroEventsProvider>
+        <AppActionsProvider value={actions}>
+          <MaestroEventsProvider source={props.maestro}>
+            <AppShell {...props} />
+          </MaestroEventsProvider>
+        </AppActionsProvider>
       </FocusProvider>
     </ThemeProvider>
   );

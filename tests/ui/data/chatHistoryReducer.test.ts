@@ -56,6 +56,7 @@ describe('chatHistoryReducer', () => {
     const t = lastAssistant(state);
     expect(t.id).toBe('assistant-1');
     expect(t.blocks).toEqual([]);
+    expect(t.nextBlockSeq).toBe(0);
     expect(t.complete).toBe(false);
     expect(t.isError).toBe(false);
   });
@@ -68,7 +69,13 @@ describe('chatHistoryReducer', () => {
       event({ type: 'assistant_text', text: '!' }),
     ]);
     const t = lastAssistant(state);
-    expect(t.blocks).toEqual([{ kind: 'text', text: 'Hello, world!' }]);
+    expect(t.blocks).toEqual([
+      { kind: 'text', blockId: 'assistant-0::b0', text: 'Hello, world!' },
+    ]);
+    // 3B.2 audit M6: blockId stability across coalesce — first text
+    // chunk allocates the seq, every subsequent chunk preserves it so
+    // ToolCallSummary / TextBlock React.memo can skip re-renders.
+    expect(t.nextBlockSeq).toBe(1);
   });
 
   it('opens a new text block when text follows a tool_use', () => {
@@ -85,9 +92,19 @@ describe('chatHistoryReducer', () => {
     ]);
     const t = lastAssistant(state);
     expect(t.blocks).toHaveLength(3);
-    expect(t.blocks[0]).toEqual({ kind: 'text', text: 'Let me check.' });
+    expect(t.blocks[0]).toEqual({
+      kind: 'text',
+      blockId: 'assistant-0::b0',
+      text: 'Let me check.',
+    });
     expect(t.blocks[1]?.kind).toBe('tool');
-    expect(t.blocks[2]).toEqual({ kind: 'text', text: 'Found 3.' });
+    expect(t.blocks[2]).toEqual({
+      kind: 'text',
+      blockId: 'assistant-0::b1',
+      text: 'Found 3.',
+    });
+    // tool blocks don't increment nextBlockSeq (they key by callId).
+    expect(t.nextBlockSeq).toBe(2);
   });
 
   it('opens a new text block when text follows a thinking block', () => {
@@ -98,8 +115,16 @@ describe('chatHistoryReducer', () => {
     ]);
     const t = lastAssistant(state);
     expect(t.blocks).toHaveLength(2);
-    expect(t.blocks[0]).toEqual({ kind: 'thinking', text: 'reasoning…' });
-    expect(t.blocks[1]).toEqual({ kind: 'text', text: 'Hello.' });
+    expect(t.blocks[0]).toEqual({
+      kind: 'thinking',
+      blockId: 'assistant-0::b0',
+      text: 'reasoning…',
+    });
+    expect(t.blocks[1]).toEqual({
+      kind: 'text',
+      blockId: 'assistant-0::b1',
+      text: 'Hello.',
+    });
   });
 
   it('pairs tool_use with tool_result by callId', () => {
@@ -184,8 +209,8 @@ describe('chatHistoryReducer', () => {
     expect(t.complete).toBe(true);
     expect(t.isError).toBe(true);
     expect(t.blocks).toEqual([
-      { kind: 'text', text: 'partial' },
-      { kind: 'error', text: 'Error: rate limited' },
+      { kind: 'text', blockId: 'assistant-0::b0', text: 'partial' },
+      { kind: 'error', blockId: 'assistant-0::b1', text: 'Error: rate limited' },
     ]);
   });
 
@@ -211,7 +236,9 @@ describe('chatHistoryReducer', () => {
       event({ type: 'assistant_text', text: 'lost?' }),
     ]);
     const t = lastAssistant(state);
-    expect(t.blocks).toEqual([{ kind: 'text', text: 'lost?' }]);
+    expect(t.blocks).toEqual([
+      { kind: 'text', blockId: 'assistant-0::b0', text: 'lost?' },
+    ]);
     expect(t.complete).toBe(false);
   });
 
@@ -225,7 +252,9 @@ describe('chatHistoryReducer', () => {
     expect(state.turns).toHaveLength(2);
     const second = state.turns[1];
     if (second?.kind !== 'assistant') throw new Error('expected assistant');
-    expect(second.blocks).toEqual([{ kind: 'text', text: 'second' }]);
+    expect(second.blocks).toEqual([
+      { kind: 'text', blockId: 'assistant-1::b0', text: 'second' },
+    ]);
     expect(second.complete).toBe(false);
   });
 
@@ -267,7 +296,42 @@ describe('chatHistoryReducer', () => {
       event({ type: 'assistant_text', text: 'x' }),
     ]);
     const t = lastAssistant(state);
-    expect(t.blocks).toEqual([{ kind: 'text', text: 'x' }]);
+    expect(t.blocks).toEqual([{ kind: 'text', blockId: 'assistant-0::b0', text: 'x' }]);
+  });
+
+  it('preserves blockId across coalesced text chunks (memo invariant)', () => {
+    // 3B.2 audit M6: identity-stable keys mean React.memo on text /
+    // thinking block components can skip work when the same blockId
+    // re-appears with mutated text content.
+    const s1 = fold([
+      event({ type: 'turn_started' }),
+      event({ type: 'assistant_text', text: 'hi' }),
+    ]);
+    const s2 = chatHistoryReducer(s1, event({ type: 'assistant_text', text: ' there' }));
+    const t1 = lastAssistant(s1);
+    const t2 = lastAssistant(s2);
+    const b1 = t1.blocks[0];
+    const b2 = t2.blocks[0];
+    if (b1?.kind !== 'text' || b2?.kind !== 'text') throw new Error('expected text');
+    expect(b1.blockId).toBe(b2.blockId);
+    expect(b2.text).toBe('hi there');
+  });
+
+  it('assigns distinct blockIds for adjacent text/thinking/error within a turn', () => {
+    const state = fold([
+      event({ type: 'turn_started' }),
+      event({ type: 'assistant_text', text: 'a' }),
+      event({ type: 'tool_use', callId: 'c1', name: 'list_workers', input: {} }),
+      event({ type: 'assistant_text', text: 'b' }),
+      event({ type: 'assistant_thinking', text: 'mm' }),
+      event({ type: 'assistant_text', text: 'c' }),
+    ]);
+    const t = lastAssistant(state);
+    const ids = t.blocks
+      .map((b) => (b.kind === 'tool' ? b.callId : b.blockId))
+      .filter((id): id is string => id !== undefined);
+    // All five ids must be unique (no index collisions).
+    expect(new Set(ids).size).toBe(ids.length);
   });
 
   it('returns the same state object when no change applies (referential stability)', () => {

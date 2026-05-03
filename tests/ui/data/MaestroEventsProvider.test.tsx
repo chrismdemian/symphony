@@ -333,7 +333,9 @@ describe('MaestroEventsProvider', () => {
     expect(snap2[1]).not.toBe(snap1[1]);
     const finalAssistant = snap2[1];
     if (finalAssistant?.kind !== 'assistant') throw new Error('expected assistant');
-    expect(finalAssistant.blocks).toEqual([{ kind: 'text', text: 'ab' }]);
+    expect(finalAssistant.blocks).toEqual([
+      { kind: 'text', blockId: 'assistant-1::b0', text: 'ab' },
+    ]);
     unmount();
   });
 });
