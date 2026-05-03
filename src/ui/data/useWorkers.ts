@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type { WorkerRecordSnapshot } from '../../orchestrator/worker-registry.js';
 import type { TuiRpc } from '../runtime/rpc.js';
 
@@ -33,11 +33,17 @@ export function useWorkers(rpc: TuiRpc, options?: UseWorkersOptions): UseWorkers
   const [error, setError] = useState<Error | null>(null);
   const [tick, setTick] = useState<number>(0);
   const pollIntervalMs = options?.pollIntervalMs ?? 1000;
+  // Audit M2 (3c): a slow/wedged RPC under 1s polling could otherwise
+  // stack unbounded in-flight `workers.list` requests. Skip the next
+  // tick if the previous one is still pending.
+  const inFlightRef = useRef(false);
 
   const refresh = useCallback(() => setTick((n) => n + 1), []);
 
   useEffect(() => {
+    if (inFlightRef.current) return;
     let cancelled = false;
+    inFlightRef.current = true;
     setLoading(true);
     rpc.call.workers
       .list({})
@@ -51,6 +57,7 @@ export function useWorkers(rpc: TuiRpc, options?: UseWorkersOptions): UseWorkers
         setError(err instanceof Error ? err : new Error(String(err)));
       })
       .finally(() => {
+        inFlightRef.current = false;
         if (cancelled) return;
         setLoading(false);
       });

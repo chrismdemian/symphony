@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Box, Text, useAnimation } from 'ink';
 import type { WorkerRecordSnapshot } from '../../../orchestrator/worker-registry.js';
 import { Panel } from '../../layout/Panel.js';
@@ -144,12 +144,26 @@ export function WorkerPanel({ rpc, workersResult }: WorkerPanelProps): React.JSX
     });
   }, [selectedHeader]);
 
+  // Audit M1 (3c): the kill RPC is fire-and-forget. If the panel
+  // unmounts (Tab away during 5s shutdown grace, panel swap in 3F)
+  // while the call is in-flight, the resolved promise must not call
+  // `setKillNotice` on a dead component. Mirrors the `cancelled` flag
+  // pattern used by `useWorkers`.
+  const unmountedRef = useRef(false);
+  useEffect(() => {
+    unmountedRef.current = false;
+    return () => {
+      unmountedRef.current = true;
+    };
+  }, []);
+
   const killSelected = useCallback(() => {
     if (selection.selectedId === null) return;
     const id = selection.selectedId;
     rpc.call.workers
       .kill({ workerId: id })
       .then((result) => {
+        if (unmountedRef.current) return;
         if (result.killed) {
           setKillNotice(`killed ${id}`);
         } else {
@@ -158,6 +172,7 @@ export function WorkerPanel({ rpc, workersResult }: WorkerPanelProps): React.JSX
         workersResult.refresh();
       })
       .catch((err: unknown) => {
+        if (unmountedRef.current) return;
         const msg = err instanceof Error ? err.message : String(err);
         setKillNotice(`kill failed: ${msg}`);
       });
