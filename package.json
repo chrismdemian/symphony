@@ -27,7 +27,8 @@
     "format": "prettier --write .",
     "visual:3b1": "node tests/visual/run.mjs tests/visual/3b1-frames.tsx",
     "visual:3b2": "node tests/visual/run.mjs tests/visual/3b2-frames.tsx",
-    "visual:3b3": "node tests/visual/run.mjs tests/visual/3b3-frames.tsx"
+    "visual:3b3": "node tests/visual/run.mjs tests/visual/3b3-frames.tsx",
+    "smoke:3b3": "node tests/smoke/3b3-pty-smoke.mjs"
   },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",
@@ -47,10 +48,13 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@lydell/node-pty": "1.2.0-beta.12",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^20.19.0",
     "@types/react": "^19.2.14",
     "@types/ws": "^8.18.1",
+    "@xterm/addon-serialize": "^0.14.0",
+    "@xterm/headless": "^6.0.0",
     "eslint": "^10.2.1",
     "eslint-config-prettier": "^10.1.8",
     "ink-testing-library": "^4.0.0",
