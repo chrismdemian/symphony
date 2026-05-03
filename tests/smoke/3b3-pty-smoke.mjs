@@ -33,12 +33,12 @@ const term = new Terminal({ cols: COLS, rows: ROWS, allowProposedApi: true });
 const serializeAddon = new SerializeAddon();
 term.loadAddon(serializeAddon);
 
-// Drive the TUI directly via runTui + a fake Maestro so the smoke test
-// is independent of the real Maestro spawn (which fails in this PTY
-// harness for unrelated reasons — `claude -p` exits before system_init
-// when launched through ConPTY without a controlling terminal of its
-// own). The driver script renders the full Symphony chat UI with a
-// scripted event sequence.
+// Drive the TUI directly via runTui + a fake Maestro. This stays useful
+// even though the real-Maestro spawn now works (post-fix to
+// `awaitSystemInit`'s deadlock with claude 2.1.126's first-frame
+// requirement) because the smoke test should be deterministic, fast, and
+// independent of `claude -p` invocations that cost API time and depend
+// on network state.
 const driver = path.join(repoRoot, 'tests', 'smoke', '3b3-tui-driver.tsx');
 const isWin = process.platform === 'win32';
 const shell = isWin ? 'cmd.exe' : 'sh';

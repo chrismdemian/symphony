@@ -428,7 +428,11 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
       SYMPHONY_HOOK_TOKEN: hookToken,
     },
   });
-  log(`Maestro ready (session ${startResult.systemInit.sessionId})`);
+  log(
+    startResult.systemInit.sessionId !== undefined
+      ? `Maestro ready (session ${startResult.systemInit.sessionId})`
+      : `Maestro ready (session pending — claude emits system_init after first user message)`,
+  );
 
   // ── 5. UI loop ─────────────────────────────────────────────────────────
   // Phase 3A: prefer the Ink TUI. Falls back to the prior 2C.2 readline
@@ -605,8 +609,18 @@ function defaultWorkerManager(homeDir: string): WorkerManager {
   return new WorkerManager({
     claudeConfigPath,
     claudeHome: homeDir,
+    onWorkerStderr: (workerId, chunk) => {
+      // Surface claude subprocess stderr through the launcher's stderr so
+      // boot failures (e.g., Maestro's claude exiting before system_init)
+      // are diagnosable without manually tailing logs. Each line is
+      // prefixed with the worker id; chunks are emitted as-is so partial
+      // lines stay together. Also captures Maestro's stderr.
+      process.stderr.write(`[claude:${workerId}] ${chunk}`);
+    },
   });
 }
+
+
 
 const defaultMaestroFactory: MaestroFactory = (deps) => {
   const processDeps: ConstructorParameters<typeof MaestroProcess>[0] = {

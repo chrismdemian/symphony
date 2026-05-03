@@ -1,0 +1,52 @@
+{
+  "steps": [
+    { "action": "sleep", "ms": 200 },
+    { "action": "await_user", "matchContainsText": "first", "required": true },
+    {
+      "action": "emit",
+      "line": {
+        "type": "system",
+        "subtype": "init",
+        "session_id": "00000000-0000-4000-8000-000000000080",
+        "cwd": "/tmp/fake-maestro",
+        "model": "claude-opus-4-7"
+      }
+    },
+    {
+      "action": "emit",
+      "line": {
+        "type": "assistant",
+        "message": {
+          "role": "assistant",
+          "model": "claude-opus-4-7",
+          "content": [{ "type": "text", "text": "ack" }],
+          "usage": {
+            "input_tokens": 1,
+            "output_tokens": 1,
+            "cache_read_input_tokens": 0,
+            "cache_creation_input_tokens": 0
+          }
+        }
+      }
+    },
+    {
+      "action": "emit",
+      "line": {
+        "type": "result",
+        "subtype": "success",
+        "is_error": false,
+        "duration_ms": 5,
+        "num_turns": 1,
+        "result": "ack",
+        "session_id": "00000000-0000-4000-8000-000000000080",
+        "usage": {
+          "input_tokens": 1,
+          "output_tokens": 1,
+          "cache_read_input_tokens": 0,
+          "cache_creation_input_tokens": 0
+        }
+      }
+    },
+    { "action": "exit", "code": 0 }
+  ]
+}

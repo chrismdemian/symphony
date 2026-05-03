@@ -79,7 +79,14 @@ export interface MaestroStartResult {
   /** Absolute path to the generated mcp-config JSON. */
   mcpConfigPath: string;
   /** The first `system_init` event from Maestro's stream. */
-  systemInit: { sessionId: string };
+  /**
+   * `sessionId` is undefined when Maestro spawned successfully but
+   * claude hasn't emitted `system_init` yet — claude defers the init
+   * event until the first user message arrives. The pumpEvents loop
+   * will surface it asynchronously through the normal event channel
+   * once the user types.
+   */
+  systemInit: { sessionId: string | undefined };
 }
 
 export type MaestroEvent =
@@ -419,8 +426,32 @@ export class MaestroProcess {
     this.emitter.emit(ANY_EVENT, event);
   }
 
-  private async awaitSystemInit(): Promise<{ sessionId: string }> {
-    return new Promise<{ sessionId: string }>((resolve, reject) => {
+  /**
+   * Race three outcomes after spawning Maestro's `claude -p`:
+   *
+   *   1. `system_init` arrives → claude got an input frame (rare for Maestro,
+   *      since `skipInitialPrompt: true` means nothing is ever written
+   *      pre-user-message), or a session resume kicks one out. Return the
+   *      sessionId. Happy path.
+   *   2. `STOPPED_EVENT` fires → claude exited before emitting anything →
+   *      real spawn failure (bad args, missing claude binary, etc.). Reject.
+   *   3. Neither for `WAIT_BUDGET_MS` and the worker is still alive →
+   *      claude is happily idle waiting for stdin. Resolve with
+   *      `sessionId: undefined`; the event pump will surface `system_init`
+   *      later when the first user message hits. This is the production
+   *      flow for Maestro.
+   *
+   * Pre-2026-05-03: this method only had paths (1) and (2), so a healthy
+   * silent boot LOOKED identical to a crash. Claude 2.1.126 emits
+   * `system_init` only AFTER the first user frame; the resulting deadlock
+   * caused `pnpm start` to throw "exited before emitting system_init"
+   * after claude's internal idle timeout (~5s) clean-exit kicked in.
+   */
+  private async awaitSystemInit(
+    options: { wait?: number } = {},
+  ): Promise<{ sessionId: string | undefined }> {
+    const WAIT_BUDGET_MS = options.wait ?? 1500;
+    return new Promise<{ sessionId: string | undefined }>((resolve, reject) => {
       const onInit = (event: MaestroEvent): void => {
         if (event.type !== 'system_init') return;
         cleanup();
@@ -439,10 +470,17 @@ export class MaestroProcess {
         this.emitter.off(ANY_EVENT, onInit as (e: MaestroEvent) => void);
         this.emitter.off(ANY_EVENT, onError as (e: MaestroEvent) => void);
         this.emitter.off(STOPPED_EVENT, onStop);
+        if (idleHandle !== undefined) clearTimeout(idleHandle);
       };
       this.emitter.on(ANY_EVENT, onInit as (e: MaestroEvent) => void);
       this.emitter.on(ANY_EVENT, onError as (e: MaestroEvent) => void);
       this.emitter.once(STOPPED_EVENT, onStop);
+      const idleHandle = setTimeout(() => {
+        cleanup();
+        // Worker is alive and silent → claude is waiting for stdin.
+        // Defer sessionId discovery to the event pump.
+        resolve({ sessionId: undefined });
+      }, WAIT_BUDGET_MS);
     });
   }
 }

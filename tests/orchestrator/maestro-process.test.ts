@@ -160,6 +160,40 @@ describe('MaestroProcess.start', () => {
     }
   });
 
+  it('resolves with sessionId=undefined when claude stays silent (post-2026-05-03 fix for claude 2.1.126 first-frame requirement)', async () => {
+    // Real `claude -p --input-format stream-json` does NOT emit
+    // `system_init` until it sees its first user-message frame on stdin.
+    // Symphony's `skipInitialPrompt: true` design means nothing is ever
+    // written, so a strict `awaitSystemInit` deadlocks until claude's
+    // ~5s idle exit kicks in. Pre-fix this surfaced as a misleading
+    // "Maestro process exited before emitting system_init" error.
+    // Post-fix: start() resolves on a short wait budget when the worker
+    // is alive and silent, returning sessionId=undefined.
+    const mgr = new WorkerManager({
+      claudeConfigPath: join(home, '.claude.json'),
+      claudeHome: home,
+      spawn: spawner('maestro-silent-then-user'),
+    });
+    const maestro = new MaestroProcess({
+      workerManager: mgr,
+      home,
+      promptsDir,
+      cliEntryPath: cliEntry,
+    });
+    try {
+      const result = await maestro.start({ promptVars: VARS });
+      // sessionId is undefined because claude (the fake) hasn't emitted
+      // system_init yet — it's waiting for the first user message.
+      expect(result.systemInit.sessionId).toBeUndefined();
+      // Workspace and mcp-config still produced as usual.
+      expect(existsSync(result.workspace.claudeMdPath)).toBe(true);
+      expect(existsSync(result.mcpConfigPath)).toBe(true);
+    } finally {
+      await maestro.kill().catch(() => undefined);
+      await mgr.shutdown();
+    }
+  });
+
   it('STOPPED_EVENT only fires once even if pumpEvents finally re-runs (audit 2C.1 m8)', async () => {
     const mgr = new WorkerManager({
       claudeConfigPath: join(home, '.claude.json'),
