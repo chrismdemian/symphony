@@ -109,8 +109,9 @@ describe('<App> Layout', () => {
     expect(frame).toContain('Tell Maestro what to do');
     // 3C: empty workers panel renders the empty-state hint.
     expect(frame).toContain('no workers');
-    // Output panel still has its 3A placeholder.
-    expect(frame).toContain('Phase 3D');
+    // 3D.1: output panel renders the no-selection hint when no worker
+    // is selected (default state with empty workers list).
+    expect(frame).toContain('Select a worker');
     unmount();
   });
 

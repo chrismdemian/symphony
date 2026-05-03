@@ -5,7 +5,7 @@ import type { WorkerRecordSnapshot } from '../../orchestrator/worker-registry.js
 import type { ToolMode } from '../../orchestrator/types.js';
 import { ChatPanel } from '../panels/chat/ChatPanel.js';
 import { WorkerPanel } from '../panels/workers/WorkerPanel.js';
-import { OutputPanel } from '../panels/OutputPanel.js';
+import { OutputPanel } from '../panels/output/OutputPanel.js';
 import { KeybindBar } from './KeybindBar.js';
 import { StatusBar } from './StatusBar.js';
 import { useStdoutDimensions } from './useDimensions.js';
@@ -42,6 +42,7 @@ export function Layout(props: LayoutProps): React.JSX.Element {
   const workersPanel = (
     <WorkerPanel rpc={props.rpc} workersResult={props.workersResult} />
   );
+  const outputPanel = <OutputPanel rpc={props.rpc} />;
 
   return (
     <Box flexDirection="column" width="100%" height="100%">
@@ -53,9 +54,9 @@ export function Layout(props: LayoutProps): React.JSX.Element {
         sessionId={props.sessionId}
       />
       {wide ? (
-        <WideLayout workersPanel={workersPanel} />
+        <WideLayout workersPanel={workersPanel} outputPanel={outputPanel} />
       ) : (
-        <NarrowLayout workersPanel={workersPanel} />
+        <NarrowLayout workersPanel={workersPanel} outputPanel={outputPanel} />
       )}
       <KeybindBar />
     </Box>
@@ -64,8 +65,10 @@ export function Layout(props: LayoutProps): React.JSX.Element {
 
 function WideLayout({
   workersPanel,
+  outputPanel,
 }: {
   readonly workersPanel: React.JSX.Element;
+  readonly outputPanel: React.JSX.Element;
 }): React.JSX.Element {
   return (
     <Box flexDirection="row" flexGrow={1}>
@@ -74,7 +77,7 @@ function WideLayout({
       </Box>
       <Box flexBasis="45%" flexDirection="column">
         {workersPanel}
-        <OutputPanel />
+        {outputPanel}
       </Box>
     </Box>
   );
@@ -82,14 +85,16 @@ function WideLayout({
 
 function NarrowLayout({
   workersPanel,
+  outputPanel,
 }: {
   readonly workersPanel: React.JSX.Element;
+  readonly outputPanel: React.JSX.Element;
 }): React.JSX.Element {
   return (
     <Box flexDirection="column" flexGrow={1}>
       <ChatPanel />
       {workersPanel}
-      <OutputPanel />
+      {outputPanel}
     </Box>
   );
 }
