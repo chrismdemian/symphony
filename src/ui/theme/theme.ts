@@ -59,6 +59,19 @@ export const SYMPHONY_THEME: ThemeJson = {
     workerReview: 'goldLight',
     workerNeedsInput: 'magenta',
     workerPaused: 'grayMuted',
+    // Phase 3D.1 — output panel tokens. All refs to existing palette
+    // values so the locked palette stays exactly as documented in
+    // PLAN.md §3A. NO `outputBackground` token: Ink renders against the
+    // terminal default and introducing an opaque background contradicts
+    // the locked-palette decision (PLAN.md §3A: "Background: terminal
+    // default (dark)"). Focused border resolves through `Panel`'s focus
+    // state to `borderActive`; blurred falls back to `border`.
+    outputText: 'textLight',
+    outputBorder: 'grayDim',
+    toolPending: 'grayMuted',
+    toolSuccess: 'gold',
+    toolError: 'red',
+    rateLimitWarning: 'goldLight',
   },
 };
 
