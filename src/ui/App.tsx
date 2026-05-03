@@ -8,6 +8,7 @@ import { Layout } from './layout/Layout.js';
 import { useProjects } from './data/useProjects.js';
 import { useWorkers } from './data/useWorkers.js';
 import { useMode } from './data/useMode.js';
+import { WorkerSelectionProvider } from './data/WorkerSelection.js';
 import {
   MaestroEventsProvider,
   useMaestroData,
@@ -44,9 +45,11 @@ export function App(props: AppProps): React.JSX.Element {
     <ThemeProvider>
       <FocusProvider>
         <AppActionsProvider value={actions}>
-          <MaestroEventsProvider source={props.maestro}>
-            <AppShell {...props} />
-          </MaestroEventsProvider>
+          <WorkerSelectionProvider>
+            <MaestroEventsProvider source={props.maestro}>
+              <AppShell {...props} />
+            </MaestroEventsProvider>
+          </WorkerSelectionProvider>
         </AppActionsProvider>
       </FocusProvider>
     </ThemeProvider>
@@ -56,7 +59,7 @@ export function App(props: AppProps): React.JSX.Element {
 function AppShell(props: AppProps): React.JSX.Element {
   const focus = useFocus();
   const { projects } = useProjects(props.rpc);
-  const { workers } = useWorkers(props.rpc);
+  const workersResult = useWorkers(props.rpc);
   const { mode } = useMode(props.rpc);
   const { sessionId } = useMaestroData();
 
@@ -80,8 +83,10 @@ function AppShell(props: AppProps): React.JSX.Element {
           version={props.version}
           mode={mode}
           projects={projects}
-          workers={workers}
+          workers={workersResult.workers}
           sessionId={sessionId}
+          rpc={props.rpc}
+          workersResult={workersResult}
         />
       </Box>
     </KeybindProvider>
