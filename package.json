@@ -31,6 +31,7 @@
     "visual:3c": "node tests/visual/run.mjs tests/visual/3c-frames.tsx",
     "visual:3d1": "node tests/visual/run.mjs tests/visual/3d1-frames.tsx",
     "visual:3d2": "node tests/visual/run.mjs tests/visual/3d2-frames.tsx",
+    "visual:3e": "node tests/visual/run.mjs tests/visual/3e-frames.tsx",
     "smoke:3b3": "node tests/smoke/3b3-pty-smoke.mjs"
   },
   "dependencies": {

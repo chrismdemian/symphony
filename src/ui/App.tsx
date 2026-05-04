@@ -8,6 +8,7 @@ import { Layout } from './layout/Layout.js';
 import { useProjects } from './data/useProjects.js';
 import { useWorkers } from './data/useWorkers.js';
 import { useMode } from './data/useMode.js';
+import { useQuestions } from './data/useQuestions.js';
 import { WorkerSelectionProvider } from './data/WorkerSelection.js';
 import {
   MaestroEventsProvider,
@@ -61,19 +62,24 @@ function AppShell(props: AppProps): React.JSX.Element {
   const { projects } = useProjects(props.rpc);
   const workersResult = useWorkers(props.rpc);
   const { mode } = useMode(props.rpc);
+  const questionsResult = useQuestions(props.rpc);
   const { sessionId } = useMaestroData();
 
   const commands = useMemo(
     () =>
-      buildGlobalCommands({
-        cycleFocus: focus.cycle,
-        cycleFocusReverse: focus.cycleReverse,
-        requestExit: props.onRequestExit,
-        showHelp: () => {
-          // 3A stub — Phase 3F installs the help overlay.
+      buildGlobalCommands(
+        {
+          cycleFocus: focus.cycle,
+          cycleFocusReverse: focus.cycleReverse,
+          requestExit: props.onRequestExit,
+          showHelp: () => {
+            // 3A stub — Phase 3F installs the help overlay.
+          },
+          openQuestions: () => focus.pushPopup('question'),
         },
-      }),
-    [focus.cycle, focus.cycleReverse, props.onRequestExit],
+        { questionsCount: questionsResult.count },
+      ),
+    [focus.cycle, focus.cycleReverse, focus.pushPopup, props.onRequestExit, questionsResult.count],
   );
 
   return (
@@ -87,6 +93,7 @@ function AppShell(props: AppProps): React.JSX.Element {
           sessionId={sessionId}
           rpc={props.rpc}
           workersResult={workersResult}
+          questionsResult={questionsResult}
         />
       </Box>
     </KeybindProvider>

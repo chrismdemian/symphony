@@ -6,11 +6,14 @@ import type { ToolMode } from '../../orchestrator/types.js';
 import { ChatPanel } from '../panels/chat/ChatPanel.js';
 import { WorkerPanel } from '../panels/workers/WorkerPanel.js';
 import { OutputPanel } from '../panels/output/OutputPanel.js';
+import { QuestionPopup } from '../panels/questions/QuestionPopup.js';
+import { useFocus } from '../focus/focus.js';
 import { KeybindBar } from './KeybindBar.js';
 import { StatusBar } from './StatusBar.js';
 import { useStdoutDimensions } from './useDimensions.js';
 import type { TuiRpc } from '../runtime/rpc.js';
 import type { UseWorkersResult } from '../data/useWorkers.js';
+import type { UseQuestionsResult } from '../data/useQuestions.js';
 
 /**
  * Top-level layout: status bar (top) → main split (chat | workers+output)
@@ -34,11 +37,22 @@ export interface LayoutProps {
   readonly sessionId: string | null;
   readonly rpc: TuiRpc;
   readonly workersResult: UseWorkersResult;
+  /** Phase 3E — question queue (polled at App level). */
+  readonly questionsResult?: UseQuestionsResult;
+}
+
+function isQuestionPopupOnTop(
+  stack: ReturnType<typeof useFocus>['state']['stack'],
+): boolean {
+  const top = stack[stack.length - 1];
+  return top !== undefined && top.kind === 'popup' && top.key === 'question';
 }
 
 export function Layout(props: LayoutProps): React.JSX.Element {
   const { columns } = useStdoutDimensions();
+  const focus = useFocus();
   const wide = columns >= NARROW_THRESHOLD;
+  const popupOnTop = isQuestionPopupOnTop(focus.state.stack);
   const workersPanel = (
     <WorkerPanel rpc={props.rpc} workersResult={props.workersResult} />
   );
@@ -52,8 +66,16 @@ export function Layout(props: LayoutProps): React.JSX.Element {
         projects={props.projects}
         workers={props.workers}
         sessionId={props.sessionId}
+        questionsCount={props.questionsResult?.count ?? 0}
+        blockingCount={props.questionsResult?.blockingCount ?? 0}
       />
-      {wide ? (
+      {popupOnTop ? (
+        <QuestionPopup
+          rpc={props.rpc}
+          questions={props.questionsResult?.questions ?? []}
+          projects={props.projects}
+        />
+      ) : wide ? (
         <WideLayout workersPanel={workersPanel} outputPanel={outputPanel} />
       ) : (
         <NarrowLayout workersPanel={workersPanel} outputPanel={outputPanel} />

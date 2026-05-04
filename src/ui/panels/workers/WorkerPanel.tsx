@@ -60,7 +60,10 @@ export interface WorkerPanelProps {
 export function WorkerPanel({ rpc, workersResult }: WorkerPanelProps): React.JSX.Element {
   const theme = useTheme();
   const focus = useFocus();
-  const isFocused = focus.currentMainKey === SCOPE;
+  // Phase 3E: derive from `currentScope` so panel-scope ordinal/J/K/Enter
+  // commands silently disable while a popup is on top of the workers
+  // panel. Symmetry with ChatPanel's same change.
+  const isFocused = focus.currentScope === SCOPE;
   const { workers, error } = workersResult;
   const groups = useProjectGroups(workers);
   const instruments = useInstrumentNames(workers);

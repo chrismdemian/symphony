@@ -26,7 +26,9 @@ export interface OutputPanelProps {
 export function OutputPanel({ rpc }: OutputPanelProps): React.JSX.Element {
   const focus = useFocus();
   const selection = useWorkerSelection();
-  const isFocused = focus.currentMainKey === 'output';
+  // Phase 3E: derive from `currentScope` so panel-scope keybinds silently
+  // disable while a popup is on top. Symmetry with ChatPanel + WorkerPanel.
+  const isFocused = focus.currentScope === 'output';
 
   return (
     <Panel focusKey="output" title="Output" flexGrow={1}>
