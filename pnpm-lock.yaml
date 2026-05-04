@@ -11,6 +11,9 @@ importers:
       '@inkjs/ui':
         specifier: ^2.0.0
         version: 2.0.0(ink@7.0.1(@types/react@19.2.14)(react@19.2.5))
+      '@json-render/ink':
+        specifier: 0.18.0
+        version: 0.18.0(ink@7.0.1(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(zod@4.3.6)
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.3.6)
@@ -357,6 +360,17 @@ packages:
 
   '@jridgewell/trace-mapping@0.3.31':
     resolution: {integrity: sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw==}
+
+  '@json-render/core@0.18.0':
+    resolution: {integrity: sha512-zm0K9cgxZLGshw5TmdKe3Xc6fpjbONdlj3v+Er+HhCYZ9fSJpv32d9VzQds4bDW36vPfdieAOcsPR9+EcTff7Q==}
+    peerDependencies:
+      zod: ^4.0.0
+
+  '@json-render/ink@0.18.0':
+    resolution: {integrity: sha512-DlY5bkZ3V7zJ47K06+fr3hauOOpvj4Bqe+mmK5fTBIMk619OEpc3HeaFIZWQuEywfSfzJcOwOdjYDRQYw8cZ3A==}
+    peerDependencies:
+      ink: ^6.0.0
+      react: ^19.0.0
 
   '@kwsites/file-exists@1.1.1':
     resolution: {integrity: sha512-m9/5YGR18lIwxSFDwfE3oA7bWuq9kdau6ugN4H2rJeyhFQZcG9AgSHkQtSD15a8WvTgfz9aikZMrKPHvbpqFiw==}
@@ -1463,6 +1477,11 @@ packages:
   magic-string@0.30.21:
     resolution: {integrity: sha512-vd2F4YUyEXKGcLHoq+TEyCjxueSeHnFxyyjNp80yg0XV4vUhnDer/lvvlqM/arB5bXQN5K2/3oinyCRyx8T2CQ==}
 
+  marked@17.0.6:
+    resolution: {integrity: sha512-gB0gkNafnonOw0obSTEGZTT86IuhILt2Wfx0mWH/1Au83kybTayroZ/V6nS25mN7u8ASy+5fMhgB3XPNrOZdmA==}
+    engines: {node: '>= 20'}
+    hasBin: true
+
   math-intrinsics@1.1.0:
     resolution: {integrity: sha512-/IXtbwEk5HTPyEwyKX6hGkYXxM9nbj64B+ilVJnC/R6B0pH5G4V3b0pVbL7DBj4tkhBAppbQUlf6F6Xl9LHu1g==}
     engines: {node: '>= 0.4'}
@@ -2273,6 +2292,19 @@ snapshots:
     dependencies:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  '@json-render/core@0.18.0(zod@4.3.6)':
+    dependencies:
+      zod: 4.3.6
+
+  '@json-render/ink@0.18.0(ink@7.0.1(@types/react@19.2.14)(react@19.2.5))(react@19.2.5)(zod@4.3.6)':
+    dependencies:
+      '@json-render/core': 0.18.0(zod@4.3.6)
+      ink: 7.0.1(@types/react@19.2.14)(react@19.2.5)
+      marked: 17.0.6
+      react: 19.2.5
+    transitivePeerDependencies:
+      - zod
 
   '@kwsites/file-exists@1.1.1':
     dependencies:
@@ -3293,6 +3325,8 @@ snapshots:
   magic-string@0.30.21:
     dependencies:
       '@jridgewell/sourcemap-codec': 1.5.5
+
+  marked@17.0.6: {}
 
   math-intrinsics@1.1.0: {}
 
