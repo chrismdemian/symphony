@@ -33,10 +33,14 @@ export function ChatPanel(): React.JSX.Element {
   const actions = useAppActions();
   const [error, setError] = useState<string | undefined>();
 
-  // Phase 3E: derive from `currentScope`, not `currentMainKey`. When a
-  // popup is on top of chat, `currentMainKey` is still `'chat'` but the
-  // popup owns the active key scope. Without this gate the popup's
-  // InputBar AND the chat InputBar both consume keystrokes in parallel.
+  // Phase 3E: derive from `currentScope`, not `currentMainKey`. Today,
+  // `<Layout>` unmounts the chat panel while a popup is on top so the
+  // dual-mount-of-InputBar concern doesn't fire in production — but
+  // any future overlay-style popup (Layout retains the panels behind a
+  // dimmed overlay) would otherwise let the popup's InputBar AND the
+  // chat InputBar BOTH consume keystrokes in parallel. Audit M4 from
+  // 3e: the right invariant is `currentScope`; the unmount workaround
+  // is a current-Layout artifact, not a contract.
   const isFocused = focus.currentScope === 'chat';
 
   // Audit M3: defer onRequestExit out of the synchronous useInput

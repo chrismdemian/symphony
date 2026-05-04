@@ -89,6 +89,21 @@ export function KeybindProvider({
   const focus = useFocus();
   const [commands, setCommands] = useState<readonly Command[]>(initialCommands);
 
+  // Phase 3E audit C1: `useState(initialCommands)` only reads the prop
+  // ONCE on mount. Phase 3A's all-static-global-commands era never
+  // triggered the bug; 3E's dynamic `questions.open` (count + disabled
+  // reason flip with the queue) is the first observable failure. Sync
+  // the prop into state on every identity change. Merge by id so
+  // panel-registered commands (`registerCommands` below) still carry
+  // through — panel ids never collide with global ids in practice.
+  useEffect(() => {
+    setCommands((prev) => {
+      const ids = new Set(initialCommands.map((c) => c.id));
+      const carried = prev.filter((c) => !ids.has(c.id));
+      return [...carried, ...initialCommands];
+    });
+  }, [initialCommands]);
+
   const setCommandsCallback = useCallback(
     (next: readonly Command[]) => setCommands(next),
     [],
@@ -127,7 +142,9 @@ export function KeybindProvider({
 
   // Single root-level key listener. Walks `active` (already filtered by
   // scope) and runs the first matching command's onSelect. Disabled
-  // commands are skipped silently — the bar already renders the reason.
+  // commands are skipped silently — the bottom bar today does NOT render
+  // the disabled reason (3E audit m1; track as Phase 3F polish: fade
+  // disabled binds + suffix the reason).
   useInput((input, key) => {
     for (const cmd of active) {
       if (cmd.disabledReason !== undefined) continue;

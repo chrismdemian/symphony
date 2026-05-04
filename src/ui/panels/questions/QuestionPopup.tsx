@@ -75,29 +75,41 @@ export function QuestionPopup({
     return () => clearTimeout(handle);
   }, [confirmation]);
 
+  // Phase 3E audit M2: optimistic dismissal — once `submit` succeeds,
+  // exclude the answered id from `visible` immediately so the popup
+  // advances to the next question without waiting for the next 1 s
+  // poll. Without this, the user could re-submit the same question
+  // and trip `AlreadyAnsweredError` server-side.
+  const [optimisticallyDismissed, setOptimisticallyDismissed] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+
   const visible = useMemo(() => {
-    // Show items present in BOTH the locked snapshot AND the current
-    // queue. Items the user already answered drop out; new items still
-    // appear as "extras" at the tail so they don't get lost.
     const lockedSet = new Set(lockedIds);
     const ordered: QuestionSnapshot[] = [];
     for (const id of lockedIds) {
+      if (optimisticallyDismissed.has(id)) continue;
       const found = questions.find((q) => q.id === id);
       if (found !== undefined) ordered.push(found);
     }
     for (const q of questions) {
-      if (!lockedSet.has(q.id)) ordered.push(q);
+      if (!lockedSet.has(q.id) && !optimisticallyDismissed.has(q.id)) ordered.push(q);
     }
     return ordered;
-  }, [lockedIds, questions]);
+  }, [lockedIds, questions, optimisticallyDismissed]);
 
   // Auto-pop when the popup opens with an empty queue, or all queued
-  // questions have been answered out from under us.
+  // questions have been answered out from under us. Depend on the
+  // stable `popPopup` callback identity (FocusProvider memoizes it
+  // with empty deps), NOT the whole `focus` controller — its identity
+  // flips on every focus state change, which would re-fire this
+  // effect every Tab press.
+  const focusPopPopup = focus.popPopup;
   useEffect(() => {
     if (visible.length === 0) {
-      focus.popPopup();
+      focusPopPopup();
     }
-  }, [visible.length, focus]);
+  }, [visible.length, focusPopPopup]);
 
   // Clamp the active index when items disappear.
   useEffect(() => {
@@ -115,9 +127,21 @@ export function QuestionPopup({
       void answer.submit(id, trimmed).then((result) => {
         if (result.ok) {
           setConfirmation(`✓ answered ${id}`);
-          // Advance to the next queued question; if we just answered the
-          // last one, the visible-effect will pop the popup.
-          setActiveIndex((idx) => Math.max(0, idx));
+          // Audit M2: optimistically dismiss the answered id so the
+          // popup advances NOW (don't wait 1 s for the next poll).
+          // Clamp activeIndex so we land on the next-still-visible row.
+          setOptimisticallyDismissed((prev) => {
+            const next = new Set(prev);
+            next.add(id);
+            return next;
+          });
+          setActiveIndex((idx) => Math.max(0, Math.min(idx, visible.length - 2)));
+        } else {
+          // Audit m3: clear stale "answered" toast so the user doesn't
+          // see two contradictory rows side-by-side after a retry that
+          // hits AlreadyAnsweredError within the 1.2s confirmation
+          // window.
+          setConfirmation(null);
         }
       });
     },
@@ -134,6 +158,12 @@ export function QuestionPopup({
     [visible.length],
   );
 
+  // Audit m7: depend on stable identities (`focus.popPopup` is
+  // `useCallback`'d once in FocusProvider with empty deps), not the
+  // whole `focus` object — the controller's identity flips on every
+  // state change, which would re-register the popup-scope keybinds
+  // every Tab press.
+  const popPopup = focus.popPopup;
   const popupCommands = useMemo<readonly Command[]>(
     () => [
       {
@@ -142,7 +172,7 @@ export function QuestionPopup({
         key: { kind: 'escape' },
         scope: SCOPE,
         displayOnScreen: false,
-        onSelect: () => focus.popPopup(),
+        onSelect: () => popPopup(),
       },
       {
         id: 'question.next',
@@ -161,7 +191,7 @@ export function QuestionPopup({
         onSelect: () => cycle(-1),
       },
     ],
-    [focus, cycle],
+    [popPopup, cycle],
   );
 
   useRegisterCommands(popupCommands, isFocused);
@@ -233,7 +263,10 @@ export function QuestionPopup({
       {answer.state.kind === 'submitting' ? (
         <Text color={theme['textMuted']}>Submitting…</Text>
       ) : null}
-      {answer.state.kind === 'error' ? (
+      {/* Audit m2: only render the submit error when it pertains to the
+          CURRENT question. A stale error from Q-1 must not stick to Q-2
+          after the user Tabs forward. */}
+      {answer.state.kind === 'error' && answer.state.questionId === current.id ? (
         <Text color={theme['error']}>Submit failed: {answer.state.message}</Text>
       ) : null}
       {confirmation !== null ? (
