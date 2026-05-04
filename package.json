@@ -30,10 +30,12 @@
     "visual:3b3": "node tests/visual/run.mjs tests/visual/3b3-frames.tsx",
     "visual:3c": "node tests/visual/run.mjs tests/visual/3c-frames.tsx",
     "visual:3d1": "node tests/visual/run.mjs tests/visual/3d1-frames.tsx",
+    "visual:3d2": "node tests/visual/run.mjs tests/visual/3d2-frames.tsx",
     "smoke:3b3": "node tests/smoke/3b3-pty-smoke.mjs"
   },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",
+    "@json-render/ink": "0.18.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "better-sqlite3": "^12.9.0",
     "commander": "^14.0.3",
@@ -72,6 +74,11 @@
     "onlyBuiltDependencies": [
       "better-sqlite3",
       "esbuild"
-    ]
+    ],
+    "peerDependencyRules": {
+      "allowedVersions": {
+        "@json-render/ink>ink": "^7.0.0"
+      }
+    }
   }
 }

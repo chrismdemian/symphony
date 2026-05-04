@@ -249,4 +249,54 @@ describe('<OutputPanel/>', () => {
     // resubscribe).
     tree.unmount();
   });
+
+  // Phase 3D.2 — assistant_text containing ` ```json-render ` fences is
+  // detected at render time inside EventRow; the panel emits a card-shaped
+  // structured block alongside the surrounding plain text. These cases
+  // exercise the full data-layer → reducer → EventRow → JsonRenderBlock
+  // path through the panel.
+  it('renders a json-render fence inside assistant_text as a structured block', async () => {
+    const renderSpec = {
+      root: 'card-1',
+      elements: {
+        'card-1': {
+          type: 'Card',
+          props: { title: 'Worker Status' },
+          children: ['t-1'],
+        },
+        't-1': { type: 'Text', props: { text: 'tests passing' } },
+      },
+    };
+    const fenced =
+      'narrative before\n' +
+      '```json-render\n' +
+      JSON.stringify(renderSpec) +
+      '\n```\n' +
+      'narrative after';
+    const { rpc } = makeFakeRpc({ tailEvents: [text(fenced)] });
+    const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
+    await flush();
+    await flush();
+    const frame = stripAnsi(tree.lastFrame() ?? '');
+    expect(frame).toContain('narrative before');
+    expect(frame).toContain('Worker Status');
+    expect(frame).toContain('tests passing');
+    expect(frame).toContain('narrative after');
+    // Violet border escape proves the themed registry was applied.
+    expect(tree.lastFrame() ?? '').toContain('\x1b[38;2;124;111;235m');
+    tree.unmount();
+  });
+
+  it('renders the fallback row for an invalid fence without crashing the panel', async () => {
+    const fenced = ['preamble', '```json-render', '{not real json', '```', 'epilogue'].join('\n');
+    const { rpc } = makeFakeRpc({ tailEvents: [text(fenced)] });
+    const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
+    await flush();
+    await flush();
+    const frame = stripAnsi(tree.lastFrame() ?? '');
+    expect(frame).toContain('preamble');
+    expect(frame).toContain('json-render block failed');
+    expect(frame).toContain('epilogue');
+    tree.unmount();
+  });
 });

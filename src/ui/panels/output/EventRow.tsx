@@ -3,6 +3,8 @@ import { Box, Text } from 'ink';
 import { useTheme } from '../../theme/context.js';
 import { extractToolSummary, formatToolResult } from '../chat/extractSummary.js';
 import type { DisplayedStreamEvent } from '../../data/workerEventsReducer.js';
+import { detectJsonRenderBlocks } from './jsonRenderDetect.js';
+import { JsonRenderBlock, FallbackPlainText } from './JsonRenderBlock.js';
 
 /** Visual review m2: split the trailing "… N more lines" elision marker
  * out of the tool_result body so it renders in muted gray (metadata)
@@ -37,7 +39,38 @@ function EventRowImpl({ event }: EventRowProps): React.JSX.Element | null {
   switch (event.type) {
     case 'assistant_text': {
       if (event.text.length === 0) return null;
-      return <Text color={theme['outputText']}>{event.text}</Text>;
+      const { segments } = detectJsonRenderBlocks(event.text);
+      // Fast path: no fences detected → preserve the existing single-Text
+      // render so React.memo identity stays stable for the common case
+      // (every assistant_text event without a json-render fence renders
+      // exactly the same DOM shape it did pre-3D.2).
+      if (segments.length === 1 && segments[0]?.kind === 'text') {
+        return <Text color={theme['outputText']}>{segments[0].value}</Text>;
+      }
+      return (
+        <Box flexDirection="column">
+          {segments.map((seg, i) => {
+            const key = `seg-${i}`;
+            if (seg.kind === 'text') {
+              return seg.value.length === 0 ? null : (
+                <Text key={key} color={theme['outputText']}>
+                  {seg.value}
+                </Text>
+              );
+            }
+            if (seg.kind === 'invalid') {
+              return (
+                <FallbackPlainText
+                  key={key}
+                  reason={seg.reason}
+                  raw={seg.raw}
+                />
+              );
+            }
+            return <JsonRenderBlock key={key} spec={seg.spec} />;
+          })}
+        </Box>
+      );
     }
 
     case 'assistant_thinking': {

@@ -72,6 +72,15 @@ export const SYMPHONY_THEME: ThemeJson = {
     toolSuccess: 'gold',
     toolError: 'red',
     rateLimitWarning: 'goldLight',
+    // Phase 3D.2 — json-render integration. All refs to existing palette
+    // values so the locked palette stays exactly as documented in
+    // PLAN.md §3A. NO `jsonRenderBackground` token (same reason as no
+    // `outputBackground`: terminal default).
+    jsonRenderBorder: 'violet',
+    jsonRenderHeading: 'gold',
+    jsonRenderText: 'textLight',
+    jsonRenderMuted: 'grayMuted',
+    jsonRenderError: 'red',
   },
 };
 
