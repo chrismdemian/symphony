@@ -4,7 +4,9 @@ import { useTheme } from '../../theme/context.js';
 import { extractToolSummary, formatToolResult } from '../chat/extractSummary.js';
 import type { DisplayedStreamEvent } from '../../data/workerEventsReducer.js';
 import { detectJsonRenderBlocks } from './jsonRenderDetect.js';
+import { detectMarkdownFences, type CodeSegment } from './markdownFenceDetect.js';
 import { JsonRenderBlock, FallbackPlainText } from './JsonRenderBlock.js';
+import { CodeBlock } from './CodeBlock.js';
 
 /** Visual review m2: split the trailing "… N more lines" elision marker
  * out of the tool_result body so it renders in muted gray (metadata)
@@ -39,23 +41,50 @@ function EventRowImpl({ event }: EventRowProps): React.JSX.Element | null {
   switch (event.type) {
     case 'assistant_text': {
       if (event.text.length === 0) return null;
-      const { segments } = detectJsonRenderBlocks(event.text);
-      // Fast path: no fences detected → preserve the existing single-Text
-      // render so React.memo identity stays stable for the common case
-      // (every assistant_text event without a json-render fence renders
-      // exactly the same DOM shape it did pre-3D.2).
-      if (segments.length === 1 && segments[0]?.kind === 'text') {
-        return <Text color={theme['outputText']}>{segments[0].value}</Text>;
+      // Phase 3D.2 + 3F.4 segmentation pipeline:
+      //   1. Detect ` ```json-render ` fences first (3D.2). They're
+      //      reserved and own the highest-precedence render path.
+      //   2. For each plain-text leftover, run `detectMarkdownFences`
+      //      (3F.4) to split out generic code/diff blocks. The detector
+      //      explicitly skips the `json-render` tag so step 1 stays
+      //      authoritative for that.
+      const { segments: jsonSegs } = detectJsonRenderBlocks(event.text);
+      // Fast path: no fences anywhere → preserve the existing single-
+      // Text render. React.memo identity stays stable for the common
+      // case (most assistant_text has no fences at all).
+      if (jsonSegs.length === 1 && jsonSegs[0]?.kind === 'text') {
+        const inner = detectMarkdownFences(jsonSegs[0].value);
+        if (inner.segments.length === 1 && inner.segments[0]?.kind === 'text') {
+          return <Text color={theme['outputText']}>{inner.segments[0].value}</Text>;
+        }
+        return (
+          <Box flexDirection="column">
+            {inner.segments.map((seg, i) =>
+              renderCodeSegment(seg, `code-${i}`, theme),
+            )}
+          </Box>
+        );
       }
       return (
         <Box flexDirection="column">
-          {segments.map((seg, i) => {
+          {jsonSegs.map((seg, i) => {
             const key = `seg-${i}`;
             if (seg.kind === 'text') {
-              return seg.value.length === 0 ? null : (
-                <Text key={key} color={theme['outputText']}>
-                  {seg.value}
-                </Text>
+              if (seg.value.length === 0) return null;
+              const inner = detectMarkdownFences(seg.value);
+              if (inner.segments.length === 1 && inner.segments[0]?.kind === 'text') {
+                return (
+                  <Text key={key} color={theme['outputText']}>
+                    {inner.segments[0].value}
+                  </Text>
+                );
+              }
+              return (
+                <Box key={key} flexDirection="column">
+                  {inner.segments.map((cs, j) =>
+                    renderCodeSegment(cs, `${key}-code-${j}`, theme),
+                  )}
+                </Box>
               );
             }
             if (seg.kind === 'invalid') {
@@ -153,6 +182,25 @@ function EventRowImpl({ event }: EventRowProps): React.JSX.Element | null {
       );
     }
   }
+}
+
+function renderCodeSegment(
+  seg: CodeSegment,
+  key: string,
+  theme: Record<string, string>,
+): React.JSX.Element | null {
+  if (seg.kind === 'text') {
+    if (seg.value.length === 0) return null;
+    return (
+      <Text key={key} color={theme['outputText']}>
+        {seg.value}
+      </Text>
+    );
+  }
+  if (seg.kind === 'diff') {
+    return <CodeBlock key={key} kind="diff" source={seg.source} />;
+  }
+  return <CodeBlock key={key} kind="code" lang={seg.lang} source={seg.source} />;
 }
 
 export const EventRow = React.memo(EventRowImpl);
