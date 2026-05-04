@@ -33,7 +33,11 @@ export function ChatPanel(): React.JSX.Element {
   const actions = useAppActions();
   const [error, setError] = useState<string | undefined>();
 
-  const isFocused = focus.currentMainKey === 'chat';
+  // Phase 3E: derive from `currentScope`, not `currentMainKey`. When a
+  // popup is on top of chat, `currentMainKey` is still `'chat'` but the
+  // popup owns the active key scope. Without this gate the popup's
+  // InputBar AND the chat InputBar both consume keystrokes in parallel.
+  const isFocused = focus.currentScope === 'chat';
 
   // Audit M3: defer onRequestExit out of the synchronous useInput
   // dispatch so the React commit completes before the launcher tears
