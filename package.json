@@ -32,6 +32,7 @@
     "visual:3d1": "node tests/visual/run.mjs tests/visual/3d1-frames.tsx",
     "visual:3d2": "node tests/visual/run.mjs tests/visual/3d2-frames.tsx",
     "visual:3e": "node tests/visual/run.mjs tests/visual/3e-frames.tsx",
+    "visual:3f1": "node tests/visual/run.mjs tests/visual/3f1-frames.tsx",
     "smoke:3b3": "node tests/smoke/3b3-pty-smoke.mjs"
   },
   "dependencies": {
@@ -41,6 +42,7 @@
     "better-sqlite3": "^12.9.0",
     "commander": "^14.0.3",
     "figures": "^6.1.0",
+    "fuzzysort": "^3.1.0",
     "gradient-string": "^3.0.0",
     "ink": "^7.0.1",
     "jsonc-parser": "^3.3.1",

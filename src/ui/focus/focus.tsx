@@ -46,7 +46,16 @@ type Action =
   | { type: 'cycleReverse' }
   | { type: 'push'; context: FocusContext }
   | { type: 'pop' }
-  | { type: 'setMain'; key: FocusKey };
+  | { type: 'setMain'; key: FocusKey }
+  /**
+   * Phase 3F.1 — coalesced "pop popup AND switch the underlying main
+   * panel". Required because successive `dispatch({type:'pop'})` then
+   * `dispatch({type:'setMain', key})` both read `state.stack` at
+   * dispatch time and the second one sees the popup STILL on top
+   * (audit M6 makes setMain a no-op while a popup is on top). One
+   * action computes the final stack atomically.
+   */
+  | { type: 'popAndSetMain'; key: FocusKey };
 
 const initialState: FocusState = {
   stack: [{ kind: 'main', key: 'chat' }],
@@ -107,6 +116,14 @@ function reducer(state: FocusState, action: Action): FocusState {
       // not "vanish all panels".
       if (state.stack.length <= 1) return state;
       return { stack: state.stack.slice(0, -1) };
+    case 'popAndSetMain': {
+      const popped =
+        state.stack.length <= 1 ? state.stack : state.stack.slice(0, -1);
+      const nextMain: MainContext = { kind: 'main', key: action.key };
+      return {
+        stack: popped.map((c) => (c.kind === 'main' ? nextMain : c)),
+      };
+    }
   }
 }
 
@@ -121,6 +138,13 @@ export interface FocusController {
   setMain(key: FocusKey): void;
   pushPopup(popupKey: string): void;
   popPopup(): void;
+  /**
+   * Phase 3F.1 — atomic "pop the popup, then switch underlying main
+   * panel to `key`". Use this instead of `popPopup() + setMain(key)`,
+   * which would no-op `setMain` because the popup is still on top
+   * within a batched render cycle.
+   */
+  popAndSetMain(key: FocusKey): void;
 }
 
 const FocusContextRef = createContext<FocusController | null>(null);
@@ -140,6 +164,10 @@ export function FocusProvider({ initial, children }: FocusProviderProps): React.
     [],
   );
   const popPopup = useCallback(() => dispatch({ type: 'pop' }), []);
+  const popAndSetMain = useCallback(
+    (key: FocusKey) => dispatch({ type: 'popAndSetMain', key }),
+    [],
+  );
 
   const controller = useMemo<FocusController>(() => {
     const main = findMain(state.stack);
@@ -153,8 +181,9 @@ export function FocusProvider({ initial, children }: FocusProviderProps): React.
       setMain,
       pushPopup,
       popPopup,
+      popAndSetMain,
     };
-  }, [state, cycle, cycleReverse, setMain, pushPopup, popPopup]);
+  }, [state, cycle, cycleReverse, setMain, pushPopup, popPopup, popAndSetMain]);
 
   return <FocusContextRef.Provider value={controller}>{children}</FocusContextRef.Provider>;
 }
