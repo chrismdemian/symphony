@@ -11,6 +11,7 @@ import { StatusBar } from './StatusBar.js';
 import { useStdoutDimensions } from './useDimensions.js';
 import type { TuiRpc } from '../runtime/rpc.js';
 import type { UseWorkersResult } from '../data/useWorkers.js';
+import type { UseQuestionsResult } from '../data/useQuestions.js';
 
 /**
  * Top-level layout: status bar (top) → main split (chat | workers+output)
@@ -34,6 +35,8 @@ export interface LayoutProps {
   readonly sessionId: string | null;
   readonly rpc: TuiRpc;
   readonly workersResult: UseWorkersResult;
+  /** Phase 3E — question queue (polled at App level). */
+  readonly questionsResult?: UseQuestionsResult;
 }
 
 export function Layout(props: LayoutProps): React.JSX.Element {
@@ -52,6 +55,8 @@ export function Layout(props: LayoutProps): React.JSX.Element {
         projects={props.projects}
         workers={props.workers}
         sessionId={props.sessionId}
+        questionsCount={props.questionsResult?.count ?? 0}
+        blockingCount={props.questionsResult?.blockingCount ?? 0}
       />
       {wide ? (
         <WideLayout workersPanel={workersPanel} outputPanel={outputPanel} />

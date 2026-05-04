@@ -151,4 +151,70 @@ describe('<StatusBar>', () => {
     });
     expect(lastFrame()).not.toContain('Session:');
   });
+
+  it('renders Q: 0 cell when questionsCount is omitted', () => {
+    const { lastFrame } = renderStatusBar({
+      version: '0.0.0',
+      mode: 'plan',
+      projects: [],
+      workers: [],
+      sessionId: null,
+    });
+    expect(lastFrame()).toMatch(/Q:\s*0/);
+  });
+
+  it('renders Q: <n> when questionsCount is positive', () => {
+    const { lastFrame } = renderStatusBar({
+      version: '0.0.0',
+      mode: 'plan',
+      projects: [],
+      workers: [],
+      sessionId: null,
+      questionsCount: 3,
+      blockingCount: 1,
+    });
+    expect(lastFrame()).toMatch(/Q:\s*3/);
+  });
+
+  it('paints Q-cell red for blocking via truecolor escape', () => {
+    // Don't use the stripped-frame helper here — color escapes are the
+    // assertion.
+    const result = render(
+      <ThemeProvider>
+        <StatusBar
+          version="0.0.0"
+          mode="act"
+          projects={[]}
+          workers={[]}
+          sessionId={null}
+          questionsCount={2}
+          blockingCount={2}
+        />
+      </ThemeProvider>,
+    );
+    const frame = result.lastFrame() ?? '';
+    // theme['error'] = #E06C75 → truecolor escape:
+    expect(frame).toContain('\x1b[38;2;224;108;117m');
+    // eslint-disable-next-line no-control-regex
+    expect(frame).toMatch(/Q:\s*\x1b\[38;2;224;108;117m2/);
+  });
+
+  it('paints Q-cell gold-light for advisory-only via truecolor escape', () => {
+    const result = render(
+      <ThemeProvider>
+        <StatusBar
+          version="0.0.0"
+          mode="act"
+          projects={[]}
+          workers={[]}
+          sessionId={null}
+          questionsCount={1}
+          blockingCount={0}
+        />
+      </ThemeProvider>,
+    );
+    const frame = result.lastFrame() ?? '';
+    // theme['warning'] = goldLight #E5C07B → truecolor escape:
+    expect(frame).toContain('\x1b[38;2;229;192;123m');
+  });
 });

@@ -27,6 +27,10 @@ export interface StatusBarProps {
   readonly projects: readonly ProjectSnapshot[];
   readonly workers: readonly WorkerRecordSnapshot[];
   readonly sessionId: string | null;
+  /** Phase 3E — total unanswered question count. */
+  readonly questionsCount?: number;
+  /** Phase 3E — count of unanswered BLOCKING questions (subset of total). */
+  readonly blockingCount?: number;
 }
 
 function activeCount(workers: readonly WorkerRecordSnapshot[]): number {
@@ -50,9 +54,27 @@ function formatProject(projects: readonly ProjectSnapshot[]): string {
 
 const SEPARATOR = ' │ ';
 
+/**
+ * Phase 3E — color rule for the `Q:` cell:
+ *  - 0 unanswered → `textMuted` (no signal — same weight as the labels).
+ *  - any blocking → `error` (red — must answer to unblock Maestro).
+ *  - only advisory → `warning` (gold-light — nice-to-know, batchable).
+ */
+function questionsColor(
+  theme: Record<string, string>,
+  count: number,
+  blockingCount: number,
+): string {
+  if (count === 0) return theme['textMuted']!;
+  if (blockingCount > 0) return theme['error']!;
+  return theme['warning']!;
+}
+
 export function StatusBar(props: StatusBarProps): React.JSX.Element {
   const theme = useTheme();
   const active = activeCount(props.workers);
+  const questionsCount = props.questionsCount ?? 0;
+  const blockingCount = props.blockingCount ?? 0;
   return (
     <Box flexDirection="row" paddingX={1}>
       <Text color={theme['accent']} bold>
@@ -65,6 +87,11 @@ export function StatusBar(props: StatusBarProps): React.JSX.Element {
       <Text color={theme['border']}>{SEPARATOR}</Text>
       <Text color={theme['textMuted']}>Workers: </Text>
       <Text color={active > 0 ? theme['accent'] : theme['text']}>{String(active)}</Text>
+      <Text color={theme['border']}>{SEPARATOR}</Text>
+      <Text color={theme['textMuted']}>Q: </Text>
+      <Text color={questionsColor(theme, questionsCount, blockingCount)}>
+        {String(questionsCount)}
+      </Text>
       <Text color={theme['border']}>{SEPARATOR}</Text>
       <Text color={theme['textMuted']}>Project: </Text>
       <Text color={theme['text']}>{formatProject(props.projects)}</Text>
