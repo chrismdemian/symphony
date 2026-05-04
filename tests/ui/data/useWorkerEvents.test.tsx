@@ -230,16 +230,33 @@ describe('useWorkerEvents', () => {
     tree.unmount();
   });
 
-  it('surfaces tail RPC failure via subscribeError without dropping live events', async () => {
+  it('surfaces tail RPC failure via subscribeError AND preserves live events (audit M1)', async () => {
     const handle = makeFakeRpc();
     const tree = render(<Probe rpc={handle.rpc} workerId="w-1" />);
     await flushMicrotasks();
     await flushMicrotasks();
+
+    // Live events arrive BEFORE tail rejects — they get queued into pending.
+    handle.subscription().emit(text('queued-1'));
+    handle.subscription().emit(text('queued-2'));
+    await flushMicrotasks();
+
+    // Tail rejects.
     handle.rejectTail(new Error('tail failed'));
     await flushMicrotasks();
     await flushMicrotasks();
+
+    // After rejection: error surfaces, AND the queued events are flushed
+    // into the visible event log via an empty-backfill merge. Without
+    // the M1 fix, events would stay trapped in the pending array.
     expect(tree.lastFrame()).toContain('err=tail failed');
-    expect(tree.lastFrame()).toContain('ready=n');
+    expect(tree.lastFrame()).toContain('events=2');
+    expect(tree.lastFrame()).toContain('ready=y');
+
+    // Subsequent live events now flow straight through.
+    handle.subscription().emit(text('after-failure'));
+    await flushMicrotasks();
+    expect(tree.lastFrame()).toContain('events=3');
     tree.unmount();
   });
 

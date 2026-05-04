@@ -104,6 +104,18 @@ export function useWorkerEvents(
       } catch (cause) {
         if (cancelled) return;
         const error = cause instanceof Error ? cause : new Error(String(cause));
+        // Audit M1: don't lose events on tail failure. If subscribe
+        // succeeded but tail rejected, the listener has been queueing
+        // live events into `pending` — flush them via an empty-backfill
+        // merge and flip `backfillDone` so subsequent live events flow
+        // straight through. Without this, every event that arrives
+        // after the rejection is silently dropped into a `pending`
+        // array that nothing reads.
+        if (subscriptionCleanup !== null) {
+          dispatch({ kind: 'backfillMerge', backfill: [], pending: pending.slice() });
+          backfillDone = true;
+          pending.length = 0;
+        }
         dispatch({ kind: 'subscribeError', error });
       }
     })();

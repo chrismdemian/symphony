@@ -117,11 +117,20 @@ export function WorkerOutputView({
     { isActive: isFocused },
   );
 
+  // Audit m7: keep command callback identity stable across event arrival
+  // so `useRegisterCommands` doesn't re-register the panel-scoped commands
+  // on every render. The bounds (`eventCount`, `viewportEvents`) live on
+  // a ref that the callbacks read at fire-time. With ~5 commands at full
+  // event throughput this avoids a steady stream of `setCommands` calls
+  // in `KeybindProvider`.
+  const boundsRef = useRef({ eventCount, viewportEvents });
+  boundsRef.current = { eventCount, viewportEvents };
+
   const jumpTop = useCallback(() => {
     setUserScrolledUp(true);
-    const max = Math.max(0, eventCount - viewportEvents);
-    setScrollOffset(max);
-  }, [eventCount, viewportEvents]);
+    const { eventCount: ec, viewportEvents: ve } = boundsRef.current;
+    setScrollOffset(Math.max(0, ec - ve));
+  }, []);
 
   const jumpBottom = useCallback(() => {
     setScrollOffset(0);
@@ -131,10 +140,11 @@ export function WorkerOutputView({
   const lineUp = useCallback(() => {
     setUserScrolledUp(true);
     setScrollOffset((prev) => {
-      const max = Math.max(0, eventCount - viewportEvents);
+      const { eventCount: ec, viewportEvents: ve } = boundsRef.current;
+      const max = Math.max(0, ec - ve);
       return Math.min(max, prev + 1);
     });
-  }, [eventCount, viewportEvents]);
+  }, []);
 
   const lineDown = useCallback(() => {
     setScrollOffset((prev) => {
@@ -194,7 +204,12 @@ export function WorkerOutputView({
   const hasOverflow = hiddenAbove > 0 || hiddenBelow > 0;
 
   const isEmpty = eventCount === 0;
-  const isWaiting = isEmpty && !state.backfillReady;
+  // Audit m4: gate the spinner on no subscribeError. Otherwise a tail
+  // failure stacks the "Waiting for first event…" spinner directly under
+  // the error row, which reads as "still waiting" while we've actually
+  // failed. After the M1 fix the error path also flips backfillReady,
+  // but this guard is the explicit correctness gate.
+  const isWaiting = isEmpty && !state.backfillReady && state.subscribeError === null;
 
   return (
     <Box ref={ref} flexGrow={1} flexDirection="column">
@@ -203,7 +218,10 @@ export function WorkerOutputView({
         <Text color={theme['error']}>output stream error: {state.subscribeError.message}</Text>
       ) : null}
       {hasOverflow ? (
-        <Text color={theme['textMuted']} dimColor>
+        // Audit m5: textMuted (#888888) is already de-emphasized; stacking
+        // dimColor on top renders nearly invisible in low-contrast themes
+        // (same fix applied to EmptySelectionHint pre-commit).
+        <Text color={theme['textMuted']}>
           {scrollHintText(hiddenAbove, hiddenBelow)}
         </Text>
       ) : null}

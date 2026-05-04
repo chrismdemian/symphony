@@ -18,9 +18,9 @@ import type {
  *    folded in by `backfillMerge`. Subsequent live events go straight to
  *    `live`.
  *  - Silent event-type filter: `system_init`, `log`, `control_request`,
- *    `system`, `control_response` are dropped at the reducer entry. The
- *    output panel is for human-visible content, not protocol noise.
- *    Mirrors the dispatcher's silent set from Phase 1A m3.
+ *    `system` are dropped at the reducer entry. The output panel is for
+ *    human-visible content, not protocol noise. Mirrors the dispatcher's
+ *    silent set from Phase 1A m3.
  *  - `lastRetryEvent` is the rate-limit banner state. Set on every
  *    `system_api_retry` arrival; cleared on the FIRST non-retry,
  *    non-silent event that follows. The body keeps the audit trail; the
@@ -124,15 +124,16 @@ export function workerEventsReducer(
 }
 
 /**
- * Drop events from `pending` whose serialized form matches a tail event
- * in `backfill`. Walks `backfill` last-to-first so the comparison set is
- * bounded by the smaller of the two arrays. Order-preserving.
+ * Drop events from `pending` whose serialized form matches an event in
+ * `backfill`. Order-preserving. Set-based for O(p + b) cost (audit m3:
+ * earlier doc claimed bounded-walk semantics that the implementation
+ * doesn't actually do — set lookup is the simpler honest description).
  *
  * StreamEvents are plain JSON-serializable objects emitted by Symphony's
  * stream parser; the same logical event has the same serialization on
- * both paths. Worst-case cost is `pending.length × backfill.length`
- * which is bounded by `n` (default 200) × small-pending — fine for the
- * one-time selection-change merge.
+ * both paths (V8 preserves insertion order across `JSON.stringify`).
+ * The comparison set is bounded by `n` (default 200), well within
+ * a one-time selection-change cost budget.
  */
 function dedupePendingAgainstBackfill(
   pending: readonly DisplayedStreamEvent[],
@@ -144,19 +145,16 @@ function dedupePendingAgainstBackfill(
 }
 
 /**
- * Walk events backwards to find the last `system_api_retry` not yet
- * followed by a non-retry visible event. Mirrors the live-append clear
- * rule so the post-merge banner state matches what a sequential
- * walk would have produced.
+ * Re-derive the rate-limit banner state after a backfill merge. The
+ * banner is active iff the LAST visible event is a `system_api_retry`
+ * (any non-retry event after it would have cleared the banner under
+ * the live-append rule). Mirrors the sequential walk's outcome with a
+ * single tail check — audit m1: previous loop body unconditionally
+ * returned on iteration 1, hiding the simpler shape.
  */
 function deriveLastRetryEvent(
   events: readonly DisplayedStreamEvent[],
 ): SystemApiRetryEvent | null {
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const e = events[i]!;
-    if (e.type === 'system_api_retry') return e;
-    // Any other visible event clears a pending retry banner.
-    return null;
-  }
-  return null;
+  const last = events[events.length - 1];
+  return last !== undefined && last.type === 'system_api_retry' ? last : null;
 }
