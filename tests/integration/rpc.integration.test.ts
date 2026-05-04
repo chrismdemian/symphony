@@ -251,6 +251,56 @@ describe('rpc integration — round-trip over WebSocket', () => {
     expect(await h.rpcClient.call.mode.get()).toEqual({ mode: 'act' });
   });
 
+  it('workers.tail returns the buffered events of a spawned worker', async () => {
+    await teardown(h);
+    const w = new ScriptedWorker('wk-tail');
+    h = await makeHarness([w]);
+    const spawnRes = await h.mcpClient.callTool({
+      name: 'spawn_worker',
+      arguments: {
+        project: 'symphony',
+        task_description: 'tail probe',
+        role: 'implementer',
+      },
+    });
+    const id = (spawnRes.structuredContent as { id: string }).id;
+    // Push a couple of stream events through the scripted worker so they
+    // land in the registry's CircularBuffer via the lifecycle's event tap.
+    w.push({ type: 'assistant_text', text: 'hello' });
+    w.push({ type: 'assistant_text', text: 'world' });
+    // One microtask is enough for the lifecycle's tap to drain the queue
+    // into the buffer; pump a couple just to be safe under different
+    // schedulers.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    const tail = await h.rpcClient.call.workers.tail({ workerId: id, n: 50 });
+    expect(tail.events.length).toBeGreaterThanOrEqual(2);
+    const texts = tail.events
+      .filter((e) => e.type === 'assistant_text')
+      .map((e) => (e as { text: string }).text);
+    expect(texts).toContain('hello');
+    expect(texts).toContain('world');
+    expect(tail.total).toBeGreaterThanOrEqual(2);
+  });
+
+  it('workers.tail rejects unknown workerId with not_found', async () => {
+    await expect(
+      h.rpcClient.call.workers.tail({ workerId: 'no-such-worker' }),
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('workers.tail rejects out-of-range n with bad_args', async () => {
+    await expect(
+      h.rpcClient.call.workers.tail({ workerId: 'whatever', n: 0 }),
+    ).rejects.toMatchObject({ code: 'bad_args' });
+    await expect(
+      h.rpcClient.call.workers.tail({ workerId: 'whatever', n: 501 }),
+    ).rejects.toMatchObject({ code: 'bad_args' });
+    await expect(
+      h.rpcClient.call.workers.tail({ workerId: 'whatever', n: 1.5 }),
+    ).rejects.toMatchObject({ code: 'bad_args' });
+  });
+
   it('questions surface from the store', async () => {
     h.server.questionStore.enqueue({
       question: 'pick a name',

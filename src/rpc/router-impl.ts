@@ -15,6 +15,7 @@ import {
   type WorkerRecordSnapshot,
   type WorkerRegistry,
 } from '../orchestrator/worker-registry.js';
+import type { StreamEvent } from '../workers/types.js';
 import type { ToolMode, AutonomyTier } from '../orchestrator/types.js';
 import { createRPCController, createRPCRouter } from './router.js';
 
@@ -80,6 +81,16 @@ export interface WorkersListArgs {
 export interface WorkersKillArgs {
   readonly workerId: string;
   readonly reason?: string;
+}
+
+export interface WorkersTailArgs {
+  readonly workerId: string;
+  readonly n?: number;
+}
+
+export interface WorkersTailResult {
+  readonly events: readonly StreamEvent[];
+  readonly total: number;
 }
 
 export interface QuestionsListArgs {
@@ -235,6 +246,30 @@ export function createSymphonyRouter(deps: RouterDeps) {
           { cause },
         );
       }
+    },
+    /**
+     * Phase 3D.1 — return the tail of a worker's stream-event buffer for
+     * output-panel backfill. Same source as the `get_worker_output` MCP
+     * tool (`src/orchestrator/tools/get-worker-output.ts:69-71`); the
+     * RPC method is the TUI-side equivalent so the output panel doesn't
+     * need an MCP roundtrip.
+     *
+     * `n` defaults to 200 (PLAN.md decision — bounded snapshot, fits the
+     * panel's render budget). Hard cap 500 matches `get_worker_output`'s
+     * own ceiling for parity.
+     */
+    tail(args: WorkersTailArgs): WorkersTailResult {
+      requireString(args?.workerId, 'workerId');
+      const n = args?.n ?? 200;
+      if (!Number.isInteger(n) || n < 1 || n > 500) {
+        throw badArgs('n must be an integer between 1 and 500');
+      }
+      const record = workerRegistry.get(args.workerId);
+      if (record === undefined) {
+        throw notFound(`worker '${args.workerId}' is not registered`);
+      }
+      const events = record.buffer.tail(n);
+      return { events, total: record.buffer.total() };
     },
   });
 
