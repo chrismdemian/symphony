@@ -61,6 +61,24 @@ export default tseslint.config(
               message:
                 'Workers and orchestrator MUST NOT import the JsonRenderBlock wrapper or its registry. See CLAUDE.md §"Generative TUI / rich worker output".',
             },
+            {
+              // Phase 3F.4 — same constraint, syntax highlighter edition.
+              // Workers EMIT markdown fences inside assistant_text; the
+              // TUI tokenizes + renders them. Workers must not link
+              // against the highlighter or its components.
+              group: [
+                '**/ui/panels/output/highlight',
+                '**/ui/panels/output/highlight.js',
+                '**/ui/panels/output/diffColorize',
+                '**/ui/panels/output/diffColorize.js',
+                '**/ui/panels/output/CodeBlock',
+                '**/ui/panels/output/CodeBlock.js',
+                '**/ui/panels/output/markdownFenceDetect',
+                '**/ui/panels/output/markdownFenceDetect.js',
+              ],
+              message:
+                'Workers and orchestrator MUST NOT import the syntax highlighter or fence detector. Workers emit fenced markdown; the TUI renders. See CLAUDE.md §"Generative TUI / rich worker output".',
+            },
           ],
         },
       ],

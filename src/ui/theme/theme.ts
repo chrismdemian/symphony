@@ -40,6 +40,12 @@ export const SYMPHONY_THEME: ThemeJson = {
     grayDim: '#555555',
     grayMuted: '#888888',
     textLight: '#E0E0E0',
+    // Phase 3F.4 — diff coloring follows universal git convention.
+    // Distinct from Symphony's `success` (gold) — diffs need green/red
+    // for the additions/removals to read at a glance.
+    diffAddGreen: '#98C379',
+    diffRemoveRed: '#E06C75',
+    diffHunkCyan: '#56B6C2',
   },
   theme: {
     accent: 'violet',
@@ -81,6 +87,22 @@ export const SYMPHONY_THEME: ThemeJson = {
     jsonRenderText: 'textLight',
     jsonRenderMuted: 'grayMuted',
     jsonRenderError: 'red',
+    // Phase 3F.4 — code highlighting tokens. Keywords get the brand
+    // accent (violet); strings get the secondary brand color (gold);
+    // comments + numbers get neutral muted/light tones so the eye
+    // tracks structure without being shouted at.
+    syntaxKeyword: 'violet',
+    syntaxString: 'gold',
+    syntaxComment: 'grayMuted',
+    syntaxNumber: 'goldLight',
+    // Diff lines — git-convention green/red/cyan. Distinct from
+    // success/error so the diff reads correctly even if the surrounding
+    // context uses gold for "success" elsewhere on the panel.
+    diffAdd: 'diffAddGreen',
+    diffRemove: 'diffRemoveRed',
+    diffHunk: 'diffHunkCyan',
+    diffMeta: 'grayMuted',
+    diffContext: 'textLight',
   },
 };
 
