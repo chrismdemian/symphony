@@ -52,8 +52,12 @@ interface JsonRenderBoundaryState {
 /** React `ErrorBoundary` is class-only (function components can't catch
  *  child render errors). `componentDidCatch` lets us swallow the error,
  *  set state, and render the fallback. Unrelated to Ink's lifecycle —
- *  Ink supports class components fine. */
-class JsonRenderErrorBoundary extends React.Component<
+ *  Ink supports class components fine.
+ *
+ *  Exported for direct unit testing — the boundary is otherwise private
+ *  to this module's render path and the only way to exercise its
+ *  `componentDidCatch` is to pass a child that throws synchronously. */
+export class JsonRenderErrorBoundary extends React.Component<
   { readonly children: React.ReactNode; readonly raw: string; readonly theme: Theme },
   JsonRenderBoundaryState
 > {

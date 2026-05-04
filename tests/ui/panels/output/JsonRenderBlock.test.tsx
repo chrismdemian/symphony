@@ -1,12 +1,14 @@
 import React from 'react';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render } from 'ink-testing-library';
 import stripAnsi from 'strip-ansi';
 import { ThemeProvider } from '../../../../src/ui/theme/context.js';
 import {
   JsonRenderBlock,
   FallbackPlainText,
+  JsonRenderErrorBoundary,
 } from '../../../../src/ui/panels/output/JsonRenderBlock.js';
+import { symphonyTheme } from '../../../../src/ui/theme/theme.js';
 
 function wrap(node: React.ReactNode): React.JSX.Element {
   return <ThemeProvider>{node}</ThemeProvider>;
@@ -112,6 +114,51 @@ describe('JsonRenderBlock', () => {
     // includes leading-quote + many x's. Just confirm truncation happened.
     expect(frame).toContain('…');
     expect(frame.length).toBeLessThan(longText.length + 200);
+  });
+});
+
+// Audit M1: the boundary's componentDidCatch path was unexercised by
+// the JsonRenderBlock cases above (which only trip the structural
+// validator). Test it directly so a future Ink/json-render
+// API drift that throws inside Renderer surfaces as a fallback row
+// rather than a panel-killing crash.
+describe('JsonRenderErrorBoundary (direct)', () => {
+  function Throw({ message }: { readonly message: string }): React.JSX.Element {
+    throw new Error(message);
+  }
+
+  it('renders FallbackPlainText with the thrown error message', () => {
+    const theme = symphonyTheme();
+    // Suppress React's "Uncaught error" + componentStack noise in test
+    // output — the boundary is doing its job, the noise is just chatter.
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const { lastFrame } = render(
+        wrap(
+          <JsonRenderErrorBoundary raw="<spec body>" theme={theme}>
+            <Throw message="boom from renderer" />
+          </JsonRenderErrorBoundary>,
+        ),
+      );
+      const frame = plainFrame(lastFrame);
+      expect(frame).toContain('json-render block failed: boom from renderer');
+      expect(frame).toContain('<spec body>');
+    } finally {
+      errSpy.mockRestore();
+    }
+  });
+
+  it('renders children unchanged when nothing throws', () => {
+    const theme = symphonyTheme();
+    const { lastFrame } = render(
+      wrap(
+        <JsonRenderErrorBoundary raw="<spec body>" theme={theme}>
+          <FallbackPlainText reason="(this is the child rendering normally)" raw="x" />
+        </JsonRenderErrorBoundary>,
+      ),
+    );
+    const frame = plainFrame(lastFrame);
+    expect(frame).toContain('this is the child rendering normally');
   });
 });
 
