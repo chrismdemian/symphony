@@ -134,6 +134,108 @@ describe('selectCommands', () => {
     // Selecting in 'chat' scope only sees chat.tab — no conflict.
     expect(() => selectCommands([chat, workers], 'chat', false)).not.toThrow();
   });
+
+  // Phase 3F.1 — `'main'` scope semantics.
+  it("'main' commands are active when scope is chat/workers/output", () => {
+    const help: Command = {
+      id: 'app.help',
+      title: 'help',
+      key: { kind: 'char', char: '?' },
+      scope: 'main',
+      displayOnScreen: true,
+      onSelect: noop,
+    };
+    expect(selectCommands([help], 'chat', false).map((c) => c.id)).toContain('app.help');
+    expect(selectCommands([help], 'workers', false).map((c) => c.id)).toContain('app.help');
+    expect(selectCommands([help], 'output', false).map((c) => c.id)).toContain('app.help');
+  });
+
+  it("'main' commands are silenced inside popup scopes", () => {
+    const help: Command = {
+      id: 'app.help',
+      title: 'help',
+      key: { kind: 'char', char: '?' },
+      scope: 'main',
+      displayOnScreen: true,
+      onSelect: noop,
+    };
+    expect(selectCommands([help], 'palette', false).map((c) => c.id)).not.toContain('app.help');
+    expect(selectCommands([help], 'question', false).map((c) => c.id)).not.toContain('app.help');
+  });
+
+  it('specific panel scope wins over main on same-key collision', () => {
+    const main: Command = {
+      id: 'main.q',
+      title: 'questions',
+      key: { kind: 'ctrl', char: 'q' },
+      scope: 'main',
+      displayOnScreen: true,
+      onSelect: noop,
+    };
+    const chat: Command = {
+      id: 'chat.q',
+      title: 'chat-specific',
+      key: { kind: 'ctrl', char: 'q' },
+      scope: 'chat',
+      displayOnScreen: true,
+      onSelect: noop,
+    };
+    const out = selectCommands([main, chat], 'chat', false);
+    expect(out.find((c) => formatKey(c.key) === 'Ctrl+Q')?.id).toBe('chat.q');
+  });
+
+  it('main scope wins over global on same-key collision', () => {
+    const global: Command = {
+      id: 'global.q',
+      title: 'global',
+      key: { kind: 'ctrl', char: 'q' },
+      scope: 'global',
+      displayOnScreen: true,
+      onSelect: noop,
+    };
+    const main: Command = {
+      id: 'main.q',
+      title: 'main',
+      key: { kind: 'ctrl', char: 'q' },
+      scope: 'main',
+      displayOnScreen: true,
+      onSelect: noop,
+    };
+    const out = selectCommands([global, main], 'chat', false);
+    expect(out.find((c) => formatKey(c.key) === 'Ctrl+Q')?.id).toBe('main.q');
+  });
+});
+
+describe('selectAllCommands (Phase 3F.1 palette/help)', () => {
+  const noop = (): void => undefined;
+  const make = (id: string, scope: 'global' | 'main' | string): Command => ({
+    id,
+    title: id,
+    key: { kind: 'char', char: id[0] ?? 'x' },
+    scope,
+    displayOnScreen: true,
+    onSelect: noop,
+  });
+
+  it('returns every command across every scope', async () => {
+    const { selectAllCommands } = await import('../../src/ui/keybinds/registry.js');
+    const all = selectAllCommands([
+      make('a', 'global'),
+      make('b', 'main'),
+      make('c', 'chat'),
+      make('d', 'palette'),
+    ]);
+    expect(all.map((c) => c.id).sort()).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('dedupes by id (last wins)', async () => {
+    const { selectAllCommands } = await import('../../src/ui/keybinds/registry.js');
+    const first = make('dup', 'global');
+    const second = { ...first, title: 'newer' };
+    const out = selectAllCommands([first, second]);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.title).toBe('newer');
+  });
 });
 
 describe('formatBindings', () => {

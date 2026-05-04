@@ -17,13 +17,74 @@ const handlers = {
 };
 
 describe('buildGlobalCommands', () => {
-  it('always emits the questions.open command at scope global with Ctrl+Q', () => {
+  it('emits the questions.open command at scope main with Ctrl+Q (3F.1)', () => {
     const cmds = buildGlobalCommands(handlers);
     const q = cmds.find((c) => c.id === 'questions.open');
     expect(q).toBeDefined();
-    expect(q?.scope).toBe('global');
+    // Phase 3F.1: scope migrated from 'global' to 'main' so popup
+    // filters can capture printable Ctrl+Q without re-pushing the
+    // question popup over a palette/help overlay.
+    expect(q?.scope).toBe('main');
     expect(q?.key).toEqual({ kind: 'ctrl', char: 'q' });
     expect(q?.displayOnScreen).toBe(true);
+  });
+
+  it('emits the palette.open command at scope global with Ctrl+P (3F.1)', () => {
+    const cmds = buildGlobalCommands(handlers);
+    const p = cmds.find((c) => c.id === 'palette.open');
+    expect(p).toBeDefined();
+    expect(p?.scope).toBe('global');
+    expect(p?.key).toEqual({ kind: 'ctrl', char: 'p' });
+    expect(p?.displayOnScreen).toBe(true);
+  });
+
+  it('emits the worker.select command at scope main with Ctrl+W (3F.1)', () => {
+    const cmds = buildGlobalCommands(handlers);
+    const w = cmds.find((c) => c.id === 'worker.select');
+    expect(w).toBeDefined();
+    expect(w?.scope).toBe('main');
+    expect(w?.key).toEqual({ kind: 'ctrl', char: 'w' });
+    // Hidden from the bottom bar; surfaced via palette.
+    expect(w?.displayOnScreen).toBe(false);
+  });
+
+  it('disables the worker.select command when no workers (3F.1)', () => {
+    const cmds = buildGlobalCommands(handlers, { workersCount: 0 });
+    const w = cmds.find((c) => c.id === 'worker.select');
+    expect(w?.disabledReason).toBe('no workers spawned');
+  });
+
+  it('enables the worker.select command when workers exist (3F.1)', () => {
+    const cmds = buildGlobalCommands(handlers, { workersCount: 2 });
+    const w = cmds.find((c) => c.id === 'worker.select');
+    expect(w?.disabledReason).toBeUndefined();
+  });
+
+  it('emits the app.help command at scope main (3F.1)', () => {
+    const cmds = buildGlobalCommands(handlers);
+    const h = cmds.find((c) => c.id === 'app.help');
+    expect(h).toBeDefined();
+    expect(h?.scope).toBe('main');
+    expect(h?.key).toEqual({ kind: 'char', char: '?' });
+  });
+
+  it('invokes openPalette handler when present', () => {
+    const open = vi.fn();
+    const cmds = buildGlobalCommands({ ...handlers, openPalette: open });
+    const p = cmds.find((c) => c.id === 'palette.open');
+    p!.onSelect();
+    expect(open).toHaveBeenCalledOnce();
+  });
+
+  it('invokes openWorkerSelect handler when present', () => {
+    const open = vi.fn();
+    const cmds = buildGlobalCommands(
+      { ...handlers, openWorkerSelect: open },
+      { workersCount: 1 },
+    );
+    const w = cmds.find((c) => c.id === 'worker.select');
+    w!.onSelect();
+    expect(open).toHaveBeenCalledOnce();
   });
 
   it('disables the questions command with reason when count is 0', () => {

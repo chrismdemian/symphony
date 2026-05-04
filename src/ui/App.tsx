@@ -72,14 +72,24 @@ function AppShell(props: AppProps): React.JSX.Element {
           cycleFocus: focus.cycle,
           cycleFocusReverse: focus.cycleReverse,
           requestExit: props.onRequestExit,
-          showHelp: () => {
-            // 3A stub — Phase 3F installs the help overlay.
-          },
+          showHelp: () => focus.pushPopup('help'),
+          openPalette: () => focus.pushPopup('palette'),
+          openWorkerSelect: () => focus.pushPopup('worker-select'),
           openQuestions: () => focus.pushPopup('question'),
         },
-        { questionsCount: questionsResult.count },
+        {
+          questionsCount: questionsResult.count,
+          workersCount: workersResult.workers.length,
+        },
       ),
-    [focus.cycle, focus.cycleReverse, focus.pushPopup, props.onRequestExit, questionsResult.count],
+    [
+      focus.cycle,
+      focus.cycleReverse,
+      focus.pushPopup,
+      props.onRequestExit,
+      questionsResult.count,
+      workersResult.workers.length,
+    ],
   );
 
   return (

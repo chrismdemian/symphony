@@ -172,6 +172,7 @@ export function QuestionPopup({
         key: { kind: 'escape' },
         scope: SCOPE,
         displayOnScreen: false,
+        internal: true,
         onSelect: () => popPopup(),
       },
       {
@@ -180,6 +181,7 @@ export function QuestionPopup({
         key: { kind: 'tab' },
         scope: SCOPE,
         displayOnScreen: false,
+        internal: true,
         onSelect: () => cycle(1),
       },
       {
@@ -188,6 +190,7 @@ export function QuestionPopup({
         key: { kind: 'tab', shift: true },
         scope: SCOPE,
         displayOnScreen: false,
+        internal: true,
         onSelect: () => cycle(-1),
       },
     ],

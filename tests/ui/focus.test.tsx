@@ -122,6 +122,43 @@ describe('focus reducer', () => {
     expect(main).toBe('chat');
   });
 
+  it('popAndSetMain pops the popup AND switches main atomically (audit M2)', async () => {
+    // Phase 3F.1: an earlier `popPopup() + setMain(key)` two-dispatch
+    // sequence silently dropped the setMain because the audit-M6 guard
+    // saw the popup STILL on top in the same batched-dispatch tick.
+    // popAndSetMain bundles both into one reducer pass; this test pins
+    // the contract.
+    const initial: FocusState = {
+      stack: [
+        { kind: 'main', key: 'chat' },
+        { kind: 'popup', key: 'worker-select' },
+      ],
+    };
+    const { lastFrame } = render(
+      <FocusProvider initial={initial}>
+        <ActionRunner run={(c) => c.popAndSetMain('workers')} />
+        <Probe />
+      </FocusProvider>,
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('MAIN=workers');
+    expect(frame).toContain('SCOPE=workers');
+    expect(frame).toContain('DEPTH=1');
+  });
+
+  it('popAndSetMain with no popup on top still updates main', async () => {
+    const { lastFrame } = render(
+      <FocusProvider>
+        <ActionRunner run={(c) => c.popAndSetMain('output')} />
+        <Probe />
+      </FocusProvider>,
+    );
+    await new Promise((r) => setTimeout(r, 50));
+    const frame = lastFrame() ?? '';
+    expect(frame).toContain('MAIN=output');
+  });
+
   it('pushPopup adds a context onto the stack and currentScope reflects it', () => {
     let scope = '';
     let depth = 0;

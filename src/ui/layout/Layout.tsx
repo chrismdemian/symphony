@@ -7,7 +7,10 @@ import { ChatPanel } from '../panels/chat/ChatPanel.js';
 import { WorkerPanel } from '../panels/workers/WorkerPanel.js';
 import { OutputPanel } from '../panels/output/OutputPanel.js';
 import { QuestionPopup } from '../panels/questions/QuestionPopup.js';
-import { useFocus } from '../focus/focus.js';
+import { Palette } from '../panels/palette/Palette.js';
+import { WorkerSelector } from '../panels/palette/WorkerSelector.js';
+import { HelpOverlay } from '../panels/help/HelpOverlay.js';
+import { useFocus, type FocusContext } from '../focus/focus.js';
 import { KeybindBar } from './KeybindBar.js';
 import { StatusBar } from './StatusBar.js';
 import { useStdoutDimensions } from './useDimensions.js';
@@ -25,6 +28,12 @@ import type { UseQuestionsResult } from '../data/useQuestions.js';
  *
  * `flexBasis="55%"` / `"45%"` per PLAN.md split. The right column
  * stacks workers (top) over output (bottom), each `flexGrow=1`.
+ *
+ * Phase 3F.1: popup mounting handles `'question'` (3E), `'palette'`,
+ * `'worker-select'`, and `'help'` (all 3F.1). Phase 3F.3 will refactor
+ * away from the unmount-the-split pattern to absolute-positioned
+ * overlays — this commit keeps the existing approach so 3F.1 ships
+ * without coupling to the layout refactor.
  */
 
 export const NARROW_THRESHOLD = 100;
@@ -41,22 +50,23 @@ export interface LayoutProps {
   readonly questionsResult?: UseQuestionsResult;
 }
 
-function isQuestionPopupOnTop(
-  stack: ReturnType<typeof useFocus>['state']['stack'],
-): boolean {
+function getPopupOnTopKey(
+  stack: readonly FocusContext[],
+): string | null {
   const top = stack[stack.length - 1];
-  return top !== undefined && top.kind === 'popup' && top.key === 'question';
+  return top !== undefined && top.kind === 'popup' ? top.key : null;
 }
 
 export function Layout(props: LayoutProps): React.JSX.Element {
   const { columns } = useStdoutDimensions();
   const focus = useFocus();
   const wide = columns >= NARROW_THRESHOLD;
-  const popupOnTop = isQuestionPopupOnTop(focus.state.stack);
+  const popupKey = getPopupOnTopKey(focus.state.stack);
   const workersPanel = (
     <WorkerPanel rpc={props.rpc} workersResult={props.workersResult} />
   );
   const outputPanel = <OutputPanel rpc={props.rpc} />;
+  const popupNode = renderPopup(popupKey, props);
 
   return (
     <Box flexDirection="column" width="100%" height="100%">
@@ -69,12 +79,8 @@ export function Layout(props: LayoutProps): React.JSX.Element {
         questionsCount={props.questionsResult?.count ?? 0}
         blockingCount={props.questionsResult?.blockingCount ?? 0}
       />
-      {popupOnTop ? (
-        <QuestionPopup
-          rpc={props.rpc}
-          questions={props.questionsResult?.questions ?? []}
-          projects={props.projects}
-        />
+      {popupNode !== null ? (
+        popupNode
       ) : wide ? (
         <WideLayout workersPanel={workersPanel} outputPanel={outputPanel} />
       ) : (
@@ -83,6 +89,35 @@ export function Layout(props: LayoutProps): React.JSX.Element {
       <KeybindBar />
     </Box>
   );
+}
+
+function renderPopup(
+  popupKey: string | null,
+  props: LayoutProps,
+): React.JSX.Element | null {
+  switch (popupKey) {
+    case 'question':
+      return (
+        <QuestionPopup
+          rpc={props.rpc}
+          questions={props.questionsResult?.questions ?? []}
+          projects={props.projects}
+        />
+      );
+    case 'palette':
+      return <Palette />;
+    case 'help':
+      return <HelpOverlay />;
+    case 'worker-select':
+      return <WorkerSelector workers={props.workers} />;
+    case null:
+      return null;
+    default:
+      // Unknown popup key — render nothing rather than throw, so a
+      // stale `pushPopup('typo')` doesn't crash the TUI. A test asserts
+      // every key in `FocusContext.key` is handled.
+      return null;
+  }
 }
 
 function WideLayout({
