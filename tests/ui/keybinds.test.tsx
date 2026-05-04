@@ -26,6 +26,10 @@ describe('formatKey', () => {
   it('formats char chord verbatim', () => {
     expect(formatKey({ kind: 'char', char: '?' })).toBe('?');
   });
+
+  it('returns empty string for kind: "none" (Phase 3F.3 palette-only)', () => {
+    expect(formatKey({ kind: 'none' })).toBe('');
+  });
 });
 
 describe('selectCommands', () => {
@@ -203,6 +207,38 @@ describe('selectCommands', () => {
     };
     const out = selectCommands([global, main], 'chat', false);
     expect(out.find((c) => formatKey(c.key) === 'Ctrl+Q')?.id).toBe('main.q');
+  });
+});
+
+describe('selectCommands with kind: "none" (Phase 3F.3)', () => {
+  const noop = (): void => undefined;
+  const noneCmd = (id: string, scope: 'global' | 'main' | string): Command => ({
+    id,
+    title: id,
+    key: { kind: 'none' },
+    scope,
+    displayOnScreen: false,
+    onSelect: noop,
+  });
+
+  it('two none-key commands at the same scope do NOT throw or dedup', () => {
+    const a = noneCmd('a', 'global');
+    const b = noneCmd('b', 'global');
+    const out = selectCommands([a, b], 'chat', false);
+    expect(out.map((c) => c.id).sort()).toEqual(['a', 'b']);
+  });
+
+  it('none-key commands at different scopes both appear', () => {
+    const g = noneCmd('g', 'global');
+    const m = noneCmd('m', 'main');
+    const out = selectCommands([g, m], 'chat', false);
+    expect(out.map((c) => c.id).sort()).toEqual(['g', 'm']);
+  });
+
+  it('none-key main-scope command absent in popup scope', () => {
+    const m = noneCmd('m', 'main');
+    const out = selectCommands([m], 'palette', false);
+    expect(out.map((c) => c.id)).not.toContain('m');
   });
 });
 

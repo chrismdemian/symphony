@@ -42,6 +42,12 @@ export interface GlobalCommandHandlers {
   openWorkerSelect?(): void;
   /** Phase 3E — push the question popup. Caller wires to `focus.pushPopup('question')`. */
   openQuestions?(): void;
+  /**
+   * Phase 3F.3 — palette-only command "View answered questions". Pushes
+   * the read-only history popup. Optional during 3F transition; converts
+   * to required when 3F.3 ships everywhere.
+   */
+  openQuestionHistory?(): void;
 }
 
 export interface GlobalCommandState {
@@ -117,6 +123,14 @@ export function buildGlobalCommands(
       displayOnScreen: false,
       onSelect: handlers.openWorkerSelect ?? (() => undefined),
       ...(workersDisabled ? { disabledReason: 'no workers spawned' } : {}),
+    },
+    {
+      id: 'questions.viewAnswered',
+      title: 'view answered questions',
+      key: { kind: 'none' },
+      scope: 'global',
+      displayOnScreen: false,
+      onSelect: handlers.openQuestionHistory ?? (() => undefined),
     },
   ];
 }

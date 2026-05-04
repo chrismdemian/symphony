@@ -79,6 +79,9 @@ function chordMatches(chord: KeyChord, input: string, key: Key): boolean {
       return key.ctrl && input.toLowerCase() === chord.char.toLowerCase();
     case 'char':
       return !key.ctrl && !key.meta && input === chord.char;
+    case 'none':
+      // Phase 3F.3: palette-only command — never matches a keystroke.
+      return false;
   }
 }
 

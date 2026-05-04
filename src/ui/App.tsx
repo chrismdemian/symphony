@@ -76,6 +76,7 @@ function AppShell(props: AppProps): React.JSX.Element {
           openPalette: () => focus.pushPopup('palette'),
           openWorkerSelect: () => focus.pushPopup('worker-select'),
           openQuestions: () => focus.pushPopup('question'),
+          openQuestionHistory: () => focus.pushPopup('question-history'),
         },
         {
           questionsCount: questionsResult.count,

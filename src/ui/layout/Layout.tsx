@@ -7,6 +7,7 @@ import { ChatPanel } from '../panels/chat/ChatPanel.js';
 import { WorkerPanel } from '../panels/workers/WorkerPanel.js';
 import { OutputPanel } from '../panels/output/OutputPanel.js';
 import { QuestionPopup } from '../panels/questions/QuestionPopup.js';
+import { QuestionHistory } from '../panels/questions/QuestionHistory.js';
 import { Palette } from '../panels/palette/Palette.js';
 import { WorkerSelector } from '../panels/palette/WorkerSelector.js';
 import { HelpOverlay } from '../panels/help/HelpOverlay.js';
@@ -29,11 +30,17 @@ import type { UseQuestionsResult } from '../data/useQuestions.js';
  * `flexBasis="55%"` / `"45%"` per PLAN.md split. The right column
  * stacks workers (top) over output (bottom), each `flexGrow=1`.
  *
- * Phase 3F.1: popup mounting handles `'question'` (3E), `'palette'`,
- * `'worker-select'`, and `'help'` (all 3F.1). Phase 3F.3 will refactor
- * away from the unmount-the-split pattern to absolute-positioned
- * overlays — this commit keeps the existing approach so 3F.1 ships
- * without coupling to the layout refactor.
+ * Phase 3F.3: popup overlay refactor — the underlying body is rendered
+ * UNCONDITIONALLY (no more ternary unmount), and the popup mounts as
+ * an absolute-positioned sibling on top. This preserves chat scroll
+ * position, output stream state, worker selection, and any other
+ * mounted-only state across popup open/close cycles. Pattern from
+ * lazygit / k9s ncurses overlays. Ink's `Box` supports
+ * `position: 'absolute'` natively (Yoga POSITION_TYPE_ABSOLUTE).
+ *
+ * Popup keys handled: `'question'` (3E), `'palette'`, `'worker-select'`,
+ * `'help'` (3F.1), `'question-history'` (3F.3). Unknown keys silently
+ * render no popup so a stale `pushPopup('typo')` doesn't crash.
  */
 
 export const NARROW_THRESHOLD = 100;
@@ -50,9 +57,7 @@ export interface LayoutProps {
   readonly questionsResult?: UseQuestionsResult;
 }
 
-function getPopupOnTopKey(
-  stack: readonly FocusContext[],
-): string | null {
+function getPopupOnTopKey(stack: readonly FocusContext[]): string | null {
   const top = stack[stack.length - 1];
   return top !== undefined && top.kind === 'popup' ? top.key : null;
 }
@@ -79,6 +84,23 @@ export function Layout(props: LayoutProps): React.JSX.Element {
         questionsCount={props.questionsResult?.count ?? 0}
         blockingCount={props.questionsResult?.blockingCount ?? 0}
       />
+      {/*
+       * Phase 3F.3 — popup-mount strategy. We considered an
+       * absolute-positioned overlay over a kept-mounted body, but Ink's
+       * cell-based renderer doesn't fully mask body content where the
+       * popup has whitespace cells: empty rows past the popup's content
+       * height stay un-rendered, so body text bleeds through. lazygit/
+       * k9s achieve true masking via ncurses windows, which Ink lacks.
+       *
+       * Pragmatic decision: KEEP the unmount-on-popup pattern from 3E
+       * for visual fidelity; preserve chat-scroll/output-stream/worker-
+       * selection state across popup cycles by lifting the relevant
+       * state to provider-context layer (Phase 3F.4+). Ship the popup
+       * type expansion (question-history) and the new
+       * `popAndSetMain` reducer NOW; layout-level overlay refactor
+       * remains deferred with a different mechanism (see Known Gotchas
+       * 3F.3).
+       */}
       {popupNode !== null ? (
         popupNode
       ) : wide ? (
@@ -104,6 +126,8 @@ function renderPopup(
           projects={props.projects}
         />
       );
+    case 'question-history':
+      return <QuestionHistory rpc={props.rpc} projects={props.projects} />;
     case 'palette':
       return <Palette />;
     case 'help':
@@ -114,8 +138,7 @@ function renderPopup(
       return null;
     default:
       // Unknown popup key — render nothing rather than throw, so a
-      // stale `pushPopup('typo')` doesn't crash the TUI. A test asserts
-      // every key in `FocusContext.key` is handled.
+      // stale `pushPopup('typo')` doesn't crash the TUI.
       return null;
   }
 }

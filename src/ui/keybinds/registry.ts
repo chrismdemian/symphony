@@ -25,7 +25,14 @@ export type KeyChord =
   | { readonly kind: 'pageUp' }
   | { readonly kind: 'pageDown' }
   | { readonly kind: 'ctrl'; readonly char: string }
-  | { readonly kind: 'char'; readonly char: string };
+  | { readonly kind: 'char'; readonly char: string }
+  /**
+   * Phase 3F.3 — palette-only command with no global hotkey. Never
+   * matches a keystroke; renders as an empty key column in the palette.
+   * Use for actions like "View answered questions" that we don't want
+   * to consume a top-level chord for.
+   */
+  | { readonly kind: 'none' };
 
 /**
  * Scope semantics:
@@ -97,6 +104,8 @@ export function formatKey(key: KeyChord): string {
       return `Ctrl+${key.char.toUpperCase()}`;
     case 'char':
       return key.char;
+    case 'none':
+      return '';
   }
 }
 
@@ -154,7 +163,14 @@ export function selectCommands(
 ): readonly Command[] {
   const mainActive = isMainScope(scope);
   // Group by serialized key — track whether we've seen a per-scope match.
+  // Phase 3F.3 audit C2: `formatKey({kind:'none'})` is `''`. Two commands
+  // sharing that empty key (e.g. multiple palette-only `'none'` entries)
+  // would dedup against each other and one would silently win, OR throw
+  // `DuplicateKeybindError('', ...)` with a useless message. Skip dedup
+  // entirely for `kind: 'none'` since they have no chord to collide on.
+  // Each is added to the result list as-is.
   const byKey = new Map<string, Command>();
+  const noneKey: Command[] = [];
   for (const cmd of registry) {
     if (cmd.scope === 'global') {
       // always considered
@@ -164,6 +180,10 @@ export function selectCommands(
       continue;
     }
     if (forBar && !cmd.displayOnScreen) continue;
+    if (cmd.key.kind === 'none') {
+      noneKey.push(cmd);
+      continue;
+    }
     const keyId = formatKey(cmd.key);
     const existing = byKey.get(keyId);
     if (existing === undefined) {
@@ -183,7 +203,7 @@ export function selectCommands(
     }
     // Otherwise the existing entry wins (lower-rank incoming is dropped).
   }
-  return Array.from(byKey.values());
+  return [...Array.from(byKey.values()), ...noneKey];
 }
 
 const SPECIFIC_SCOPE_RANK = 2;
@@ -231,6 +251,9 @@ export function formatBindings(commands: readonly Command[], maxWidth: number): 
   let used = 0;
   let truncated = false;
   for (const cmd of commands) {
+    // Phase 3F.3: skip palette-only commands (kind 'none' → empty key
+    // string) — they have no chord to advertise on the bar.
+    if (cmd.key.kind === 'none') continue;
     const piece = `${formatKey(cmd.key)}: ${cmd.title}`;
     const cost = parts.length === 0 ? piece.length : piece.length + SEP.length;
     if (used + cost > maxWidth - ELLIPSIS.length && parts.length > 0) {
