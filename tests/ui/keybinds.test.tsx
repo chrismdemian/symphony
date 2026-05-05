@@ -30,6 +30,15 @@ describe('formatKey', () => {
   it('returns empty string for kind: "none" (Phase 3F.3 palette-only)', () => {
     expect(formatKey({ kind: 'none' })).toBe('');
   });
+
+  it('renders leader chord as "lead second" (Phase 3F.2)', () => {
+    const chord = {
+      kind: 'leader' as const,
+      lead: { kind: 'ctrl' as const, char: 'x' },
+      second: { kind: 'char' as const, char: 'm' },
+    };
+    expect(formatKey(chord)).toBe('Ctrl+X m');
+  });
 });
 
 describe('selectCommands', () => {

@@ -48,6 +48,12 @@ export interface GlobalCommandHandlers {
    * to required when 3F.3 ships everywhere.
    */
   openQuestionHistory?(): void;
+  /**
+   * Phase 3F.2 — leader-key chord stubs. Each fires a toast; real
+   * actions land in 3H (settings) and Phase 5 (project switch). The
+   * toast IS the observable behavior gating the production scenario.
+   */
+  showLeaderToast?(message: string): void;
 }
 
 export interface GlobalCommandState {
@@ -131,6 +137,36 @@ export function buildGlobalCommands(
       scope: 'global',
       displayOnScreen: false,
       onSelect: handlers.openQuestionHistory ?? (() => undefined),
+    },
+    // Phase 3F.2 — leader-key chord stubs. Hidden from the bottom bar
+    // (`displayOnScreen: false`) since the chord is wider than a normal
+    // hotkey advertised in the bar — surfaced via the palette + help.
+    {
+      id: 'leader.modeSwitch',
+      title: 'switch model mode',
+      key: { kind: 'leader', lead: { kind: 'ctrl', char: 'x' }, second: { kind: 'char', char: 'm' } },
+      scope: 'global',
+      displayOnScreen: false,
+      onSelect: () =>
+        handlers.showLeaderToast?.('Model mode switch — Phase 3H will wire the real action.'),
+    },
+    {
+      id: 'leader.projectSwitch',
+      title: 'switch project',
+      key: { kind: 'leader', lead: { kind: 'ctrl', char: 'x' }, second: { kind: 'char', char: 'p' } },
+      scope: 'global',
+      displayOnScreen: false,
+      onSelect: () =>
+        handlers.showLeaderToast?.('Project switch — Phase 5 will wire the real action.'),
+    },
+    {
+      id: 'leader.themeToggle',
+      title: 'toggle theme',
+      key: { kind: 'leader', lead: { kind: 'ctrl', char: 'x' }, second: { kind: 'char', char: 't' } },
+      scope: 'global',
+      displayOnScreen: false,
+      onSelect: () =>
+        handlers.showLeaderToast?.('Theme toggle — Phase 3H will wire the real action.'),
     },
   ];
 }

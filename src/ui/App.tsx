@@ -16,6 +16,7 @@ import {
   type MaestroController,
 } from './data/MaestroEventsProvider.js';
 import { AppActionsProvider } from './runtime/AppActions.js';
+import { ToastProvider, useToast } from './feedback/ToastProvider.js';
 import type { TuiRpc } from './runtime/rpc.js';
 
 /**
@@ -44,21 +45,24 @@ export function App(props: AppProps): React.JSX.Element {
   );
   return (
     <ThemeProvider>
-      <FocusProvider>
-        <AppActionsProvider value={actions}>
-          <WorkerSelectionProvider>
-            <MaestroEventsProvider source={props.maestro}>
-              <AppShell {...props} />
-            </MaestroEventsProvider>
-          </WorkerSelectionProvider>
-        </AppActionsProvider>
-      </FocusProvider>
+      <ToastProvider>
+        <FocusProvider>
+          <AppActionsProvider value={actions}>
+            <WorkerSelectionProvider>
+              <MaestroEventsProvider source={props.maestro}>
+                <AppShell {...props} />
+              </MaestroEventsProvider>
+            </WorkerSelectionProvider>
+          </AppActionsProvider>
+        </FocusProvider>
+      </ToastProvider>
     </ThemeProvider>
   );
 }
 
 function AppShell(props: AppProps): React.JSX.Element {
   const focus = useFocus();
+  const { showToast } = useToast();
   const { projects } = useProjects(props.rpc);
   const workersResult = useWorkers(props.rpc);
   const { mode } = useMode(props.rpc);
@@ -77,6 +81,7 @@ function AppShell(props: AppProps): React.JSX.Element {
           openWorkerSelect: () => focus.pushPopup('worker-select'),
           openQuestions: () => focus.pushPopup('question'),
           openQuestionHistory: () => focus.pushPopup('question-history'),
+          showLeaderToast: (message) => showToast(message, { tone: 'info' }),
         },
         {
           questionsCount: questionsResult.count,
@@ -90,6 +95,7 @@ function AppShell(props: AppProps): React.JSX.Element {
       props.onRequestExit,
       questionsResult.count,
       workersResult.workers.length,
+      showToast,
     ],
   );
 

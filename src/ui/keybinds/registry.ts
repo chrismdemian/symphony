@@ -14,7 +14,7 @@ import type { FocusKey } from '../focus/focus.js';
  * or matches the current focus scope. Width-overflow → ellipsis truncate.
  */
 
-export type KeyChord =
+export type SimpleChord =
   | { readonly kind: 'tab'; readonly shift?: boolean }
   | { readonly kind: 'escape' }
   | { readonly kind: 'return' }
@@ -25,14 +25,26 @@ export type KeyChord =
   | { readonly kind: 'pageUp' }
   | { readonly kind: 'pageDown' }
   | { readonly kind: 'ctrl'; readonly char: string }
-  | { readonly kind: 'char'; readonly char: string }
+  | { readonly kind: 'char'; readonly char: string };
+
+export type KeyChord =
+  | SimpleChord
   /**
    * Phase 3F.3 — palette-only command with no global hotkey. Never
    * matches a keystroke; renders as an empty key column in the palette.
    * Use for actions like "View answered questions" that we don't want
    * to consume a top-level chord for.
    */
-  | { readonly kind: 'none' };
+  | { readonly kind: 'none' }
+  /**
+   * Phase 3F.2 — two-keystroke leader chord (codemirror/vim-style).
+   * `lead` arms the leader window; while armed (300ms), the next
+   * keystroke matches against `second`. Use for power-user actions
+   * that don't deserve a top-level binding (e.g. `<Ctrl+X> m` switch
+   * model mode). The dispatcher silently arms on `lead` and consumes
+   * the second keystroke regardless of match (no fall-through).
+   */
+  | { readonly kind: 'leader'; readonly lead: SimpleChord; readonly second: SimpleChord };
 
 /**
  * Scope semantics:
@@ -106,6 +118,29 @@ export function formatKey(key: KeyChord): string {
       return key.char;
     case 'none':
       return '';
+    case 'leader':
+      return `${formatKey(key.lead)} ${formatKey(key.second)}`;
+  }
+}
+
+/**
+ * Phase 3F.2 — true if two simple chords represent the same keystroke.
+ * Used by the dispatcher to compare a saved `leaderActive` (the lead
+ * the user pressed) against each leader command's declared `lead`.
+ */
+export function simpleChordEquals(a: SimpleChord, b: SimpleChord): boolean {
+  if (a.kind !== b.kind) return false;
+  switch (a.kind) {
+    case 'tab':
+      return (a.shift === true) === ((b as { shift?: boolean }).shift === true);
+    case 'ctrl':
+    case 'char':
+      return (
+        (a as { char: string }).char.toLowerCase() ===
+        (b as { char: string }).char.toLowerCase()
+      );
+    default:
+      return true;
   }
 }
 
@@ -181,6 +216,15 @@ export function selectCommands(
     }
     if (forBar && !cmd.displayOnScreen) continue;
     if (cmd.key.kind === 'none') {
+      noneKey.push(cmd);
+      continue;
+    }
+    if (cmd.key.kind === 'leader') {
+      // Phase 3F.2 — leader chords each compose their lead+second into
+      // a unique formatKey already (e.g. "Ctrl+X m" vs "Ctrl+X t"); the
+      // dedup pathway is sound. But two distinct leader chords sharing
+      // the SAME `lead` must coexist — that's the whole point of leader
+      // chords. Skip the dedup map and append directly.
       noneKey.push(cmd);
       continue;
     }
