@@ -15,6 +15,7 @@ import { useFocus, type FocusContext } from '../focus/focus.js';
 import { KeybindBar } from './KeybindBar.js';
 import { StatusBar } from './StatusBar.js';
 import { useStdoutDimensions } from './useDimensions.js';
+import { ToastTray } from '../feedback/ToastTray.js';
 import type { TuiRpc } from '../runtime/rpc.js';
 import type { UseWorkersResult } from '../data/useWorkers.js';
 import type { UseQuestionsResult } from '../data/useQuestions.js';
@@ -108,6 +109,7 @@ export function Layout(props: LayoutProps): React.JSX.Element {
       ) : (
         <NarrowLayout workersPanel={workersPanel} outputPanel={outputPanel} />
       )}
+      <ToastTray />
       <KeybindBar />
     </Box>
   );

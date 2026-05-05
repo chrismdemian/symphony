@@ -4,15 +4,20 @@ import React, {
   useContext,
   useEffect,
   useMemo,
+  useReducer,
+  useRef,
   useState,
   type ReactNode,
 } from 'react';
 import { useInput, type Key } from 'ink';
 import { useFocus } from '../focus/focus.js';
 import {
+  formatKey,
   selectCommands,
+  simpleChordEquals,
   type Command,
   type KeyChord,
+  type SimpleChord,
 } from './registry.js';
 
 /**
@@ -26,6 +31,15 @@ import {
  * force()`) so React tracks identity natively and downstream `useMemo`
  * dep arrays work without footguns. Phase 3F's command-palette
  * registration calls `setCommands(next)` to swap the active set.
+ *
+ * Phase 3F.2 — leader-chord plumbing. The dispatcher tracks a
+ * `leaderActive: SimpleChord | null` reducer state. A keystroke that
+ * matches the LEAD of any leader command arms the leader window; the
+ * NEXT keystroke is matched against `second` of every leader command
+ * with the same lead, then leader is cleared. 300ms timeout clears the
+ * armed state if no second keystroke arrives. While armed, non-leader
+ * commands are SUPPRESSED — Ctrl+X then `m` should not also fire some
+ * `m`-bound chat command midway.
  */
 
 interface KeybindController {
@@ -34,6 +48,8 @@ interface KeybindController {
   readonly active: readonly Command[];
   /** The `Command[]` filtered + deduped for the bottom bar. */
   readonly bar: readonly Command[];
+  /** Phase 3F.2 — currently-armed leader lead chord, or null. */
+  readonly leaderActive: SimpleChord | null;
   setCommands(commands: readonly Command[]): void;
   /**
    * Append a per-panel command set to the active registry. Returns an
@@ -52,10 +68,32 @@ const KeybindContext = createContext<KeybindController | null>(null);
 export interface KeybindProviderProps {
   /** Initial command set. Tests can override; production seeds from `defaultCommands`. */
   readonly initialCommands: readonly Command[];
+  /** Phase 3F.2 — leader-window timeout in ms. Default 300; tests pass smaller for fast scenarios. */
+  readonly leaderTimeoutMs?: number;
   readonly children: ReactNode;
 }
 
-function chordMatches(chord: KeyChord, input: string, key: Key): boolean {
+const DEFAULT_LEADER_TIMEOUT_MS = 300;
+
+function chordMatches(
+  chord: KeyChord,
+  input: string,
+  key: Key,
+  leaderActive: SimpleChord | null,
+): boolean {
+  if (chord.kind === 'leader') {
+    if (leaderActive === null) return false;
+    if (!simpleChordEquals(leaderActive, chord.lead)) return false;
+    return simpleChordMatches(chord.second, input, key);
+  }
+  if (chord.kind === 'none') return false;
+  // Non-leader simple chords: only fire when no leader is armed.
+  // Otherwise the second-keystroke of a leader chord could double-fire.
+  if (leaderActive !== null) return false;
+  return simpleChordMatches(chord, input, key);
+}
+
+function simpleChordMatches(chord: SimpleChord, input: string, key: Key): boolean {
   switch (chord.kind) {
     case 'tab':
       return key.tab && key.shift === (chord.shift === true);
@@ -79,18 +117,38 @@ function chordMatches(chord: KeyChord, input: string, key: Key): boolean {
       return key.ctrl && input.toLowerCase() === chord.char.toLowerCase();
     case 'char':
       return !key.ctrl && !key.meta && input === chord.char;
-    case 'none':
-      // Phase 3F.3: palette-only command — never matches a keystroke.
-      return false;
   }
 }
 
+interface LeaderState {
+  readonly active: SimpleChord | null;
+  readonly armedAt: number;
+}
+
+type LeaderAction =
+  | { type: 'arm'; lead: SimpleChord; at: number }
+  | { type: 'clear' };
+
+function leaderReducer(state: LeaderState, action: LeaderAction): LeaderState {
+  switch (action.type) {
+    case 'arm':
+      return { active: action.lead, armedAt: action.at };
+    case 'clear':
+      if (state.active === null) return state;
+      return { active: null, armedAt: 0 };
+  }
+}
+
+const INITIAL_LEADER_STATE: LeaderState = { active: null, armedAt: 0 };
+
 export function KeybindProvider({
   initialCommands,
+  leaderTimeoutMs = DEFAULT_LEADER_TIMEOUT_MS,
   children,
 }: KeybindProviderProps): React.JSX.Element {
   const focus = useFocus();
   const [commands, setCommands] = useState<readonly Command[]>(initialCommands);
+  const [leaderState, dispatchLeader] = useReducer(leaderReducer, INITIAL_LEADER_STATE);
 
   // Phase 3E audit C1: `useState(initialCommands)` only reads the prop
   // ONCE on mount. Phase 3A's all-static-global-commands era never
@@ -132,15 +190,48 @@ export function KeybindProvider({
     [commands, focus.currentScope],
   );
 
+  // Phase 3F.2 audit C1: leader-active ref is updated SYNCHRONOUSLY
+  // inside the `useInput` callback when arming/clearing — NOT via
+  // `useEffect` (passive effect, fires after the JS frame returns).
+  // Ink's input parser splits `\x18m` (a paste-style two-byte chunk)
+  // into TWO synchronous `useInput` calls in one frame. With effect-
+  // based mirroring, the second call reads stale `null` and the leader
+  // never matches. Synchronous ref writes inside the dispatch path
+  // close that race.
+  //
+  // Reducer is still the React-tracked source of truth for re-renders
+  // (KeybindBar reads `leaderState.active` to flip the hint); the ref
+  // is purely for cross-keystroke memory inside the same JS frame.
+  const leaderActiveRef = useRef<SimpleChord | null>(null);
+  // Initial sync on mount — handles tests that pre-seed initial
+  // commands but never dispatch.
+  if (leaderActiveRef.current !== leaderState.active) {
+    leaderActiveRef.current = leaderState.active;
+  }
+
+  // Auto-clear the armed leader after `leaderTimeoutMs`. Reads from
+  // the reducer state directly; the timer also clears the ref via
+  // the dispatch flow (reducer → useEffect-less ref sync above the
+  // next render).
+  useEffect(() => {
+    if (leaderState.active === null) return;
+    const handle = setTimeout(() => {
+      dispatchLeader({ type: 'clear' });
+      leaderActiveRef.current = null;
+    }, leaderTimeoutMs);
+    return () => clearTimeout(handle);
+  }, [leaderState.active, leaderState.armedAt, leaderTimeoutMs]);
+
   const controller = useMemo<KeybindController>(
     () => ({
       commands,
       active,
       bar,
+      leaderActive: leaderState.active,
       setCommands: setCommandsCallback,
       registerCommands,
     }),
-    [commands, active, bar, setCommandsCallback, registerCommands],
+    [commands, active, bar, leaderState.active, setCommandsCallback, registerCommands],
   );
 
   // Single root-level key listener. Walks `active` (already filtered by
@@ -149,11 +240,18 @@ export function KeybindProvider({
   // the disabled reason (3E audit m1; track as Phase 3F polish: fade
   // disabled binds + suffix the reason).
   useInput((input, key) => {
+    const armed = leaderActiveRef.current;
+    // Phase 3F.2 — first pass: try to fire any command that matches
+    // under current armed state.
     for (const cmd of active) {
       if (cmd.disabledReason !== undefined) continue;
-      if (chordMatches(cmd.key, input, key)) {
-        // Fire-and-forget; errors land in the unhandled-promise stream.
-        // Wrap to avoid unhandled rejections in dev.
+      if (chordMatches(cmd.key, input, key, armed)) {
+        // Always clear the leader after consuming a leader-second.
+        // Sync ref + reducer (audit C1).
+        if (armed !== null) {
+          leaderActiveRef.current = null;
+          dispatchLeader({ type: 'clear' });
+        }
         const result = cmd.onSelect();
         if (result instanceof Promise) {
           result.catch((err) => {
@@ -164,6 +262,29 @@ export function KeybindProvider({
         }
         return;
       }
+    }
+
+    // Phase 3F.2 — second pass (only when nothing fired AND no leader
+    // was armed): check if this keystroke is the LEAD of any leader
+    // command. If yes, arm the leader; the user's second keystroke on
+    // the next call will match.
+    if (armed === null) {
+      for (const cmd of active) {
+        if (cmd.disabledReason !== undefined) continue;
+        if (cmd.key.kind !== 'leader') continue;
+        if (simpleChordMatches(cmd.key.lead, input, key)) {
+          // Sync ref BEFORE dispatching the reducer (audit C1) — Ink's
+          // parser may fire the second keystroke before React commits.
+          leaderActiveRef.current = cmd.key.lead;
+          dispatchLeader({ type: 'arm', lead: cmd.key.lead, at: Date.now() });
+          return;
+        }
+      }
+    } else {
+      // Armed but second-press didn't match any registered leader chord.
+      // Clear the leader so the next keystroke isn't a stale second.
+      leaderActiveRef.current = null;
+      dispatchLeader({ type: 'clear' });
     }
   });
 
@@ -199,3 +320,7 @@ export function useRegisterCommands(
     return registerCommands(commands);
   }, [registerCommands, commands, enabled]);
 }
+
+// Side-effect-free access to formatKey for components that want to
+// render the chord (palette, help overlay, leader hint).
+export { formatKey };
