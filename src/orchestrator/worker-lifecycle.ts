@@ -85,6 +85,15 @@ export interface WorkerLifecycleOptions {
    * project-vs-global lookup.
    */
   readonly getMaxConcurrentWorkers?: (projectPath: string) => number;
+  /**
+   * Phase 3H.2 — default model when `input.model === undefined`. The
+   * server wires this to return `'claude-opus-4-7'` when the user's
+   * `modelMode === 'opus'`; when `'mixed'`, returns undefined and
+   * Maestro's explicit per-task `model` arg drives the choice
+   * (matching the prompt's "Always pass `model:` explicitly" rule).
+   * Caller-provided `input.model` ALWAYS wins.
+   */
+  readonly getDefaultModel?: () => string | undefined;
 }
 
 /**
@@ -398,6 +407,11 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         throw new Error(`spawn_worker aborted after worktree creation (recordId=${recordId})`);
       }
 
+      // Phase 3H.2 — resolve model: caller-provided wins; otherwise the
+      // server's `getDefaultModel` (driven by `modelMode`) supplies the
+      // default. The resolved value is recorded on the WorkerRecord so
+      // SQL persistence reflects the model the worker actually ran on.
+      const resolvedModel = input.model ?? opts.getDefaultModel?.();
       const buffer = new CircularBuffer<StreamEvent>(bufferCap);
       const cfg: WorkerConfig = {
         id: recordId,
@@ -406,7 +420,7 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         keepStdinOpen: true,
         deterministicUuidInput: `${recordId}::${worktree.path}`,
         ...(input.signal !== undefined ? { signal: input.signal } : {}),
-        ...(input.model !== undefined ? { model: input.model } : {}),
+        ...(resolvedModel !== undefined ? { model: resolvedModel } : {}),
         ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
       };
 
@@ -431,7 +445,7 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         worker,
         buffer,
         detach: () => {},
-        ...(input.model !== undefined ? { model: input.model } : {}),
+        ...(resolvedModel !== undefined ? { model: resolvedModel } : {}),
       };
       registry.register(record);
       record.detach = attachEventTap(worker, buffer, registry, recordId, now, onEventRef);

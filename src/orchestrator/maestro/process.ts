@@ -52,6 +52,13 @@ export interface MaestroProcessDeps {
   inMemory?: boolean;
   /** Optional explicit prompts dir (tests). */
   promptsDir?: string;
+  /**
+   * Phase 3H.2 — absolute path to the user's default project. Threaded
+   * to Maestro's MCP child as `--default-project` so worker spawns
+   * resolve into the user's project rather than Maestro's workspace
+   * dir (the orchestrator's `process.cwd()`).
+   */
+  defaultProjectPath?: string;
 }
 
 export interface MaestroStartInput {
@@ -118,6 +125,7 @@ export class MaestroProcess {
   private readonly cliEntryPath: string;
   private readonly nodeBinary: string;
   private readonly promptsDir?: string;
+  private readonly defaultProjectPath?: string;
   private readonly emitter = new EventEmitter();
   // Audit M2: small ring of recent events so iterators attached after a
   // synchronous emission still see what they missed.
@@ -154,6 +162,7 @@ export class MaestroProcess {
     }
     this.nodeBinary = deps.nodeBinary ?? process.execPath;
     if (deps.promptsDir !== undefined) this.promptsDir = deps.promptsDir;
+    if (deps.defaultProjectPath !== undefined) this.defaultProjectPath = deps.defaultProjectPath;
     // Audit M4: lift the listener cap. Phase 3 TUI panels + awaitSystemInit
     // + scenario tests routinely cross the default-10 cap; MaestroProcess
     // is a singleton per Symphony boot — fan-out is the design.
@@ -188,6 +197,9 @@ export class MaestroProcess {
       cliEntryPath: this.cliEntryPath,
       nodeBinary: this.nodeBinary,
       ...(this.inMemory ? { inMemory: true as const } : {}),
+      ...(this.defaultProjectPath !== undefined
+        ? { defaultProjectPath: this.defaultProjectPath }
+        : {}),
     });
     this.mcpConfigPath = mcpConfig.path;
 

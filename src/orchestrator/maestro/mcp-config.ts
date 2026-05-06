@@ -25,6 +25,15 @@ export interface WriteMaestroMcpConfigInput {
    * SQLite. Used by tests + ephemeral debug runs. Defaults to false.
    */
   inMemory?: boolean;
+  /**
+   * Phase 3H.2 — when set, passes `--default-project <path>` to Maestro's
+   * MCP child so worker spawns resolve into the user's project dir
+   * rather than the orchestrator's cwd (which is Maestro's workspace).
+   * Audit C1 (3H.2 commit 5 review): without this, the bootstrap
+   * mcp-server gets the flag but Maestro's MCP child — the one that
+   * actually spawns workers — defaults to its own cwd.
+   */
+  defaultProjectPath?: string;
   /** Override the file path entirely. Default: `<cwd>/.symphony-mcp.json`. */
   outputPath?: string;
   /** Extra MCP servers to register alongside Symphony. Off by default. */
@@ -60,6 +69,9 @@ export async function writeMaestroMcpConfig(
   // (`pnpm dev start`) works without compiling. No-op for bundled `.js`.
   const args: string[] = [...prependTsxLoaderIfTs([input.cliEntryPath, 'mcp-server'])];
   if (input.inMemory === true) args.push('--in-memory');
+  if (input.defaultProjectPath !== undefined && input.defaultProjectPath.length > 0) {
+    args.push('--default-project', input.defaultProjectPath);
+  }
 
   const config = {
     mcpServers: {

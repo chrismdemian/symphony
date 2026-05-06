@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo } from 'react';
 import { Box } from 'ink';
 import { ThemeProvider, useThemeController } from './theme/context.js';
 import { pickThemeJson } from './theme/theme.js';
@@ -126,6 +126,53 @@ function AppShell(props: AppProps): React.JSX.Element {
     focus.pushPopup(initialPopupKey);
   }, [initialPopupKey, focus.pushPopup]);
 
+  // Phase 3H.2 — real `<leader>m` and `<leader>t` handlers. Each
+  // calls `setConfig` with a function-patch (audit C2 fix), surfaces a
+  // toast, and either rejects via try/catch (Zod validation should
+  // never trigger here, but we toast any unexpected failure rather
+  // than silently dropping).
+  //
+  // Audit M1 (3H.2 commit 5): both toasts honestly advertise the
+  // "applies on next start" semantics. `globalModelMode` is captured
+  // at orchestrator boot via `loadConfig` (`server.ts`); the disk
+  // write is immediate, but the orchestrator's `getDefaultModel`
+  // closure stays bound to the boot-time value until restart. Theme
+  // fallback DOES apply mid-session via the AppShell effect — the
+  // toast reflects that. Don't promise immediate effect for modelMode.
+  const { setConfig } = useConfig();
+  const cycleModelMode = useCallback(async () => {
+    try {
+      // Function-patch resolves against the freshly-committed state
+      // INSIDE the setConfig serialization queue (audit C2). Two
+      // rapid-fire `<leader>m m` chord presses each see the
+      // post-flip value rather than the same stale render capture.
+      const next = await setConfig((current) => ({
+        modelMode: current.modelMode === 'opus' ? 'mixed' : 'opus',
+      }));
+      showToast(`Model mode: ${next.modelMode} (applies on next start).`, {
+        tone: 'info',
+        ttlMs: 4_000,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Model mode change failed: ${msg}`, { tone: 'error' });
+    }
+  }, [setConfig, showToast]);
+
+  const toggleThemeFallback = useCallback(async () => {
+    try {
+      const next = await setConfig((current) => ({
+        theme: { autoFallback16Color: !current.theme.autoFallback16Color },
+      }));
+      showToast(`Theme fallback: ${next.theme.autoFallback16Color ? 'on' : 'off'}.`, {
+        tone: 'info',
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Theme fallback change failed: ${msg}`, { tone: 'error' });
+    }
+  }, [setConfig, showToast]);
+
   const commands = useMemo(
     () =>
       buildGlobalCommands(
@@ -139,6 +186,8 @@ function AppShell(props: AppProps): React.JSX.Element {
           openQuestions: () => focus.pushPopup('question'),
           openQuestionHistory: () => focus.pushPopup('question-history'),
           showLeaderToast: (message) => showToast(message, { tone: 'info' }),
+          cycleModelMode,
+          toggleThemeFallback,
           // Phase 3H.1 — Ctrl+, opens settings; palette-only command
           // `app.configEdit` shows a toast for now (the actual $EDITOR
           // spawn lives in the CLI subcommand, not the in-TUI handler —
@@ -165,6 +214,8 @@ function AppShell(props: AppProps): React.JSX.Element {
       questionsResult.count,
       workersResult.workers.length,
       showToast,
+      cycleModelMode,
+      toggleThemeFallback,
     ],
   );
 

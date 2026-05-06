@@ -294,6 +294,12 @@ export interface SymphonyConfigPatch {
  * THIS process. Reads disk fresh each call (no in-memory cache),
  * merges the patch, Zod-validates, and atomic-writes.
  *
+ * Patch can be either a static `SymphonyConfigPatch` OR a function
+ * `(current) => SymphonyConfigPatch`. The function form runs INSIDE the
+ * serialized queue — after the fresh disk read — so rapid-fire callers
+ * (e.g. `<leader>m m`) compute against the just-committed value rather
+ * than a stale React render. Audit C2 (3H.2 commit 5 review).
+ *
  * Two-process safety: this serializer covers concurrent calls inside ONE
  * process. Symphony's 3H.2 architecture funnels all writes through the
  * TUI's `<ConfigProvider>` (which calls this helper). The RPC handler
@@ -307,8 +313,10 @@ export interface SymphonyConfigPatch {
  */
 let writeQueue: Promise<unknown> = Promise.resolve();
 
+export type SymphonyConfigPatchFn = (current: SymphonyConfig) => SymphonyConfigPatch;
+
 export async function applyPatchToDisk(
-  patch: SymphonyConfigPatch,
+  patch: SymphonyConfigPatch | SymphonyConfigPatchFn,
   filePath?: string,
 ): Promise<LoadResult> {
   const next = writeQueue.then(() => doApplyPatch(patch, filePath));
@@ -319,12 +327,15 @@ export async function applyPatchToDisk(
 }
 
 async function doApplyPatch(
-  patch: SymphonyConfigPatch,
+  patch: SymphonyConfigPatch | SymphonyConfigPatchFn,
   filePath?: string,
 ): Promise<LoadResult> {
   const resolved = filePath !== undefined ? path.resolve(filePath) : configFilePath();
   const current = await loadConfig(resolved);
-  const merged = mergePatch(current.config, patch);
+  // Function-patch resolves AGAINST the fresh disk read — closes the
+  // rapid-fire stale-state race that ref-mirroring alone can't (audit C2).
+  const resolvedPatch = typeof patch === 'function' ? patch(current.config) : patch;
+  const merged = mergePatch(current.config, resolvedPatch);
   // Use the schema's parse so out-of-range integers / unknown enums throw
   // BEFORE we hit `saveConfig`. Zod is the single source of truth for
   // field bounds.

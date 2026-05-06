@@ -49,11 +49,23 @@ export interface GlobalCommandHandlers {
    */
   openQuestionHistory?(): void;
   /**
-   * Phase 3F.2 — leader-key chord stubs. Each fires a toast; real
-   * actions land in 3H (settings) and Phase 5 (project switch). The
-   * toast IS the observable behavior gating the production scenario.
+   * Phase 3F.2 / 3H.2 — leader-key chord toast (used for handlers
+   * that don't have a real action yet, e.g. the project-switch chord
+   * pending Phase 5).
    */
   showLeaderToast?(message: string): void;
+  /**
+   * Phase 3H.2 — `<leader>m` handler: cycle modelMode opus↔mixed,
+   * persist via ConfigProvider.setConfig, and toast the new value.
+   * Async because setConfig writes to disk; the keybind dispatcher's
+   * useInput awaits the returned promise so an error is logged.
+   */
+  cycleModelMode?(): Promise<void> | void;
+  /**
+   * Phase 3H.2 — `<leader>t` handler: toggle theme.autoFallback16Color,
+   * persist via ConfigProvider.setConfig, and toast the new value.
+   */
+  toggleThemeFallback?(): Promise<void> | void;
   /**
    * Phase 3H.1 — Ctrl+, opens the settings popup. Optional during 3H
    * transition; tests built before 3H.1 still type-check, undefined
@@ -160,7 +172,8 @@ export function buildGlobalCommands(
       scope: 'global',
       displayOnScreen: false,
       onSelect: () =>
-        handlers.showLeaderToast?.('Model mode switch — Phase 3H will wire the real action.'),
+        handlers.cycleModelMode?.() ??
+        handlers.showLeaderToast?.('Model mode switch — handler not wired.'),
     },
     {
       id: 'leader.projectSwitch',
@@ -178,7 +191,8 @@ export function buildGlobalCommands(
       scope: 'global',
       displayOnScreen: false,
       onSelect: () =>
-        handlers.showLeaderToast?.('Theme toggle — Phase 3H will wire the real action.'),
+        handlers.toggleThemeFallback?.() ??
+        handlers.showLeaderToast?.('Theme toggle — handler not wired.'),
     },
     // Phase 3H.1 — settings popup. Hotkey is Ctrl+, (the editor-standard
     // settings shortcut). Listed in the bottom keybind bar so it's

@@ -177,4 +177,31 @@ describe('buildGlobalCommands', () => {
     const c = cmds.find((cmd) => cmd.id === 'app.config');
     expect(() => c!.onSelect()).not.toThrow();
   });
+
+  it('invokes cycleModelMode for `<leader>m` when wired (3H.2)', () => {
+    const cycle = vi.fn();
+    const cmds = buildGlobalCommands({ ...handlers, cycleModelMode: cycle });
+    const m = cmds.find((cmd) => cmd.id === 'leader.modeSwitch');
+    m!.onSelect();
+    expect(cycle).toHaveBeenCalledOnce();
+  });
+
+  it('invokes toggleThemeFallback for `<leader>t` when wired (3H.2)', () => {
+    const toggle = vi.fn();
+    const cmds = buildGlobalCommands({ ...handlers, toggleThemeFallback: toggle });
+    const t = cmds.find((cmd) => cmd.id === 'leader.themeToggle');
+    t!.onSelect();
+    expect(toggle).toHaveBeenCalledOnce();
+  });
+
+  it('falls back to showLeaderToast when leader handlers are unwired (3H.2)', () => {
+    const toast = vi.fn();
+    const cmds = buildGlobalCommands({ ...handlers, showLeaderToast: toast });
+    const m = cmds.find((cmd) => cmd.id === 'leader.modeSwitch');
+    m!.onSelect();
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining('Model mode switch'));
+    const t = cmds.find((cmd) => cmd.id === 'leader.themeToggle');
+    t!.onSelect();
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining('Theme toggle'));
+  });
 });

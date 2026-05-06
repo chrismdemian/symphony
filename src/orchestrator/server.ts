@@ -266,13 +266,23 @@ export async function startOrchestratorServer(
   // is "never throws", but a future regression in that contract
   // shouldn't tank orchestrator boot for a config-read concern.
   let globalMaxWorkers: number;
+  let globalModelMode: 'opus' | 'mixed';
   try {
     const bootGlobalConfig = await loadConfig();
     globalMaxWorkers = bootGlobalConfig.config.maxConcurrentWorkers;
+    globalModelMode = bootGlobalConfig.config.modelMode;
   } catch {
     const fallback = (await import('../utils/config-schema.js')).defaultConfig();
     globalMaxWorkers = fallback.maxConcurrentWorkers;
+    globalModelMode = fallback.modelMode;
   }
+  // Phase 3H.2 — model mode → default-model resolver. opus → every
+  // spawn that doesn't pass an explicit `model:` runs on Opus 4.7.
+  // mixed → no default; Maestro's explicit per-task `model` arg wins
+  // (matching the v1 prompt's "Always pass model: explicitly" rule).
+  const getDefaultModel = (): string | undefined => {
+    return globalModelMode === 'opus' ? 'claude-opus-4-7' : undefined;
+  };
   const getMaxConcurrentWorkers = (projectPath: string): number => {
     // Audit C2: short-circuit on empty path. Otherwise
     // `readSymphonyConfig('')` calls `path.join('', '.symphony.json')`
@@ -296,6 +306,7 @@ export async function startOrchestratorServer(
       workerManager,
       worktreeManager,
       getMaxConcurrentWorkers,
+      getDefaultModel,
       resolveProjectPath: (projectId) => {
         if (projectId === null) return '';
         for (const p of projectStore.list()) {

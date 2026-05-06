@@ -135,8 +135,10 @@ export function SettingsPanel(): React.JSX.Element {
   }, []);
 
   // Apply a config patch and surface ZodError as a toast. Returns true on
-  // success, false on validation rejection. Callers use this to decide
-  // whether to clear the edit state.
+  // success, false on validation rejection. Accepts both static patches
+  // and function-patches (audit C2 from commit-5 review): function-
+  // patches resolve against the just-committed state inside setConfig's
+  // serialized queue, fixing rapid-fire chord double-press regressions.
   const applyPatch = useCallback(
     async (patch: Parameters<typeof setConfig>[0]): Promise<boolean> => {
       try {
@@ -151,30 +153,37 @@ export function SettingsPanel(): React.JSX.Element {
     [setConfig, showToast],
   );
 
-  // Toggle a bool row's value.
+  // Toggle a bool row's value. Uses a function-patch so rapid-fire
+  // toggles always read the just-committed state (audit C2 from
+  // commit-5 review).
   const toggleBool = useCallback(
     (label: string): void => {
       if (label === 'theme.autoFallback16Color') {
-        void applyPatch({ theme: { autoFallback16Color: !config.theme.autoFallback16Color } });
+        void applyPatch((current) => ({
+          theme: { autoFallback16Color: !current.theme.autoFallback16Color },
+        }));
         return;
       }
       if (label === 'notifications.enabled') {
-        void applyPatch({ notifications: { enabled: !config.notifications.enabled } });
+        void applyPatch((current) => ({
+          notifications: { enabled: !current.notifications.enabled },
+        }));
         return;
       }
     },
-    [applyPatch, config.theme.autoFallback16Color, config.notifications.enabled],
+    [applyPatch],
   );
 
   // Cycle an enum row.
   const cycleEnum = useCallback(
     (label: string): void => {
       if (label === 'modelMode') {
-        const next = config.modelMode === 'opus' ? 'mixed' : 'opus';
-        void applyPatch({ modelMode: next });
+        void applyPatch((current) => ({
+          modelMode: current.modelMode === 'opus' ? 'mixed' : 'opus',
+        }));
       }
     },
-    [applyPatch, config.modelMode],
+    [applyPatch],
   );
 
   // Enter an int-edit mode for the selected row.
