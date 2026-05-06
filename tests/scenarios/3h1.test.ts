@@ -256,7 +256,11 @@ describe('Phase 3H.1 scenario — settings popup via /config slash', () => {
       const recent = stdoutChunks.slice(-200).join('');
       const plain = stripAnsi(recent);
       expect(plain).toContain('Settings');
-      expect(plain).toContain('Phase 3H.1 (read-only)');
+      // Phase 3H.2 changed the header label from "Phase 3H.1
+      // (read-only)" → "Phase 3H.2" when the editable popup shipped.
+      // The 3H.1 scenario validates the open/close contract via the
+      // slash command, NOT the version-string label.
+      expect(plain).toContain('Phase 3H.');
       // Section headers in document order.
       expect(plain).toContain('Model');
       expect(plain).toContain('Workers');
