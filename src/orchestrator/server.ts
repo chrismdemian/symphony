@@ -59,6 +59,9 @@ import { startRpcServer, type RpcServerHandle } from '../rpc/server.js';
 import { createSymphonyRouter } from '../rpc/router-impl.js';
 import { loadConfig } from '../utils/config.js';
 import { readSymphonyConfig } from '../worktree/symphony-config.js';
+import { createNotificationDispatcher } from '../notifications/dispatcher.js';
+import type { DispatcherHandle } from '../notifications/types.js';
+import { spawnToast } from '../notifications/spawn-toast.js';
 
 export interface OrchestratorServerOptions {
   transport?: Transport;
@@ -115,6 +118,13 @@ export interface OrchestratorServerOptions {
    * surface pass `{ enabled: true, port: 0, skipDescriptorFile: true }`.
    */
   rpc?: RpcOptions;
+  /**
+   * Phase 3H.3 — override the notifications dispatcher. Test seam: pass
+   * a stub with the same shape as `DispatcherHandle` to assert toast
+   * spawns without touching the real platform tools. Defaults to a real
+   * dispatcher with `loadConfig` + `spawnToast` from `src/notifications`.
+   */
+  notificationDispatcher?: DispatcherHandle;
 }
 
 export interface RpcOptions {
@@ -144,6 +154,8 @@ export interface OrchestratorServerHandle {
   taskStore: TaskStore;
   questionStore: QuestionStore;
   waveStore: WaveStore;
+  /** Phase 3H.3 — exposed for tests + the RPC layer's `flushAwayDigest`. */
+  notificationDispatcher: DispatcherHandle;
   defaultProjectPath: string;
   resolveProjectPath: (project?: string) => string;
   setContext: (partial: Partial<DispatchContext>) => void;
@@ -210,9 +222,33 @@ export async function startOrchestratorServer(
     (options.database
       ? new SqliteTaskStore(options.database.db)
       : new TaskRegistry({ projectStore }));
+  // Phase 3H.3 — instantiate the notifications dispatcher BEFORE the
+  // question store so its `onQuestionEnqueued` hook is wired at the
+  // store's construction. The dispatcher reads `loadConfig` fresh per
+  // dispatch (suppression matrix lives there); the per-platform spawn
+  // shim is the test-injectable seam (real `spawnToast` by default).
+  const fallbackProjectLabel = path.basename(defaultProjectPath) || 'project';
+  const notificationDispatcher: DispatcherHandle =
+    options.notificationDispatcher ??
+    createNotificationDispatcher({
+      loadConfig,
+      spawnToast: (input) => spawnToast(input),
+      getProjectName: (projectId) => {
+        if (projectId === null || projectId === '') return fallbackProjectLabel;
+        const stored = projectStore.get(projectId);
+        return stored?.name ?? fallbackProjectLabel;
+      },
+    });
+
   const questionStore: QuestionStore =
     options.questionStore ??
-    (options.database ? new SqliteQuestionStore(options.database.db) : new QuestionRegistry());
+    (options.database
+      ? new SqliteQuestionStore(options.database.db, {
+          onQuestionEnqueued: (record) => notificationDispatcher.onQuestion(record),
+        })
+      : new QuestionRegistry({
+          onQuestionEnqueued: (record) => notificationDispatcher.onQuestion(record),
+        }));
   const waveStore: WaveStore =
     options.waveStore ??
     (options.database ? new SqliteWaveStore(options.database.db) : new WaveRegistry());
@@ -314,6 +350,12 @@ export async function startOrchestratorServer(
         }
         return '';
       },
+      // Phase 3H.3 — dispatcher receives the post-decrement total
+      // running count. The lifecycle fires this AFTER markCompleted +
+      // release(), so totalRunning === 0 truly means "no workers
+      // anywhere" by the time the all-done check runs.
+      onWorkerStatusChange: (record, totalRunning) =>
+        notificationDispatcher.onWorkerExit(record, totalRunning),
     });
   // Late-bind the broker callback so it works whether the lifecycle was
   // default-constructed above OR injected via `options.workerLifecycle`
@@ -424,6 +466,7 @@ export async function startOrchestratorServer(
       waveStore,
       workerRegistry,
       modeController: mode,
+      notificationDispatcher,
     });
     const handle = await startRpcServer({
       router: router as unknown as Parameters<typeof startRpcServer>[0]['router'],
@@ -463,9 +506,12 @@ export async function startOrchestratorServer(
     offModeChange();
     registry.close();
     // Order: stop accepting RPC clients first so no new reads outlive
-    // stores; then drain lifecycle/workerManager; finally close the MCP
-    // transport. RPC's broker drops listeners on close, so any in-flight
-    // event publishes from late-exiting workers go to /dev/null cleanly.
+    // stores; then flush the notifications dispatcher so any awayMode
+    // backlog gets one final digest BEFORE the lifecycle tears down
+    // its hooks; then drain lifecycle/workerManager; finally close the
+    // MCP transport. RPC's broker drops listeners on close, so any
+    // in-flight event publishes from late-exiting workers go to
+    // /dev/null cleanly.
     if (rpcHandle !== undefined) {
       await rpcHandle.close().catch(() => {});
       eventBroker.clear();
@@ -473,6 +519,7 @@ export async function startOrchestratorServer(
         await deleteRpcDescriptor(rpcHandle.tokenFilePath).catch(() => {});
       }
     }
+    await notificationDispatcher.shutdown().catch(() => {});
     await workerLifecycle.shutdown().catch(() => {});
     await workerManager.shutdown().catch(() => {});
     try {
@@ -497,6 +544,7 @@ export async function startOrchestratorServer(
     taskStore,
     questionStore,
     waveStore,
+    notificationDispatcher,
     defaultProjectPath,
     resolveProjectPath,
     setContext: (partial) => {

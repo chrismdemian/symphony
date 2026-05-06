@@ -191,6 +191,11 @@ function applyConfigEdits(existing: string, next: SymphonyConfig): string {
     ['modelMode', next.modelMode],
     ['maxConcurrentWorkers', next.maxConcurrentWorkers],
     ['notifications', next.notifications],
+    // Phase 3H.3 — top-level awayMode flag. New fields added to the
+    // schema MUST also appear in this list, otherwise existing-file
+    // writes silently drop the change (the schema-default fills in on
+    // re-read, masking the missed write). Smoke: tests/scenarios/3h3.
+    ['awayMode', next.awayMode],
     ['theme', next.theme],
     ['leaderTimeoutMs', next.leaderTimeoutMs],
     ['keybindOverrides', next.keybindOverrides],
@@ -283,6 +288,12 @@ export interface SymphonyConfigPatch {
   readonly modelMode?: SymphonyConfig['modelMode'];
   readonly maxConcurrentWorkers?: SymphonyConfig['maxConcurrentWorkers'];
   readonly notifications?: Partial<SymphonyConfig['notifications']>;
+  /**
+   * Phase 3H.3 — top-level `awayMode` flag. Top-level (rather than
+   * nested under `notifications`) so Phase 3M's dedicated keybind /
+   * status indicator can toggle it without reaching into a sub-object.
+   */
+  readonly awayMode?: SymphonyConfig['awayMode'];
   readonly theme?: Partial<SymphonyConfig['theme']>;
   readonly defaultProjectPath?: SymphonyConfig['defaultProjectPath'] | null;
   readonly leaderTimeoutMs?: SymphonyConfig['leaderTimeoutMs'];
@@ -353,6 +364,7 @@ function mergePatch(current: SymphonyConfig, patch: SymphonyConfigPatch): Sympho
   if (patch.modelMode !== undefined) next.modelMode = patch.modelMode;
   if (patch.maxConcurrentWorkers !== undefined) next.maxConcurrentWorkers = patch.maxConcurrentWorkers;
   if (patch.leaderTimeoutMs !== undefined) next.leaderTimeoutMs = patch.leaderTimeoutMs;
+  if (patch.awayMode !== undefined) next.awayMode = patch.awayMode;
   if (patch.notifications !== undefined) {
     next.notifications = { ...current.notifications, ...patch.notifications };
   }

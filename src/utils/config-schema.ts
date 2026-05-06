@@ -88,6 +88,16 @@ export const SymphonyConfigSchema = z.object({
       enabled: z.boolean().default(false),
     })
     .default({ enabled: false }),
+  /**
+   * Phase 3H.3 — when true, the notifications dispatcher buffers events
+   * instead of firing immediately. Flipping back to false triggers a
+   * single batched-digest notification. The flag is a top-level boolean
+   * (rather than nested under `notifications`) so Phase 3M's dedicated
+   * Away Mode keybind / status indicator can toggle it without reaching
+   * into a sub-object. Default false: notifications dispatch as they
+   * arrive (subject to the rest of the suppression matrix).
+   */
+  awayMode: z.boolean().default(false),
   theme: z
     .object({
       name: z.literal('symphony').default('symphony'),

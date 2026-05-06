@@ -170,6 +170,13 @@ export function SettingsPanel(): React.JSX.Element {
         }));
         return;
       }
+      if (label === 'awayMode') {
+        // Phase 3H.3 — toggle the top-level Away Mode flag. The TUI's
+        // App.tsx watches this field via useEffect and triggers a digest
+        // flush over RPC on the true→false transition.
+        void applyPatch((current) => ({ awayMode: !current.awayMode }));
+        return;
+      }
     },
     [applyPatch],
   );
@@ -500,7 +507,7 @@ export function SettingsPanel(): React.JSX.Element {
         </Text>
         <Text color={theme['textMuted']}>
           {' '}
-          · Phase 3H.2
+          · Phase 3H.3
         </Text>
       </Box>
       <Box flexDirection="column" marginTop={1}>
@@ -636,7 +643,15 @@ function buildRows(
       value: String(config.notifications.enabled),
       source: fromFileSource,
       editKind: 'bool',
-      description: 'Desktop toast on worker completed/failed/needs-input. Dispatcher ships in 3H.3.',
+      description: 'Desktop toast on failures + ask_user, all-done rollup on completed. Restraint by default.',
+    },
+    {
+      kind: 'value',
+      label: 'awayMode',
+      value: String(config.awayMode),
+      source: fromFileSource,
+      editKind: 'bool',
+      description: 'Suppress notifications; deliver one batched digest when toggled off (Phase 3H.3).',
     },
     { kind: 'header', label: 'Project' },
     {

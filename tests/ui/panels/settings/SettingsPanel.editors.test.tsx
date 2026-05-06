@@ -266,8 +266,8 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     const { stdin } = render(<Harness captureRef={captureRef} />);
     await settle();
 
-    // Navigate to leaderTimeoutMs (7th value row).
-    for (let i = 0; i < 6; i += 1) stdin.write('\x1b[B');
+    // Navigate to leaderTimeoutMs (8th value row — 3H.3 awayMode shifted +1).
+    for (let i = 0; i < 7; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();
@@ -296,8 +296,8 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     const { stdin } = render(<Harness captureRef={captureRef} />);
     await settle();
 
-    // Navigate to defaultProjectPath (6th value row).
-    for (let i = 0; i < 5; i += 1) stdin.write('\x1b[B');
+    // Navigate to defaultProjectPath (7th value row — 3H.3 awayMode shifted +1).
+    for (let i = 0; i < 6; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();
@@ -317,7 +317,8 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     const { stdin, lastFrame } = render(<Harness captureRef={captureRef} />);
     await settle();
 
-    for (let i = 0; i < 5; i += 1) stdin.write('\x1b[B');
+    // 3H.3 awayMode shifted defaultProjectPath +1 in value-row order.
+    for (let i = 0; i < 6; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();
@@ -338,7 +339,8 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     const { stdin, lastFrame } = render(<Harness captureRef={captureRef} />);
     await settle();
 
-    for (let i = 0; i < 5; i += 1) stdin.write('\x1b[B');
+    // 3H.3 awayMode shifted defaultProjectPath +1 in value-row order.
+    for (let i = 0; i < 6; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();
@@ -359,7 +361,8 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     const { stdin } = render(<Harness config={initialConfig} captureRef={captureRef} />);
     await settle();
 
-    for (let i = 0; i < 5; i += 1) stdin.write('\x1b[B');
+    // 3H.3 awayMode shifted defaultProjectPath +1 in value-row order.
+    for (let i = 0; i < 6; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();

@@ -29,6 +29,13 @@ interface QuestionRow {
 export interface SqliteQuestionStoreOptions {
   readonly now?: () => number;
   readonly idGenerator?: () => string;
+  /**
+   * Phase 3H.3 — fired post-insert for every successfully enqueued
+   * question. Mirrors `QuestionRegistryOptions.onQuestionEnqueued`.
+   * Errors swallowed so a misbehaving consumer can't poison the
+   * SQLite write path.
+   */
+  readonly onQuestionEnqueued?: (record: QuestionRecord) => void;
 }
 
 function defaultIdGenerator(): string {
@@ -45,10 +52,12 @@ export class SqliteQuestionStore implements QuestionStore {
   };
   private readonly now: () => number;
   private readonly genId: () => string;
+  private readonly onEnqueued?: (record: QuestionRecord) => void;
 
   constructor(private readonly db: Database, opts: SqliteQuestionStoreOptions = {}) {
     this.now = opts.now ?? Date.now;
     this.genId = opts.idGenerator ?? defaultIdGenerator;
+    this.onEnqueued = opts.onQuestionEnqueued;
     this.stmts = {
       insert: db.prepare(
         `INSERT INTO questions
@@ -103,6 +112,13 @@ export class SqliteQuestionStore implements QuestionStore {
     });
     const record = this.get(id);
     if (!record) throw new Error('SqliteQuestionStore.enqueue: post-insert row vanished');
+    if (this.onEnqueued !== undefined) {
+      try {
+        this.onEnqueued(record);
+      } catch {
+        // Phase 3H.3 — consumer errors must not poison enqueue.
+      }
+    }
     return record;
   }
 

@@ -88,6 +88,13 @@ export class AlreadyAnsweredError extends Error {
 export interface QuestionRegistryOptions {
   readonly now?: () => number;
   readonly idGenerator?: () => string;
+  /**
+   * Phase 3H.3 — fired post-insert for every successfully enqueued
+   * question. The notifications dispatcher subscribes to this hook to
+   * fire blocking-urgency toasts. Errors thrown by the callback are
+   * swallowed so a misbehaving consumer can't poison `enqueue` itself.
+   */
+  readonly onQuestionEnqueued?: (record: QuestionRecord) => void;
 }
 
 function defaultIdGenerator(): string {
@@ -98,10 +105,12 @@ export class QuestionRegistry implements QuestionStore {
   private readonly records = new Map<string, QuestionRecord>();
   private readonly now: () => number;
   private readonly genId: () => string;
+  private readonly onEnqueued?: (record: QuestionRecord) => void;
 
   constructor(opts: QuestionRegistryOptions = {}) {
     this.now = opts.now ?? Date.now;
     this.genId = opts.idGenerator ?? defaultIdGenerator;
+    this.onEnqueued = opts.onQuestionEnqueued;
   }
 
   list(filter: QuestionListFilter = {}): QuestionRecord[] {
@@ -137,6 +146,13 @@ export class QuestionRegistry implements QuestionStore {
       ...(input.workerId !== undefined ? { workerId: input.workerId } : {}),
     };
     this.records.set(id, record);
+    if (this.onEnqueued !== undefined) {
+      try {
+        this.onEnqueued(record);
+      } catch {
+        // Phase 3H.3 — consumer errors must not poison enqueue.
+      }
+    }
     return record;
   }
 

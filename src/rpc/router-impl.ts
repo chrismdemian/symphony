@@ -19,6 +19,7 @@ import type { StreamEvent } from '../workers/types.js';
 import type { ToolMode, AutonomyTier } from '../orchestrator/types.js';
 import { createRPCController, createRPCRouter } from './router.js';
 import { applyPatchToDisk, loadConfig } from '../utils/config.js';
+import type { DispatcherHandle } from '../notifications/types.js';
 
 /**
  * Symphony WS-RPC router definition — Phase 2B.2.
@@ -46,6 +47,13 @@ export interface RouterDeps {
   readonly waveStore: WaveStore;
   readonly workerRegistry: WorkerRegistry;
   readonly modeController: ModeController;
+  /**
+   * Phase 3H.3 — optional. When omitted, the `notifications.flushAwayDigest`
+   * RPC procedure resolves a no-op. The CLI server wires the real
+   * dispatcher in `server.ts`; older test rigs that don't care about
+   * notifications can leave it out.
+   */
+  readonly notificationDispatcher?: DispatcherHandle;
 }
 
 // ── Argument shapes (validated at the boundary) ──────────────────────
@@ -352,6 +360,24 @@ export function createSymphonyRouter(deps: RouterDeps) {
     },
   });
 
+  /**
+   * Phase 3H.3 — `notifications.flushAwayDigest` is the TUI's bridge
+   * for delivering a single batched-digest toast when the user toggles
+   * `awayMode` from `true` back to `false`. The TUI watches the config
+   * field via `useEffect`; on the true→false edge it calls this
+   * procedure. The dispatcher itself drains its accumulator + resets
+   * the running tally; it is safe to call repeatedly (idempotent on
+   * an empty buffer). When `RouterDeps.notificationDispatcher` is
+   * undefined (test rigs that don't inject one), the call resolves a
+   * no-op so client code doesn't need to branch.
+   */
+  const notifications = createRPCController({
+    async flushAwayDigest(): Promise<void> {
+      if (deps.notificationDispatcher === undefined) return;
+      await deps.notificationDispatcher.flushAwayDigest();
+    },
+  });
+
   return createRPCRouter({
     projects,
     tasks,
@@ -359,6 +385,7 @@ export function createSymphonyRouter(deps: RouterDeps) {
     questions,
     waves,
     mode,
+    notifications,
   });
 }
 

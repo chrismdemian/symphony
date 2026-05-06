@@ -138,4 +138,37 @@ describe('applyPatchToDisk (3H.2)', () => {
     expect(result.config.modelMode).toBe('opus');
     expect(result.config.maxConcurrentWorkers).toBe(defaultConfig().maxConcurrentWorkers);
   });
+
+  it('Phase 3H.3 — awayMode round-trip persists across writes (audit Major-1)', async () => {
+    // The disk-side bug discovered in the 3H.3 production scenario: the
+    // schema gained `awayMode` but `applyConfigEdits` (the per-field
+    // jsonc writer used when an existing file is on disk) wasn't
+    // updated, so subsequent writes silently dropped the new field.
+    // This test locks in the round-trip so the next added field can't
+    // repeat the regression — if a future schema bump misses
+    // `applyConfigEdits`, this test or its sibling fails.
+
+    // Write 1 (no file → JSON.stringify path): awayMode goes to disk.
+    await applyPatchToDisk({ awayMode: true });
+    let onDisk = JSON.parse(readFileSync(cfgFile, 'utf8')) as Record<string, unknown>;
+    expect(onDisk['awayMode']).toBe(true);
+
+    // Write 2 (file exists → applyConfigEdits path): a touch-elsewhere
+    // patch must NOT clobber awayMode back to its schema default.
+    await applyPatchToDisk({ modelMode: 'opus' });
+    onDisk = JSON.parse(readFileSync(cfgFile, 'utf8')) as Record<string, unknown>;
+    expect(onDisk['awayMode']).toBe(true);
+    expect(onDisk['modelMode']).toBe('opus');
+
+    // Write 3: explicit toggle off via the per-field writer.
+    await applyPatchToDisk({ awayMode: false });
+    onDisk = JSON.parse(readFileSync(cfgFile, 'utf8')) as Record<string, unknown>;
+    expect(onDisk['awayMode']).toBe(false);
+
+    // Write 4: re-confirm toggle off survives an unrelated touch.
+    await applyPatchToDisk({ leaderTimeoutMs: 500 });
+    onDisk = JSON.parse(readFileSync(cfgFile, 'utf8')) as Record<string, unknown>;
+    expect(onDisk['awayMode']).toBe(false);
+    expect(onDisk['leaderTimeoutMs']).toBe(500);
+  });
 });

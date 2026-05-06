@@ -12,6 +12,7 @@ describe('config-schema', () => {
     expect(cfg.modelMode).toBe('mixed');
     expect(cfg.maxConcurrentWorkers).toBe(4);
     expect(cfg.notifications.enabled).toBe(false);
+    expect(cfg.awayMode).toBe(false);
     expect(cfg.theme.name).toBe('symphony');
     expect(cfg.theme.autoFallback16Color).toBe(true);
     expect(cfg.defaultProjectPath).toBeUndefined();
@@ -130,5 +131,16 @@ describe('config-schema', () => {
     const result = parseConfig({ defaultProjectPath: '' });
     expect(result.config.defaultProjectPath).toBeUndefined();
     expect(result.warnings.some((w) => w.includes('defaultProjectPath'))).toBe(true);
+  });
+
+  it('parseConfig accepts awayMode as a top-level boolean (3H.3)', () => {
+    expect(parseConfig({ awayMode: true }).config.awayMode).toBe(true);
+    expect(parseConfig({ awayMode: false }).config.awayMode).toBe(false);
+  });
+
+  it('parseConfig falls back to awayMode default when malformed', () => {
+    const result = parseConfig({ awayMode: 'yes' });
+    expect(result.config.awayMode).toBe(false);
+    expect(result.warnings.some((w) => w.includes('awayMode'))).toBe(true);
   });
 });

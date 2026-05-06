@@ -114,6 +114,33 @@ function AppShell(props: AppProps): React.JSX.Element {
     setThemeJson(pickThemeJson(autoFallback));
   }, [autoFallback, setThemeJson]);
 
+  // Phase 3H.3 — awayMode flush detection. The dispatcher (server-side)
+  // accumulates notifications while `config.awayMode === true`. When the
+  // user toggles it back to false (currently via SettingsPanel; future
+  // 3M will add a dedicated keybind), this effect's edge detector calls
+  // the RPC `flushAwayDigest` so the orchestrator emits one batched
+  // toast covering the buffered events.
+  //
+  // `prevAwayModeRef` is initialized to the current value so the first
+  // effect run (on mount) is a no-op even if awayMode is somehow true
+  // at boot. Only an actual `true → false` transition triggers a flush.
+  // Mirrors the firedRef pattern from 3H.1's ConfigProvider warnings
+  // useEffect.
+  const awayMode = config.awayMode;
+  const prevAwayModeRef = React.useRef(awayMode);
+  const rpc = props.rpc;
+  useEffect(() => {
+    const prev = prevAwayModeRef.current;
+    prevAwayModeRef.current = awayMode;
+    if (prev === true && awayMode === false) {
+      void rpc.call.notifications.flushAwayDigest().catch(() => {
+        // Notification flush is best-effort; an RPC failure here is not
+        // user-actionable and dispatcher errors are already swallowed
+        // server-side.
+      });
+    }
+  }, [awayMode, rpc]);
+
   // Phase 3H.1 — `--initial-popup`/`symphony config` entry point.
   // Fires exactly once after mount. The ref-guard handles the StrictMode
   // double-invoke in development without re-pushing the popup.
