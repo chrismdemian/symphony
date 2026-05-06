@@ -3,12 +3,14 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 /**
- * The 9 template variables documented in `research/prompts/maestro-system-prompt-v1.md`.
+ * The 10 template variables documented in `research/prompts/maestro-system-prompt-v1.md`.
  *
- * Six are referenced in the prompt body; three (`previewCommand`, `availableTools`,
- * `maestroWarmth`) are reserved for future use — accepted here so 4D fragments
- * can introduce them without breaking the composer's contract. Empty/null values
- * render as the literal string `(none)` so Maestro never reads `undefined`.
+ * Six are referenced in the prompt body today; three (`previewCommand`,
+ * `availableTools`, `maestroWarmth`) are reserved for 4D fragment expansion;
+ * `modelMode` (Phase 3H.2) gates Maestro's per-task model selection — when
+ * `'opus'`, Symphony forces every spawn to Opus; when `'mixed'`, Maestro
+ * decides per task. Empty/null values render as the literal string `(none)`
+ * so Maestro never reads `undefined`.
  */
 export interface MaestroPromptVars {
   projectName: string;
@@ -20,6 +22,7 @@ export interface MaestroPromptVars {
   previewCommand: string;
   availableTools: string;
   maestroWarmth: string;
+  modelMode: 'opus' | 'mixed';
 }
 
 const TEMPLATE_KEY_TO_FIELD: Record<string, keyof MaestroPromptVars> = {
@@ -32,6 +35,7 @@ const TEMPLATE_KEY_TO_FIELD: Record<string, keyof MaestroPromptVars> = {
   preview_command: 'previewCommand',
   available_tools: 'availableTools',
   maestro_warmth: 'maestroWarmth',
+  model_mode: 'modelMode',
 };
 
 const BEGIN_MARKER = '## BEGIN PROMPT';

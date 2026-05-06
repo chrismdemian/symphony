@@ -23,6 +23,7 @@ import {
 } from '../orchestrator/maestro/index.js';
 import { runTui } from '../ui/runtime/runTui.js';
 import type { TuiRpc } from '../ui/runtime/rpc.js';
+import { loadConfig } from '../utils/config.js';
 
 const SYMPHONY_VERSION = '0.0.0';
 
@@ -400,6 +401,15 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
     },
   });
 
+  // Phase 3H.2 — read modelMode from config for Maestro's prompt. Boot
+  // configuration; mid-session changes via `<leader>m` apply to NEW
+  // spawns but Maestro's per-task model decision logic only re-reads at
+  // next start (changing the mid-session prompt would leak into the
+  // conversation history). `loadConfig` is documented to never throw —
+  // every error path returns defaults — so no defensive .catch.
+  const bootConfig = await loadConfig();
+  const modelMode = bootConfig.config.modelMode;
+
   const promptVars: MaestroPromptVars = {
     projectName: projects.length > 0 ? projects[0]!.name : '(no project)',
     registeredProjects,
@@ -410,6 +420,7 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
     previewCommand: '',
     availableTools: '',
     maestroWarmth: '',
+    modelMode,
   };
 
   // Audit M5: wire `maestro.on('error', ...)` so a fatal Maestro error

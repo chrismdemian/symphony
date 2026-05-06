@@ -1,5 +1,15 @@
-import React, { createContext, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { defaultConfig, loadConfig, type ConfigSource, type SymphonyConfig } from './config.js';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  applyPatchToDisk,
+  defaultConfig,
+  loadConfig,
+  type ConfigSource,
+  type SymphonyConfig,
+  type SymphonyConfigPatch,
+} from './config.js';
+import { SymphonyConfigSchema } from './config-schema.js';
+
+export type { SymphonyConfigPatch } from './config.js';
 
 /**
  * Phase 3H.1 — React context that loads `~/.symphony/config.json` once
@@ -22,6 +32,15 @@ export interface ConfigController {
   readonly source: ConfigSource;
   /** Re-read the file from disk. Used after `symphony config --edit` round-trips, or by 3H.2 hot-apply. */
   readonly reload: () => Promise<void>;
+  /**
+   * Phase 3H.2 — apply a partial patch, persist via `saveConfig`, and
+   * reflect the merged result in component state. Returns the new config.
+   * Throws if the merged result fails Zod validation (e.g. integer field
+   * out of range) — callers SHOULD wrap and surface a toast on rejection.
+   * Tests passing `props.initial` get an in-memory-only setter (no disk
+   * I/O) so harness fixtures aren't clobbered.
+   */
+  readonly setConfig: (patch: SymphonyConfigPatch) => Promise<SymphonyConfig>;
 }
 
 const FALLBACK_SOURCE: ConfigSource = { kind: 'default' } as const;
@@ -30,6 +49,7 @@ const FALLBACK_CONTROLLER: ConfigController = {
   config: defaultConfig(),
   source: FALLBACK_SOURCE,
   reload: async () => undefined,
+  setConfig: async () => defaultConfig(),
 };
 
 const ConfigContext = createContext<ConfigController>(FALLBACK_CONTROLLER);
@@ -121,12 +141,76 @@ export function ConfigProvider(props: ConfigProviderProps): React.JSX.Element {
     [initialOverride],
   );
 
+  // Phase 3H.2 — `setConfig` routes through the single-writer helper
+  // `applyPatchToDisk` (`config.ts`) which serializes ALL config writes
+  // within this process via a Promise queue. That serialization closes
+  // the read-modify-write race documented in the 3H.2 audit (concurrent
+  // setConfig calls clobbering each other through stale state-closure).
+  //
+  // In test/harness mode (`initial` provided), the disk write is
+  // skipped — we mirror the merge + Zod validate locally so the patch
+  // shape stays consistent with production but no temp file is touched.
+  // The schema parse still throws on out-of-range values so unit tests
+  // see the same rejection semantics as production callers.
+  const setConfig = useCallback(
+    async (patch: SymphonyConfigPatch): Promise<SymphonyConfig> => {
+      let next: SymphonyConfig;
+      let nextSource: ConfigSource;
+      if (initialOverride) {
+        // In-memory-only path for test fixtures. Same merge semantics as
+        // production but no disk roundtrip.
+        const merged = applyPatchInMemory(state.config, patch);
+        next = SymphonyConfigSchema.parse(merged);
+        nextSource = state.source;
+      } else {
+        const result = await applyPatchToDisk(patch);
+        next = result.config;
+        nextSource = result.source;
+      }
+      if (!mountedRef.current) return next;
+      setState({ config: next, source: nextSource });
+      return next;
+    },
+    [state.config, state.source, initialOverride],
+  );
+
   const controller = useMemo<ConfigController>(
-    () => ({ config: state.config, source: state.source, reload }),
-    [state.config, state.source, reload],
+    () => ({ config: state.config, source: state.source, reload, setConfig }),
+    [state.config, state.source, reload, setConfig],
   );
 
   return <ConfigContext.Provider value={controller}>{props.children}</ConfigContext.Provider>;
+}
+
+/**
+ * Test/harness-only merge — production code goes through `applyPatchToDisk`
+ * (`config.ts`) which uses the same merge logic plus disk persistence.
+ * Mirrors the helper's `mergePatch` so the test path exercises identical
+ * patch semantics. Pure; caller pipes through Zod.
+ */
+function applyPatchInMemory(
+  current: SymphonyConfig,
+  patch: SymphonyConfigPatch,
+): SymphonyConfig {
+  const next: SymphonyConfig = { ...current };
+  if (patch.modelMode !== undefined) next.modelMode = patch.modelMode;
+  if (patch.maxConcurrentWorkers !== undefined) next.maxConcurrentWorkers = patch.maxConcurrentWorkers;
+  if (patch.leaderTimeoutMs !== undefined) next.leaderTimeoutMs = patch.leaderTimeoutMs;
+  if (patch.notifications !== undefined) {
+    next.notifications = { ...current.notifications, ...patch.notifications };
+  }
+  if (patch.theme !== undefined) {
+    next.theme = { ...current.theme, ...patch.theme };
+  }
+  if (patch.keybindOverrides !== undefined) next.keybindOverrides = patch.keybindOverrides;
+  if ('defaultProjectPath' in patch) {
+    if (patch.defaultProjectPath === null) {
+      delete next.defaultProjectPath;
+    } else if (patch.defaultProjectPath !== undefined) {
+      next.defaultProjectPath = patch.defaultProjectPath;
+    }
+  }
+  return next;
 }
 
 export function useConfig(): ConfigController {

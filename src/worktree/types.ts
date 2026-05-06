@@ -49,6 +49,14 @@ export interface SymphonyConfig {
     readonly enabled?: boolean;
     readonly size?: number;
   };
+  /**
+   * Per-project worker concurrency cap (Phase 3H.2). Wins over the global
+   * `~/.symphony/config.json` `maxConcurrentWorkers` for spawns into this
+   * project. Out-of-range values are ignored — the lifecycle clamps to the
+   * global default. Validated at the cap-getter, not here, so a typo in a
+   * project file never crashes worktree creation.
+   */
+  readonly maxConcurrentWorkers?: number;
 }
 
 export interface WorktreeManagerConfig {

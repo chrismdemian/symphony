@@ -42,6 +42,7 @@ const VARS: MaestroPromptVars = {
   previewCommand: '',
   availableTools: '',
   maestroWarmth: '',
+  modelMode: 'mixed',
 };
 
 const FIXTURE_PROMPT_BODY = `# fixture
