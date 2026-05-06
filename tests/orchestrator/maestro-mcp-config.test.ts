@@ -49,6 +49,51 @@ describe('writeMaestroMcpConfig', () => {
     expect(json.mcpServers.symphony.args).toEqual(['/cli', 'mcp-server', '--in-memory']);
   });
 
+  it('appends --default-project when defaultProjectPath is set (audit C1)', async () => {
+    const result = await writeMaestroMcpConfig({
+      cwd: sandbox,
+      cliEntryPath: '/cli',
+      nodeBinary: '/node',
+      defaultProjectPath: '/home/chris/projects/foo',
+    });
+    const json = JSON.parse(readFileSync(result.path, 'utf8'));
+    expect(json.mcpServers.symphony.args).toEqual([
+      '/cli',
+      'mcp-server',
+      '--default-project',
+      '/home/chris/projects/foo',
+    ]);
+  });
+
+  it('combines --in-memory and --default-project flags', async () => {
+    const result = await writeMaestroMcpConfig({
+      cwd: sandbox,
+      cliEntryPath: '/cli',
+      nodeBinary: '/node',
+      inMemory: true,
+      defaultProjectPath: '/proj',
+    });
+    const json = JSON.parse(readFileSync(result.path, 'utf8'));
+    expect(json.mcpServers.symphony.args).toEqual([
+      '/cli',
+      'mcp-server',
+      '--in-memory',
+      '--default-project',
+      '/proj',
+    ]);
+  });
+
+  it('skips --default-project when defaultProjectPath is empty', async () => {
+    const result = await writeMaestroMcpConfig({
+      cwd: sandbox,
+      cliEntryPath: '/cli',
+      nodeBinary: '/node',
+      defaultProjectPath: '',
+    });
+    const json = JSON.parse(readFileSync(result.path, 'utf8'));
+    expect(json.mcpServers.symphony.args).toEqual(['/cli', 'mcp-server']);
+  });
+
   it('honors an explicit outputPath', async () => {
     const target = join(sandbox, 'nested', 'mcp.json');
     rmSync(join(sandbox, 'nested'), { recursive: true, force: true });

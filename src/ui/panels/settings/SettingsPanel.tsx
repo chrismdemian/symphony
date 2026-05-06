@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text, useInput } from 'ink';
 import os from 'node:os';
 import path from 'node:path';
+import fs from 'node:fs';
 import { useTheme } from '../../theme/context.js';
 import { useFocus } from '../../focus/focus.js';
 import { useRegisterCommands } from '../../keybinds/dispatcher.js';
@@ -11,40 +12,40 @@ import { useToast } from '../../feedback/ToastProvider.js';
 import type { SymphonyConfig } from '../../../utils/config-schema.js';
 
 /**
- * Phase 3H.1 — read-only settings popup.
+ * Phase 3H.2 — editable settings popup.
+ *
+ * Phase 3H.1 shipped a read-only popup. This phase adds inline editors:
+ *
+ *   - **Bool** (`autoFallback16Color`, `notifications.enabled`):
+ *     Space toggles in-place; Enter does the same for consistency.
+ *   - **Enum** (`modelMode`): Enter cycles `opus ↔ mixed`.
+ *   - **Int** (`maxConcurrentWorkers`, `leaderTimeoutMs`): Enter mounts
+ *     a digit-only inline input below the row. Esc cancels; Enter
+ *     commits + Zod-validates. Out-of-range → toast + cancel.
+ *   - **Text-path** (`defaultProjectPath`): Enter mounts a text input.
+ *     On commit, validates `fs.existsSync(path) && exists(<path>/.git)`.
+ *     Empty input clears the field via `setConfig({defaultProjectPath: null})`.
+ *   - **Readonly** (`theme.name`, `schemaVersion`, `keybindOverrides`):
+ *     Enter shows a toast pointing at the future phase (3H.4 for
+ *     keybindOverrides; the others are intrinsic / never editable).
+ *
+ * State machine:
+ *   `idle` (arrow nav, Space/Enter dispatches by row kind)
+ *   ↓ Enter on int/text row
+ *   `editing-int` | `editing-text` (typed buffer; Enter commits, Esc cancels)
+ *   ↓ commit success
+ *   `idle`
  *
  * Layout pattern from `<Palette>` (`src/ui/panels/palette/Palette.tsx`):
  * popup-scope `'settings'`, popup-internal navigation commands flagged
- * `internal: true` so the command palette doesn't list them, ref-mirror
- * pattern for selection state to avoid the registry-mutation feedback
- * loop documented in the 3F.1 audit.
- *
- * Sections (header rows are non-selectable):
- *   ── Model ──            modelMode
- *   ── Workers ──          maxConcurrentWorkers
- *   ── Appearance ──       theme.name, theme.autoFallback16Color
- *   ── Notifications ──    notifications.enabled
- *   ── Project ──          defaultProjectPath
- *   ── Advanced ──         leaderTimeoutMs, schemaVersion, keybindOverrides count
- *
- * In 3H.1 every value is read-only. Pressing Enter on a value row shows
- * a toast "Editing ships in 3H.2." — discoverable signal that the row
- * IS interactive, just not yet. 3H.2 swaps the toast for the inline
- * edit affordance per the field's type.
- *
- * The footer line shows the source (file path or "(no file — using
- * defaults)") so the user can see exactly where their config lives. If
- * the loader emitted warnings, the toast tray surfaces them on mount —
- * the popup doesn't repeat them.
+ * `internal: true`, ref-mirror pattern for selection state to avoid
+ * the registry-mutation feedback loop documented in the 3F.1 audit.
  */
 
 const SCOPE = 'settings';
-// 17 rows = the full layout (6 section headers + 11 value rows). Keeping
-// the popup body taller than the strict default 14 of Palette because
-// the rows here are denser (label + value + tag) and we WANT every field
-// visible without scrolling — the popup is a reference card more than a
-// scrollable list.
 const VISIBLE_ROWS = 18;
+
+type RowKind = 'bool' | 'enum' | 'int' | 'text-path' | 'readonly';
 
 type Row =
   | { readonly kind: 'header'; readonly label: string }
@@ -53,40 +54,69 @@ type Row =
       readonly label: string;
       readonly value: string;
       readonly source: 'default' | 'file';
+      readonly editKind: RowKind;
       readonly description?: string;
+    };
+
+/**
+ * Active inline-edit sub-state. `idle` means the popup is in navigation
+ * mode; the other variants mean the user is mid-edit on a specific
+ * field. `value` is the in-progress buffer.
+ */
+type EditState =
+  | { readonly kind: 'idle' }
+  | {
+      readonly kind: 'editing-int';
+      readonly rowIdx: number;
+      readonly field: 'maxConcurrentWorkers' | 'leaderTimeoutMs';
+      readonly value: string;
+    }
+  | {
+      readonly kind: 'editing-text';
+      readonly rowIdx: number;
+      readonly field: 'defaultProjectPath';
+      readonly value: string;
     };
 
 export function SettingsPanel(): React.JSX.Element {
   const theme = useTheme();
   const focus = useFocus();
-  const { config, source, reload } = useConfig();
+  const { config, source, reload, setConfig } = useConfig();
   const { showToast } = useToast();
   const isFocused = focus.currentScope === SCOPE;
 
   // Reload on every popup mount so users who ran `symphony config
   // --edit` (or otherwise changed the file out-of-band) see the fresh
   // values. Idempotent — `reload` is a no-op if no file change happened.
-  // Hot-reload via `fs.watch` is the 3H.2 upgrade path.
   useEffect(() => {
     void reload();
   }, [reload]);
 
   const rows = useMemo(() => buildRows(config, source), [config, source]);
 
-  // Default selection lands on the first selectable (value) row.
   const firstSelectable = useMemo(() => rows.findIndex((r) => r.kind === 'value'), [rows]);
   const [selectedIdx, setSelectedIdx] = useState(firstSelectable === -1 ? 0 : firstSelectable);
+  const [edit, setEdit] = useState<EditState>({ kind: 'idle' });
 
-  // Ref-mirrors so popupCommands' onSelect closures read live state
-  // without registry feedback loops (3F.1 audit pattern).
   const rowsRef = useRef(rows);
   const selectedIdxRef = useRef(selectedIdx);
+  const editRef = useRef(edit);
+  // Audit M1/M2: tracks whether a commitEdit is mid-await. While
+  // committing, useInput drops chars (so user typing isn't silently
+  // discarded by the post-commit setEdit({kind:'idle'})), Esc no-ops
+  // (so the user's cancel intent doesn't race with a successful disk
+  // write that has ALREADY landed), and the dispatcher's Enter command
+  // no-ops (so two Enters in flight don't fire two parallel commits).
+  const committingRef = useRef(false);
   useEffect(() => {
     rowsRef.current = rows;
   }, [rows]);
   useEffect(() => {
     selectedIdxRef.current = selectedIdx;
   }, [selectedIdx]);
+  useEffect(() => {
+    editRef.current = edit;
+  }, [edit]);
 
   const popPopup = focus.popPopup;
 
@@ -104,11 +134,204 @@ export function SettingsPanel(): React.JSX.Element {
     });
   }, []);
 
+  // Apply a config patch and surface ZodError as a toast. Returns true on
+  // success, false on validation rejection. Accepts both static patches
+  // and function-patches (audit C2 from commit-5 review): function-
+  // patches resolve against the just-committed state inside setConfig's
+  // serialized queue, fixing rapid-fire chord double-press regressions.
+  const applyPatch = useCallback(
+    async (patch: Parameters<typeof setConfig>[0]): Promise<boolean> => {
+      try {
+        await setConfig(patch);
+        return true;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        showToast(`Invalid: ${message}`, { tone: 'error' });
+        return false;
+      }
+    },
+    [setConfig, showToast],
+  );
+
+  // Toggle a bool row's value. Uses a function-patch so rapid-fire
+  // toggles always read the just-committed state (audit C2 from
+  // commit-5 review).
+  const toggleBool = useCallback(
+    (label: string): void => {
+      if (label === 'theme.autoFallback16Color') {
+        void applyPatch((current) => ({
+          theme: { autoFallback16Color: !current.theme.autoFallback16Color },
+        }));
+        return;
+      }
+      if (label === 'notifications.enabled') {
+        void applyPatch((current) => ({
+          notifications: { enabled: !current.notifications.enabled },
+        }));
+        return;
+      }
+    },
+    [applyPatch],
+  );
+
+  // Cycle an enum row.
+  const cycleEnum = useCallback(
+    (label: string): void => {
+      if (label === 'modelMode') {
+        void applyPatch((current) => ({
+          modelMode: current.modelMode === 'opus' ? 'mixed' : 'opus',
+        }));
+      }
+    },
+    [applyPatch],
+  );
+
+  // Enter an int-edit mode for the selected row.
+  const startIntEdit = useCallback((rowIdx: number, label: string, current: number): void => {
+    if (label !== 'maxConcurrentWorkers' && label !== 'leaderTimeoutMs') return;
+    setEdit({
+      kind: 'editing-int',
+      rowIdx,
+      field: label,
+      value: String(current),
+    });
+  }, []);
+
+  // Enter a text-edit mode for the selected row.
+  const startTextEdit = useCallback((rowIdx: number, label: string, current: string): void => {
+    if (label !== 'defaultProjectPath') return;
+    setEdit({
+      kind: 'editing-text',
+      rowIdx,
+      field: label,
+      value: current,
+    });
+  }, []);
+
+  // Commit the active edit. Validation depends on the field. Audit M1/M2:
+  // a `committingRef` mutex prevents typing-during-await and
+  // Esc-during-await from racing the in-flight disk write. The mutex
+  // covers ONLY the await window — synchronous local validation runs
+  // outside it so rapid Enter on an already-invalid buffer rejects fast.
+  const commitEdit = useCallback(async (): Promise<void> => {
+    if (committingRef.current) return; // already in flight; idempotent
+    const current = editRef.current;
+    if (current.kind === 'idle') return;
+
+    // Local validation (fast-fail without touching disk).
+    if (current.kind === 'editing-int') {
+      const trimmed = current.value.trim();
+      if (trimmed.length === 0) {
+        showToast('Empty value — aborted', { tone: 'warning' });
+        setEdit({ kind: 'idle' });
+        return;
+      }
+      const n = Number.parseInt(trimmed, 10);
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+        showToast(`Invalid integer: ${trimmed}`, { tone: 'error' });
+        return; // editor stays open with the bad buffer for fix
+      }
+      const patch =
+        current.field === 'maxConcurrentWorkers'
+          ? { maxConcurrentWorkers: n }
+          : { leaderTimeoutMs: n };
+      committingRef.current = true;
+      try {
+        const ok = await applyPatch(patch);
+        if (ok) setEdit({ kind: 'idle' });
+      } finally {
+        committingRef.current = false;
+      }
+      return;
+    }
+
+    if (current.kind === 'editing-text') {
+      const trimmed = current.value.trim();
+      // Empty input → clear the optional field.
+      if (trimmed.length === 0) {
+        committingRef.current = true;
+        try {
+          await applyPatch({ defaultProjectPath: null });
+          setEdit({ kind: 'idle' });
+        } finally {
+          committingRef.current = false;
+        }
+        return;
+      }
+      // Validate the path exists AND looks like a git repo (project root
+      // OR worktree). `<root>/.git` may be a directory (normal repo) or
+      // a file (worktree); both are valid.
+      if (!fs.existsSync(trimmed)) {
+        showToast(`Path does not exist: ${trimmed}`, { tone: 'error' });
+        return;
+      }
+      const gitMarker = path.join(trimmed, '.git');
+      if (!fs.existsSync(gitMarker)) {
+        showToast(`Not a git repo (no .git): ${trimmed}`, { tone: 'error' });
+        return;
+      }
+      committingRef.current = true;
+      try {
+        const ok = await applyPatch({ defaultProjectPath: trimmed });
+        if (ok) setEdit({ kind: 'idle' });
+      } finally {
+        committingRef.current = false;
+      }
+      return;
+    }
+  }, [applyPatch, showToast]);
+
+  const cancelEdit = useCallback((): void => {
+    // Audit M2: don't fire cancel while a commit is in flight — the
+    // disk write may have already landed and the user's "cancel"
+    // intent can't roll it back. The in-flight commit will close the
+    // editor on success or leave it open on failure for the user to
+    // re-attempt.
+    if (committingRef.current) return;
+    setEdit({ kind: 'idle' });
+  }, []);
+
+  // Handle Enter on a row in idle mode. Dispatch by edit kind.
   const handleEnter = useCallback((): void => {
     const row = rowsRef.current[selectedIdxRef.current];
     if (row === undefined || row.kind !== 'value') return;
-    showToast('Editing ships in Phase 3H.2.', { tone: 'info' });
-  }, [showToast]);
+    switch (row.editKind) {
+      case 'bool':
+        toggleBool(row.label);
+        return;
+      case 'enum':
+        cycleEnum(row.label);
+        return;
+      case 'int':
+        startIntEdit(
+          selectedIdxRef.current,
+          row.label,
+          row.label === 'maxConcurrentWorkers'
+            ? config.maxConcurrentWorkers
+            : config.leaderTimeoutMs,
+        );
+        return;
+      case 'text-path':
+        startTextEdit(selectedIdxRef.current, row.label, config.defaultProjectPath ?? '');
+        return;
+      case 'readonly':
+        if (row.label === 'keybindOverrides') {
+          showToast('Keybind override editor ships in 3H.4.', { tone: 'info' });
+        } else {
+          showToast(`${row.label} is intrinsic and not editable.`, { tone: 'info' });
+        }
+        return;
+    }
+  }, [toggleBool, cycleEnum, startIntEdit, startTextEdit, showToast, config]);
+
+  // Handle Space on a bool row (consistent shortcut).
+  const handleSpace = useCallback((): void => {
+    const row = rowsRef.current[selectedIdxRef.current];
+    if (row === undefined || row.kind !== 'value') return;
+    if (row.editKind === 'bool') {
+      toggleBool(row.label);
+    }
+  }, [toggleBool]);
 
   const popupCommands = useMemo<readonly Command[]>(
     () => [
@@ -119,7 +342,14 @@ export function SettingsPanel(): React.JSX.Element {
         scope: SCOPE,
         displayOnScreen: false,
         internal: true,
-        onSelect: () => popPopup(),
+        onSelect: () => {
+          // Esc in idle → close popup; in edit mode → cancel edit.
+          if (editRef.current.kind === 'idle') {
+            popPopup();
+          } else {
+            cancelEdit();
+          }
+        },
       },
       {
         id: 'settings.next',
@@ -128,7 +358,9 @@ export function SettingsPanel(): React.JSX.Element {
         scope: SCOPE,
         displayOnScreen: false,
         internal: true,
-        onSelect: () => move(1),
+        onSelect: () => {
+          if (editRef.current.kind === 'idle') move(1);
+        },
       },
       {
         id: 'settings.prev',
@@ -137,25 +369,122 @@ export function SettingsPanel(): React.JSX.Element {
         scope: SCOPE,
         displayOnScreen: false,
         internal: true,
-        onSelect: () => move(-1),
+        onSelect: () => {
+          if (editRef.current.kind === 'idle') move(-1);
+        },
       },
       {
         id: 'settings.invoke',
-        title: 'edit (3H.2)',
+        title: 'edit',
         key: { kind: 'return' },
         scope: SCOPE,
         displayOnScreen: false,
         internal: true,
-        onSelect: handleEnter,
+        onSelect: () => {
+          // Audit M1: drop Enter while a commit is mid-await — prevents
+          // double-fire of the same commit and stale-state second-commits.
+          if (committingRef.current) return;
+          if (editRef.current.kind === 'idle') handleEnter();
+          else void commitEdit();
+        },
+      },
+      {
+        id: 'settings.toggle',
+        title: 'toggle',
+        key: { kind: 'char', char: ' ' },
+        scope: SCOPE,
+        displayOnScreen: false,
+        internal: true,
+        onSelect: () => {
+          if (editRef.current.kind === 'idle') handleSpace();
+        },
       },
     ],
-    [popPopup, move, handleEnter],
+    [popPopup, cancelEdit, move, handleEnter, commitEdit, handleSpace],
   );
 
   useRegisterCommands(popupCommands, isFocused);
 
+  // Edit-mode raw input handler — captures char input, backspace, etc.
+  // Runs in PARALLEL with the keybind dispatcher (the dispatcher's
+  // commands at scope 'settings' handle Enter / Esc / Space; this hook
+  // handles char accumulation).
+  //
+  // Audit C1: negative whitelist mirrors InputBar/Palette pattern
+  // (3F.1 audit M4) — `key.home`/`key.end` MUST be rejected so terminals
+  // that decode those into key flags don't leak escape garbage as a
+  // typed char. Same for pageUp/pageDown/tab.
+  //
+  // Audit M1: drops keystrokes while a commit is in flight. Prevents the
+  // post-commit `setEdit({kind:'idle'})` from silently discarding chars
+  // the user typed during the await window.
+  //
+  // Audit M4: Ctrl+U is the only emacs-style chord wired today (kill-
+  // line). Backspace handles single-char delete. Full InputBar parity
+  // (Ctrl+W kill-word, Ctrl+A/E line-start/end, Ctrl+K kill-to-end) is
+  // a follow-up — the settings popup's typical typed buffer is short
+  // enough that single-char delete + kill-line covers the common case.
+  useInput(
+    (input, key) => {
+      if (committingRef.current) return;
+      const current = editRef.current;
+      if (current.kind === 'idle') return;
+      // Ctrl+U → kill line (clear buffer).
+      if (key.ctrl && input === 'u') {
+        setEdit((prev) => {
+          if (prev.kind === 'idle') return prev;
+          return { ...prev, value: '' };
+        });
+        return;
+      }
+      // Backspace deletes from the buffer.
+      if (key.backspace || key.delete) {
+        setEdit((prev) => {
+          if (prev.kind === 'idle') return prev;
+          return { ...prev, value: prev.value.slice(0, -1) };
+        });
+        return;
+      }
+      // Skip control chars + Enter/Esc/arrows/home/end (the dispatcher
+      // owns them, OR the terminal's escape-decoded modifier keys
+      // shouldn't land in the typed buffer).
+      if (
+        key.return ||
+        key.escape ||
+        key.upArrow ||
+        key.downArrow ||
+        key.leftArrow ||
+        key.rightArrow ||
+        key.tab ||
+        key.pageUp ||
+        key.pageDown ||
+        key.home ||
+        key.end ||
+        key.ctrl ||
+        key.meta
+      ) {
+        return;
+      }
+      // Accept printable input. For int fields, restrict to digits.
+      if (input.length === 0) return;
+      const filtered =
+        current.kind === 'editing-int' ? input.replace(/[^0-9]/g, '') : input;
+      if (filtered.length === 0) return;
+      setEdit((prev) => {
+        if (prev.kind === 'idle') return prev;
+        return { ...prev, value: prev.value + filtered };
+      });
+    },
+    { isActive: isFocused && edit.kind !== 'idle' },
+  );
+
   const sourceLine = useMemo(() => formatSourceLine(source), [source]);
   const visible = useMemo(() => sliceVisible(rows, selectedIdx), [rows, selectedIdx]);
+
+  const footerHint = useMemo(() => {
+    if (edit.kind !== 'idle') return 'Enter commit · Esc cancel · Backspace delete';
+    return '↑↓ navigate · Space toggle · Enter edit · Esc close';
+  }, [edit.kind]);
 
   return (
     <Box
@@ -171,7 +500,7 @@ export function SettingsPanel(): React.JSX.Element {
         </Text>
         <Text color={theme['textMuted']}>
           {' '}
-          · Phase 3H.1 (read-only)
+          · Phase 3H.2
         </Text>
       </Box>
       <Box flexDirection="column" marginTop={1}>
@@ -180,11 +509,16 @@ export function SettingsPanel(): React.JSX.Element {
         ) : (
           visible.rows.map((row, offset) => {
             const absoluteIdx = visible.start + offset;
+            const isSelected = absoluteIdx === selectedIdx;
+            const isEditing =
+              isSelected && edit.kind !== 'idle' && edit.rowIdx === absoluteIdx;
             return (
               <SettingsRow
                 key={`${row.kind}-${absoluteIdx}`}
                 row={row}
-                selected={absoluteIdx === selectedIdx}
+                selected={isSelected}
+                editing={isEditing}
+                editValue={isEditing ? edit.value : ''}
                 theme={theme}
               />
             );
@@ -193,9 +527,7 @@ export function SettingsPanel(): React.JSX.Element {
       </Box>
       <Box marginTop={1} flexDirection="column">
         <Text color={theme['textMuted']}>{sourceLine}</Text>
-        <Text color={theme['textMuted']}>
-          ↑↓ navigate · Enter edit (3H.2) · Esc close
-        </Text>
+        <Text color={theme['textMuted']}>{footerHint}</Text>
       </Box>
     </Box>
   );
@@ -204,10 +536,12 @@ export function SettingsPanel(): React.JSX.Element {
 interface SettingsRowProps {
   readonly row: Row;
   readonly selected: boolean;
+  readonly editing: boolean;
+  readonly editValue: string;
   readonly theme: Record<string, string>;
 }
 
-function SettingsRow({ row, selected, theme }: SettingsRowProps): React.JSX.Element {
+function SettingsRow({ row, selected, editing, editValue, theme }: SettingsRowProps): React.JSX.Element {
   if (row.kind === 'header') {
     return (
       <Box flexDirection="row" marginTop={1}>
@@ -226,21 +560,23 @@ function SettingsRow({ row, selected, theme }: SettingsRowProps): React.JSX.Elem
   return (
     <Box flexDirection="column" width="100%">
       <Box flexDirection="row" width="100%">
-        {/*
-         * Layout: marker + label (natural width) → spacer
-         * (`flexGrow=1`) → value + tag (natural width). Explicit
-         * `width="100%"` on the row forces it to the popup's content
-         * width so the spacer has space to claim. Without that, rows
-         * containing only natural-width children render at content
-         * width, and rows containing the spacer claim more, producing
-         * a ragged right border (visible in the visual harness output
-         * when the row width exceeds the natural-width header rows).
-         */}
         <Text color={selected ? theme['accent'] : theme['textMuted']}>{marker}</Text>
         <Text color={theme['text']}>{row.label}</Text>
         <Box flexGrow={1} />
-        <Text color={valueColor}>{row.value}</Text>
-        <Text color={theme['textMuted']}>{` ${sourceTag}`}</Text>
+        {editing ? (
+          <>
+            <Text color={theme['accent']}>{editValue}</Text>
+            {/* Inverse-cursor block — matches StatusLine's typed-input glyph */}
+            <Text color={theme['accent']} inverse>
+              {' '}
+            </Text>
+          </>
+        ) : (
+          <>
+            <Text color={valueColor}>{row.value}</Text>
+            <Text color={theme['textMuted']}>{` ${sourceTag}`}</Text>
+          </>
+        )}
       </Box>
       {selected && row.description !== undefined ? (
         <Box flexDirection="row" width="100%">
@@ -255,14 +591,6 @@ function buildRows(
   config: SymphonyConfig,
   source: { readonly kind: 'default' } | { readonly kind: 'file'; readonly path: string },
 ): readonly Row[] {
-  // 3H.1 simplification: we don't have per-field source data from the
-  // loader (that would require tracking which keys were present pre-
-  // schema-defaults). The "from file" tag is therefore ALL-OR-NOTHING
-  // at the file level today. 3H.2 augments `LoadResult` with a
-  // `presentKeys: ReadonlySet<string>` so per-field source can be
-  // surfaced accurately. For 3H.1 readers, "from file" means "the file
-  // exists; this value either matches or was salvaged" — accurate
-  // enough for the read-only display contract.
   const fromFileSource: 'default' | 'file' = source.kind === 'file' ? 'file' : 'default';
 
   return [
@@ -272,6 +600,7 @@ function buildRows(
       label: 'modelMode',
       value: config.modelMode,
       source: fromFileSource,
+      editKind: 'enum',
       description: 'opus = all workers run Opus · mixed = orchestrator picks per task',
     },
     { kind: 'header', label: 'Workers' },
@@ -280,7 +609,8 @@ function buildRows(
       label: 'maxConcurrentWorkers',
       value: String(config.maxConcurrentWorkers),
       source: fromFileSource,
-      description: 'Phase 3H.2 will enforce; today this is a display-only field',
+      editKind: 'int',
+      description: 'Cap enforced in Commit 4 of 3H.2 (queue gate). Range 1–32.',
     },
     { kind: 'header', label: 'Appearance' },
     {
@@ -288,6 +618,7 @@ function buildRows(
       label: 'theme.name',
       value: config.theme.name,
       source: fromFileSource,
+      editKind: 'readonly',
       description: 'Locked palette (violet + gold). Multi-theme picker is a future phase.',
     },
     {
@@ -295,6 +626,7 @@ function buildRows(
       label: 'theme.autoFallback16Color',
       value: String(config.theme.autoFallback16Color),
       source: fromFileSource,
+      editKind: 'bool',
       description: 'Probe terminal capability and fall back to 16-color on truecolor-less terminals',
     },
     { kind: 'header', label: 'Notifications' },
@@ -303,6 +635,7 @@ function buildRows(
       label: 'notifications.enabled',
       value: String(config.notifications.enabled),
       source: fromFileSource,
+      editKind: 'bool',
       description: 'Desktop toast on worker completed/failed/needs-input. Dispatcher ships in 3H.3.',
     },
     { kind: 'header', label: 'Project' },
@@ -311,6 +644,7 @@ function buildRows(
       label: 'defaultProjectPath',
       value: config.defaultProjectPath ?? '(none)',
       source: fromFileSource,
+      editKind: 'text-path',
       description: 'Pre-selected project at `symphony start` when no --project arg is passed',
     },
     { kind: 'header', label: 'Advanced' },
@@ -319,13 +653,15 @@ function buildRows(
       label: 'leaderTimeoutMs',
       value: String(config.leaderTimeoutMs),
       source: fromFileSource,
-      description: 'Window after Ctrl+X for the second key of a leader chord',
+      editKind: 'int',
+      description: 'Window after Ctrl+X for the second key of a leader chord (100–1000)',
     },
     {
       kind: 'value',
       label: 'schemaVersion',
       value: String(config.schemaVersion),
       source: fromFileSource,
+      editKind: 'readonly',
       description: 'Internal config-schema version. Future migrations branch on this.',
     },
     {
@@ -333,6 +669,7 @@ function buildRows(
       label: 'keybindOverrides',
       value: `${Object.keys(config.keybindOverrides).length} entries`,
       source: fromFileSource,
+      editKind: 'readonly',
       description: 'Per-command keybind overrides. Edit affordance ships in Phase 3H.4.',
     },
   ];
@@ -348,10 +685,6 @@ function formatSourceLine(
 function displayPath(absolute: string): string {
   const home = os.homedir();
   if (absolute === home) return '~';
-  // Audit M1 (3H.1 review): `startsWith(home)` alone false-positives
-  // when `home === "/home/chris"` and path is `"/home/chrisother/..."`.
-  // The next char must be a path separator so we only collapse genuine
-  // descendants. POSIX uses `/`; Win32 accepts both `\` and `/`.
   if (absolute.startsWith(home)) {
     const next = absolute.charAt(home.length);
     if (next === path.sep || next === '/') {
@@ -371,4 +704,3 @@ function sliceVisible(
   start = Math.max(0, end - VISIBLE_ROWS);
   return { start, rows: rows.slice(start, end) };
 }
-

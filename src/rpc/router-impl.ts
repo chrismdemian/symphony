@@ -18,6 +18,7 @@ import {
 import type { StreamEvent } from '../workers/types.js';
 import type { ToolMode, AutonomyTier } from '../orchestrator/types.js';
 import { createRPCController, createRPCRouter } from './router.js';
+import { applyPatchToDisk, loadConfig } from '../utils/config.js';
 
 /**
  * Symphony WS-RPC router definition — Phase 2B.2.
@@ -105,6 +106,21 @@ export interface QuestionsAnswerArgs {
 
 export interface ModeSnapshot {
   readonly mode: ToolMode;
+}
+
+export interface ModeSetModelArgs {
+  readonly modelMode: 'opus' | 'mixed';
+}
+
+export interface ModeSetModelResult {
+  readonly modelMode: 'opus' | 'mixed';
+  /**
+   * Phase 3H.2 audit M3 — warnings emitted by `loadConfig` when the
+   * existing on-disk file was malformed (parse error, salvaged field).
+   * The TUI surfaces these to the toast tray so a flip-via-RPC can't
+   * silently destroy the user's hand-edited content.
+   */
+  readonly warnings: readonly string[];
 }
 
 // ── Router builder ────────────────────────────────────────────────────
@@ -306,6 +322,33 @@ export function createSymphonyRouter(deps: RouterDeps) {
   const mode = createRPCController({
     get(): ModeSnapshot {
       return { mode: modeController.mode };
+    },
+    /**
+     * Phase 3H.2 — flip Symphony's `modelMode` (`opus` | `mixed`) and
+     * persist to `~/.symphony/config.json`. Routes through
+     * `applyPatchToDisk` so this write is serialized with concurrent
+     * `setConfig` calls in the same process.
+     *
+     * Architectural note: 3H.2's TUI funnels writes through the
+     * in-process `<ConfigProvider>` (which also calls `applyPatchToDisk`),
+     * NOT this RPC. The RPC exists for future remote clients. Two
+     * processes writing concurrently is a known constraint — see the
+     * `applyPatchToDisk` docstring for the cross-process plan.
+     *
+     * Audit M3: `loadConfig` warnings (malformed file, salvaged fields)
+     * are returned in the result so the caller can surface them. Without
+     * this, an RPC-driven flip would silently overwrite a user-edited
+     * file with defaults+modelMode and the user would have no signal.
+     */
+    async setModel(args: ModeSetModelArgs): Promise<ModeSetModelResult> {
+      if (args?.modelMode !== 'opus' && args?.modelMode !== 'mixed') {
+        throw badArgs('modelMode must be "opus" or "mixed"');
+      }
+      const pre = await loadConfig();
+      const warnings: readonly string[] =
+        pre.source.kind === 'file' ? pre.source.warnings : [];
+      const result = await applyPatchToDisk({ modelMode: args.modelMode });
+      return { modelMode: result.config.modelMode, warnings };
     },
   });
 

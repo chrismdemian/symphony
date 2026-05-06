@@ -1,16 +1,31 @@
 /**
- * Phase 3F.2 scenario — leader-chord plumbing through the launcher.
+ * Phase 3H.2 scenario — editable settings popup end-to-end.
  *
- * Drives Ctrl+X / Ctrl+X+m / leader timeout via the live stdin
- * pipeline. Mirrors tests/scenarios/3f1.test.ts shape.
+ * Mirrors `tests/scenarios/3h1.test.ts`'s shape: same FakeMaestroProcess,
+ * same makeFakeRpc, same makeTtyStream, same launcher boot. Adds:
+ *
+ * - Enter on modelMode cycles `mixed → opus` and disk persists.
+ * - A SECOND rapid Enter cycles back to `mixed` (audit C2 from the
+ *   commit-5 review): function-patches inside `applyPatchToDisk`'s
+ *   serialized queue read the just-committed value, so two synchronous
+ *   chord presses produce two distinct toggles rather than collapsing
+ *   to one.
+ *
+ * The slash-command path (`/config Enter`) is the reliable popup-open
+ * route — Ctrl+, requires kitty CSI-u encoding which ink-testing-library
+ * doesn't deliver. Same trade-off documented in the 3H.1 scenario.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter, PassThrough } from 'node:stream';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runStart } from '../../src/cli/start.js';
 import { MaestroHookServer } from '../../src/orchestrator/maestro/hook-server.js';
+import {
+  SYMPHONY_CONFIG_FILE_ENV,
+  _resetConfigWriteQueue,
+} from '../../src/utils/config.js';
 import type {
   MaestroProcess,
   MaestroEvent,
@@ -23,6 +38,7 @@ import type { ProjectSnapshot } from '../../src/projects/types.js';
 class FakeMaestroProcess {
   readonly emitter = new EventEmitter();
   readonly sentMessages: string[] = [];
+
   async start(_input: MaestroStartInput): Promise<MaestroStartResult> {
     return {
       workspace: { cwd: '/fake/cwd', claudeMdPath: '/fake/cwd/CLAUDE.md' },
@@ -81,13 +97,22 @@ class FakeMaestroProcess {
 
 let sandbox: string;
 let home: string;
+let cfgFile: string;
+let originalCfgEnv: string | undefined;
 
 beforeEach(() => {
-  sandbox = mkdtempSync(join(tmpdir(), 'symphony-3f2-scenario-'));
+  _resetConfigWriteQueue();
+  sandbox = mkdtempSync(join(tmpdir(), 'symphony-3h2-scenario-'));
   home = join(sandbox, 'home');
+  cfgFile = join(sandbox, 'config.json');
+  originalCfgEnv = process.env[SYMPHONY_CONFIG_FILE_ENV];
+  process.env[SYMPHONY_CONFIG_FILE_ENV] = cfgFile;
 });
 
 afterEach(() => {
+  _resetConfigWriteQueue();
+  if (originalCfgEnv === undefined) delete process.env[SYMPHONY_CONFIG_FILE_ENV];
+  else process.env[SYMPHONY_CONFIG_FILE_ENV] = originalCfgEnv;
   try {
     rmSync(sandbox, { recursive: true, force: true });
   } catch {
@@ -170,10 +195,10 @@ const stripAnsi = (s: string): string =>
   // eslint-disable-next-line no-control-regex
   s.replace(/\x1b\[[\d;?]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
 
-const CTRL_X = '\x18';
+const ESC = '\x1b';
 
-describe('Phase 3F.2 scenario — leader-chord plumbing', () => {
-  it('Ctrl+X arms; Ctrl+X m fires toast; leader times out and stays cleared', async () => {
+describe('Phase 3H.2 scenario — editable settings popup', () => {
+  it('Enter cycles modelMode opus↔mixed, persists to disk, rapid double-press toggles twice', async () => {
     const fakeMaestro = new FakeMaestroProcess();
     const fakeMaestroAsProcess = fakeMaestro as unknown as MaestroProcess;
     Object.defineProperty(fakeMaestroAsProcess, 'events', {
@@ -181,7 +206,12 @@ describe('Phase 3F.2 scenario — leader-chord plumbing', () => {
     });
 
     const projects: ProjectSnapshot[] = [
-      { id: 'p1', name: 'demo', path: '/repos/demo', createdAt: '2026-04-30T00:00:00Z' },
+      {
+        id: 'p1',
+        name: 'demo',
+        path: '/repos/demo',
+        createdAt: '2026-05-06T00:00:00Z',
+      },
     ];
     const handle = makeFakeRpc(projects);
 
@@ -211,65 +241,56 @@ describe('Phase 3F.2 scenario — leader-chord plumbing', () => {
 
     await settle(1300);
 
-    // Press Ctrl+X — leader armed, KeybindBar shows the hint.
-    const beforeArmLength = stdoutChunks.length;
-    (stdin as unknown as PassThrough).write(CTRL_X);
+    // ── Open the popup via /config slash ───────────────────────────────
+    (stdin as unknown as PassThrough).write('/config');
     await settle(300);
+    (stdin as unknown as PassThrough).write('\r');
+    await settle(1200);
+
     {
-      const post = stdoutChunks.slice(beforeArmLength).join('');
-      const plain = stripAnsi(post);
-      expect(plain).toContain('Ctrl+X');
-      // Audit M1: bar lists available leader-seconds when armed.
-      expect(plain).toContain('switch model mode');
+      const recent = stdoutChunks.slice(-200).join('');
+      const plain = stripAnsi(recent);
+      expect(plain).toContain('Settings');
+      expect(plain).toContain('Phase 3H.2');
+      expect(plain).toContain('modelMode');
+      expect(plain).toContain('mixed');
     }
 
-    // Press `m` — model-mode toast renders.
-    const beforeFireLength = stdoutChunks.length;
-    (stdin as unknown as PassThrough).write('m');
-    await settle(300);
+    // ── First Enter: cycle modelMode mixed → opus, persist ─────────────
+    const beforeFirst = stdoutChunks.length;
+    (stdin as unknown as PassThrough).write('\r');
+    await settle(1000);
     {
-      const post = stdoutChunks.slice(beforeFireLength).join('');
+      const post = stdoutChunks.slice(beforeFirst).join('');
       const plain = stripAnsi(post);
-      // Phase 3H.2 wired the real `<leader>m` handler: stub toast
-      // "Model mode switch — Phase 3H will wire the real action."
-      // becomes the actual cycle confirmation "Model mode: <mode>
-      // (applies on next start)." The 3F.2 scenario validates the
-      // chord PLUMBING — that the second keystroke fires SOME toast —
-      // NOT the literal stub copy.
-      expect(plain).toMatch(/Model mode/);
+      expect(plain).toContain('opus');
+      const onDisk = JSON.parse(readFileSync(cfgFile, 'utf8')) as Record<string, unknown>;
+      expect(onDisk['modelMode']).toBe('opus');
     }
 
-    // Wait past the toast TTL (default 2000ms). Toast should dismiss
-    // and the next render won't contain the toast text. Capture the
-    // boundary AFTER dismissal so we don't see the still-active toast
-    // chunks.
-    await settle(2400);
-    const beforeDismissCheckLength = stdoutChunks.length;
-    // Trigger a render that's guaranteed to be post-dismissal — write
-    // a no-op key (Tab cycles focus from chat → workers, no toast).
-    (stdin as unknown as PassThrough).write('\t');
-    await settle(300);
+    // ── Second Enter: cycle opus → mixed (audit C2 rapid-fire) ─────────
+    const beforeSecond = stdoutChunks.length;
+    (stdin as unknown as PassThrough).write('\r');
+    await settle(1000);
     {
-      const post = stdoutChunks.slice(beforeDismissCheckLength).join('');
+      const post = stdoutChunks.slice(beforeSecond).join('');
       const plain = stripAnsi(post);
-      expect(plain).not.toContain('Model mode switch');
+      expect(plain).toContain('mixed');
+      const onDisk = JSON.parse(readFileSync(cfgFile, 'utf8')) as Record<string, unknown>;
+      expect(onDisk['modelMode']).toBe('mixed');
     }
 
-    // Press Ctrl+X then wait past the leader timeout (300ms) + cushion.
-    (stdin as unknown as PassThrough).write(CTRL_X);
-    await settle(500);
-    const beforeTimeoutMLength = stdoutChunks.length;
-    (stdin as unknown as PassThrough).write('m');
-    await settle(300);
+    // ── Esc closes popup, chat placeholder restored ────────────────────
+    const beforeEsc = stdoutChunks.length;
+    (stdin as unknown as PassThrough).write(ESC);
+    await settle(400);
     {
-      const post = stdoutChunks.slice(beforeTimeoutMLength).join('');
+      const post = stdoutChunks.slice(beforeEsc).join('');
       const plain = stripAnsi(post);
-      // After the leader timed out, the second `m` does NOT fire the
-      // toast (would fire if the leader were still armed).
-      expect(plain).not.toContain('Model mode switch');
+      expect(plain).toContain('Tell Maestro what to do');
     }
 
-    await launcher.stop('scenario shutdown');
+    await launcher.stop('test-shutdown');
     await launcher.done;
     expect(handle.closeMock).toHaveBeenCalled();
   }, 30_000);

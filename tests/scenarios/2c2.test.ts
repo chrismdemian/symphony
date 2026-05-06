@@ -162,6 +162,7 @@ function makePromptVars(): MaestroPromptVars {
     previewCommand: '',
     availableTools: '',
     maestroWarmth: '',
+    modelMode: 'mixed',
   };
 }
 

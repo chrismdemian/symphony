@@ -108,6 +108,7 @@ function makeFakeLifecycle(workerRegistry: WorkerRegistry): WorkerLifecycleHandl
     },
     recoverFromStore: () => ({ crashedIds: [] }),
     setOnEvent: () => {},
+    getQueueSnapshot: () => ({ running: 0, capacity: Number.POSITIVE_INFINITY, pending: [] }),
   };
 }
 

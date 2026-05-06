@@ -55,7 +55,7 @@ describe('<SettingsPanel> (3H.1 read-only popup)', () => {
     await settle();
     const frame = stripAnsi(lastFrame() ?? '');
     expect(frame).toContain('Settings');
-    expect(frame).toContain('Phase 3H.1 (read-only)');
+    expect(frame).toContain('Phase 3H.2');
     expect(frame).toContain('Model');
     expect(frame).toContain('Workers');
     expect(frame).toContain('Appearance');
@@ -159,12 +159,30 @@ describe('<SettingsPanel> (3H.1 read-only popup)', () => {
     expect(frame).toMatch(/navigate/);
   });
 
-  it('Enter on a value row surfaces a "ships in 3H.2" toast', async () => {
+  it('Enter on a readonly row (theme.name) shows an explanatory toast', async () => {
     const { stdin, lastFrame } = render(<Harness />);
+    await settle();
+    // Default selection is the first value row (modelMode). Navigate down
+    // to theme.name (3rd value row).
+    stdin.write('\x1b[B'); // ↓ to maxConcurrentWorkers
+    stdin.write('\x1b[B'); // ↓ to theme.name
     await settle();
     stdin.write('\r');
     await settle();
     const frame = stripAnsi(lastFrame() ?? '');
-    expect(frame).toContain('Editing ships in Phase 3H.2');
+    expect(frame).toMatch(/intrinsic|not editable|theme\.name/);
+  });
+
+  it('Enter on the keybindOverrides row surfaces the 3H.4 deferral toast', async () => {
+    const { stdin, lastFrame } = render(<Harness />);
+    await settle();
+    // Navigate down to keybindOverrides (last row). 8 value rows; jump
+    // to the bottom by pressing ↓ 8 times.
+    for (let i = 0; i < 8; i += 1) stdin.write('\x1b[B');
+    await settle();
+    stdin.write('\r');
+    await settle();
+    const frame = stripAnsi(lastFrame() ?? '');
+    expect(frame).toMatch(/3H\.4/);
   });
 });

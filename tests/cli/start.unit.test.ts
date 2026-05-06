@@ -364,4 +364,173 @@ describe('runStart wiring (unit)', () => {
     // Hook entry was stripped.
     expect(readFileSync(settingsPath, 'utf8')).not.toContain('SYMPHONY_HOOK_PORT');
   });
+
+  /*
+   * Phase 3H.2 commit 5 audit M3: defaultProjectPath validation
+   * branches.
+   */
+  it('threads validated defaultProjectPath into MaestroFactory deps (audit C1)', async () => {
+    const projectDir = join(sandbox, 'valid-project');
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    mkdirSync(projectDir);
+    mkdirSync(join(projectDir, '.git'));
+    writeFileSync(join(projectDir, '.git', 'HEAD'), 'ref: refs/heads/main\n', 'utf8');
+
+    const cfgFile = join(sandbox, 'symphony-config.json');
+    writeFileSync(
+      cfgFile,
+      JSON.stringify({ schemaVersion: 1, defaultProjectPath: projectDir }, null, 2),
+      'utf8',
+    );
+    const prevEnv = process.env['SYMPHONY_CONFIG_FILE'];
+    process.env['SYMPHONY_CONFIG_FILE'] = cfgFile;
+
+    try {
+      const fakeMaestro = new FakeMaestroProcess();
+      const fakeMaestroAsProcess = fakeMaestro as unknown as MaestroProcess;
+      Object.defineProperty(fakeMaestroAsProcess, 'events', {
+        value: () => fakeMaestro.eventsIter(),
+      });
+      let factoryDeps: { defaultProjectPath?: string } | undefined;
+      const handle = await runStart({
+        home,
+        cliEntryPath: '/fake/cli/entry.js',
+        io: { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() },
+        skipSignalHandlers: true,
+        rpcOverride: { descriptor: { host: '127.0.0.1', port: 0, token: 't' }, client: makeFakeRpc([]) },
+        hookServerFactory: () => new MaestroHookServer({ token: 'tok' }),
+        maestroFactory: (deps) => {
+          factoryDeps = deps;
+          return fakeMaestroAsProcess;
+        },
+        workerManager: {} as never,
+      });
+
+      expect(factoryDeps?.defaultProjectPath).toBe(projectDir);
+
+      await handle.stop();
+      await handle.done;
+    } finally {
+      if (prevEnv === undefined) delete process.env['SYMPHONY_CONFIG_FILE'];
+      else process.env['SYMPHONY_CONFIG_FILE'] = prevEnv;
+    }
+  });
+
+  it('omits defaultProjectPath when path does not exist (warn + fall through)', async () => {
+    const cfgFile = join(sandbox, 'symphony-config.json');
+    const { writeFileSync } = await import('node:fs');
+    writeFileSync(
+      cfgFile,
+      JSON.stringify(
+        { schemaVersion: 1, defaultProjectPath: join(sandbox, 'does-not-exist') },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+    const prevEnv = process.env['SYMPHONY_CONFIG_FILE'];
+    process.env['SYMPHONY_CONFIG_FILE'] = cfgFile;
+
+    try {
+      const fakeMaestro = new FakeMaestroProcess();
+      const fakeMaestroAsProcess = fakeMaestro as unknown as MaestroProcess;
+      Object.defineProperty(fakeMaestroAsProcess, 'events', {
+        value: () => fakeMaestro.eventsIter(),
+      });
+      let factoryDeps: { defaultProjectPath?: string } | undefined;
+      const stderr = new PassThrough();
+      const stderrBufs: string[] = [];
+      stderr.on('data', (chunk: Buffer) => stderrBufs.push(chunk.toString('utf8')));
+
+      const handle = await runStart({
+        home,
+        cliEntryPath: '/fake/cli/entry.js',
+        io: { stdin: new PassThrough(), stdout: new PassThrough(), stderr },
+        skipSignalHandlers: true,
+        rpcOverride: { descriptor: { host: '127.0.0.1', port: 0, token: 't' }, client: makeFakeRpc([]) },
+        hookServerFactory: () => new MaestroHookServer({ token: 'tok' }),
+        maestroFactory: (deps) => {
+          factoryDeps = deps;
+          return fakeMaestroAsProcess;
+        },
+        workerManager: {} as never,
+      });
+
+      expect(factoryDeps?.defaultProjectPath).toBeUndefined();
+      expect(stderrBufs.join('')).toMatch(/not a valid git repo/);
+
+      await handle.stop();
+      await handle.done;
+    } finally {
+      if (prevEnv === undefined) delete process.env['SYMPHONY_CONFIG_FILE'];
+      else process.env['SYMPHONY_CONFIG_FILE'] = prevEnv;
+    }
+  });
+
+  it('omits defaultProjectPath when path exists but lacks .git', async () => {
+    const projectDir = join(sandbox, 'plain-dir');
+    const { mkdirSync, writeFileSync } = await import('node:fs');
+    mkdirSync(projectDir);
+    const cfgFile = join(sandbox, 'symphony-config.json');
+    writeFileSync(
+      cfgFile,
+      JSON.stringify({ schemaVersion: 1, defaultProjectPath: projectDir }, null, 2),
+      'utf8',
+    );
+    const prevEnv = process.env['SYMPHONY_CONFIG_FILE'];
+    process.env['SYMPHONY_CONFIG_FILE'] = cfgFile;
+
+    try {
+      const fakeMaestro = new FakeMaestroProcess();
+      const fakeMaestroAsProcess = fakeMaestro as unknown as MaestroProcess;
+      Object.defineProperty(fakeMaestroAsProcess, 'events', {
+        value: () => fakeMaestro.eventsIter(),
+      });
+      let factoryDeps: { defaultProjectPath?: string } | undefined;
+      const handle = await runStart({
+        home,
+        cliEntryPath: '/fake/cli/entry.js',
+        io: { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() },
+        skipSignalHandlers: true,
+        rpcOverride: { descriptor: { host: '127.0.0.1', port: 0, token: 't' }, client: makeFakeRpc([]) },
+        hookServerFactory: () => new MaestroHookServer({ token: 'tok' }),
+        maestroFactory: (deps) => {
+          factoryDeps = deps;
+          return fakeMaestroAsProcess;
+        },
+        workerManager: {} as never,
+      });
+      expect(factoryDeps?.defaultProjectPath).toBeUndefined();
+      await handle.stop();
+      await handle.done;
+    } finally {
+      if (prevEnv === undefined) delete process.env['SYMPHONY_CONFIG_FILE'];
+      else process.env['SYMPHONY_CONFIG_FILE'] = prevEnv;
+    }
+  });
+
+  it('omits defaultProjectPath when config does not set it', async () => {
+    const fakeMaestro = new FakeMaestroProcess();
+    const fakeMaestroAsProcess = fakeMaestro as unknown as MaestroProcess;
+    Object.defineProperty(fakeMaestroAsProcess, 'events', {
+      value: () => fakeMaestro.eventsIter(),
+    });
+    let factoryDeps: { defaultProjectPath?: string } | undefined;
+    const handle = await runStart({
+      home,
+      cliEntryPath: '/fake/cli/entry.js',
+      io: { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() },
+      skipSignalHandlers: true,
+      rpcOverride: { descriptor: { host: '127.0.0.1', port: 0, token: 't' }, client: makeFakeRpc([]) },
+      hookServerFactory: () => new MaestroHookServer({ token: 'tok' }),
+      maestroFactory: (deps) => {
+        factoryDeps = deps;
+        return fakeMaestroAsProcess;
+      },
+      workerManager: {} as never,
+    });
+    expect(factoryDeps?.defaultProjectPath).toBeUndefined();
+    await handle.stop();
+    await handle.done;
+  });
 });

@@ -269,5 +269,115 @@ function describeError(cause: unknown): string {
   return String(cause);
 }
 
+/**
+ * Phase 3H.2 — patch shape consumed by `applyPatchToDisk`. Mirrors the
+ * React-side `SymphonyConfigPatch` from `config-context.tsx` so the
+ * server-side RPC procedures and the TUI in-process setter feed the
+ * same merge function. Top-level keys shallow-replace; the two nested
+ * object fields (`theme`, `notifications`) merge partial-deep.
+ *
+ * `defaultProjectPath: null` clears the optional field; `undefined`
+ * is the no-op. `keybindOverrides` replaces the entire record.
+ */
+export interface SymphonyConfigPatch {
+  readonly modelMode?: SymphonyConfig['modelMode'];
+  readonly maxConcurrentWorkers?: SymphonyConfig['maxConcurrentWorkers'];
+  readonly notifications?: Partial<SymphonyConfig['notifications']>;
+  readonly theme?: Partial<SymphonyConfig['theme']>;
+  readonly defaultProjectPath?: SymphonyConfig['defaultProjectPath'] | null;
+  readonly leaderTimeoutMs?: SymphonyConfig['leaderTimeoutMs'];
+  readonly keybindOverrides?: SymphonyConfig['keybindOverrides'];
+}
+
+/**
+ * Phase 3H.2 — single-writer helper that serializes config writes within
+ * THIS process. Reads disk fresh each call (no in-memory cache),
+ * merges the patch, Zod-validates, and atomic-writes.
+ *
+ * Patch can be either a static `SymphonyConfigPatch` OR a function
+ * `(current) => SymphonyConfigPatch`. The function form runs INSIDE the
+ * serialized queue — after the fresh disk read — so rapid-fire callers
+ * (e.g. `<leader>m m`) compute against the just-committed value rather
+ * than a stale React render. Audit C2 (3H.2 commit 5 review).
+ *
+ * Two-process safety: this serializer covers concurrent calls inside ONE
+ * process. Symphony's 3H.2 architecture funnels all writes through the
+ * TUI's `<ConfigProvider>` (which calls this helper). The RPC handler
+ * `mode.setModel` exists for future remote clients but is intentionally
+ * NOT called by the in-process TUI — that keeps multi-writer races out
+ * of 3H.2's critical path. Cross-process locking (POSIX `flock` / Win32
+ * advisory locks) is a follow-up phase concern when remote clients land.
+ *
+ * On Zod validation failure, throws BEFORE touching disk; the queue
+ * advances and the next caller sees the previous-on-disk state.
+ */
+let writeQueue: Promise<unknown> = Promise.resolve();
+
+export type SymphonyConfigPatchFn = (current: SymphonyConfig) => SymphonyConfigPatch;
+
+export async function applyPatchToDisk(
+  patch: SymphonyConfigPatch | SymphonyConfigPatchFn,
+  filePath?: string,
+): Promise<LoadResult> {
+  const next = writeQueue.then(() => doApplyPatch(patch, filePath));
+  // Don't let one rejection poison the queue — subsequent calls must
+  // still serialize, not skip ahead.
+  writeQueue = next.catch(() => undefined);
+  return next;
+}
+
+async function doApplyPatch(
+  patch: SymphonyConfigPatch | SymphonyConfigPatchFn,
+  filePath?: string,
+): Promise<LoadResult> {
+  const resolved = filePath !== undefined ? path.resolve(filePath) : configFilePath();
+  const current = await loadConfig(resolved);
+  // Function-patch resolves AGAINST the fresh disk read — closes the
+  // rapid-fire stale-state race that ref-mirroring alone can't (audit C2).
+  const resolvedPatch = typeof patch === 'function' ? patch(current.config) : patch;
+  const merged = mergePatch(current.config, resolvedPatch);
+  // Use the schema's parse so out-of-range integers / unknown enums throw
+  // BEFORE we hit `saveConfig`. Zod is the single source of truth for
+  // field bounds.
+  const { SymphonyConfigSchema } = await import('./config-schema.js');
+  const next: SymphonyConfig = SymphonyConfigSchema.parse(merged);
+  await saveConfig(next, resolved);
+  return {
+    config: next,
+    source: { kind: 'file', path: resolved, warnings: [] },
+  };
+}
+
+function mergePatch(current: SymphonyConfig, patch: SymphonyConfigPatch): SymphonyConfig {
+  const next: SymphonyConfig = { ...current };
+  if (patch.modelMode !== undefined) next.modelMode = patch.modelMode;
+  if (patch.maxConcurrentWorkers !== undefined) next.maxConcurrentWorkers = patch.maxConcurrentWorkers;
+  if (patch.leaderTimeoutMs !== undefined) next.leaderTimeoutMs = patch.leaderTimeoutMs;
+  if (patch.notifications !== undefined) {
+    next.notifications = { ...current.notifications, ...patch.notifications };
+  }
+  if (patch.theme !== undefined) {
+    next.theme = { ...current.theme, ...patch.theme };
+  }
+  if (patch.keybindOverrides !== undefined) next.keybindOverrides = patch.keybindOverrides;
+  if ('defaultProjectPath' in patch) {
+    if (patch.defaultProjectPath === null) {
+      delete next.defaultProjectPath;
+    } else if (patch.defaultProjectPath !== undefined) {
+      next.defaultProjectPath = patch.defaultProjectPath;
+    }
+  }
+  return next;
+}
+
+/**
+ * Test seam — reset the in-process write queue between unit tests so
+ * one test's pending write doesn't leak into the next test's setup.
+ * Production callers MUST NOT call this.
+ */
+export function _resetConfigWriteQueue(): void {
+  writeQueue = Promise.resolve();
+}
+
 export { defaultConfig, parseConfig, CURRENT_SCHEMA_VERSION };
 export type { SymphonyConfig } from './config-schema.js';

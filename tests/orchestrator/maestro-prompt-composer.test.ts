@@ -31,6 +31,7 @@ Current project context:
 - Preview command: {preview_command}
 - Tools: {available_tools}
 - Warmth: {maestro_warmth}
+- Model mode: {model_mode}
 
 Example JSON spec (must NOT have its braces touched): { "key": "value", "n": 7 }
 
@@ -55,6 +56,7 @@ const VARS: MaestroPromptVars = {
   previewCommand: 'pnpm dev',
   availableTools: 'see §Modes',
   maestroWarmth: 'middle',
+  modelMode: 'mixed',
 };
 
 beforeEach(() => {
@@ -84,6 +86,16 @@ describe('composeMaestroPrompt', () => {
     expect(result).toContain('Preview command: pnpm dev');
     expect(result).toContain('Tools: see §Modes');
     expect(result).toContain('Warmth: middle');
+    expect(result).toContain('Model mode: mixed');
+  });
+
+  it('substitutes {model_mode} to "opus" when set (Phase 3H.2 audit M5)', () => {
+    const result = composeMaestroPrompt(
+      { ...VARS, modelMode: 'opus' },
+      { promptsDir },
+    );
+    expect(result).toContain('Model mode: opus');
+    expect(result).not.toContain('Model mode: mixed');
   });
 
   it('strips header commentary and trailing iteration notes (BEGIN/END markers only)', () => {

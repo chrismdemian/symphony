@@ -1,6 +1,7 @@
-import React, { useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo } from 'react';
 import { Box } from 'ink';
-import { ThemeProvider } from './theme/context.js';
+import { ThemeProvider, useThemeController } from './theme/context.js';
+import { pickThemeJson } from './theme/theme.js';
 import { FocusProvider, useFocus } from './focus/focus.js';
 import { KeybindProvider } from './keybinds/dispatcher.js';
 import { buildGlobalCommands } from './keybinds/global.js';
@@ -17,7 +18,7 @@ import {
 } from './data/MaestroEventsProvider.js';
 import { AppActionsProvider } from './runtime/AppActions.js';
 import { ToastProvider, useToast } from './feedback/ToastProvider.js';
-import { ConfigProvider } from '../utils/config-context.js';
+import { ConfigProvider, useConfig } from '../utils/config-context.js';
 import type { TuiRpc } from './runtime/rpc.js';
 
 /**
@@ -94,11 +95,24 @@ function ToastBoundConfigProvider(props: { readonly children: React.ReactNode })
 function AppShell(props: AppProps): React.JSX.Element {
   const focus = useFocus();
   const { showToast } = useToast();
+  const { config } = useConfig();
   const { projects } = useProjects(props.rpc);
   const workersResult = useWorkers(props.rpc);
   const { mode } = useMode(props.rpc);
   const questionsResult = useQuestions(props.rpc);
   const { sessionId } = useMaestroData();
+
+  // Phase 3H.2 — own the probe-driven theme swap from inside the
+  // config-aware tree. ThemeProvider initializes truecolor; this effect
+  // runs on mount AND on every `config.theme.autoFallback16Color`
+  // change to swap to 16-color when the probe says so. `setThemeJson`
+  // is identity-stable across the provider's lifetime so the dep
+  // array doesn't churn with every render (audit M1).
+  const { setThemeJson } = useThemeController();
+  const autoFallback = config.theme.autoFallback16Color;
+  useEffect(() => {
+    setThemeJson(pickThemeJson(autoFallback));
+  }, [autoFallback, setThemeJson]);
 
   // Phase 3H.1 — `--initial-popup`/`symphony config` entry point.
   // Fires exactly once after mount. The ref-guard handles the StrictMode
@@ -111,6 +125,53 @@ function AppShell(props: AppProps): React.JSX.Element {
     initialPopupFiredRef.current = true;
     focus.pushPopup(initialPopupKey);
   }, [initialPopupKey, focus.pushPopup]);
+
+  // Phase 3H.2 — real `<leader>m` and `<leader>t` handlers. Each
+  // calls `setConfig` with a function-patch (audit C2 fix), surfaces a
+  // toast, and either rejects via try/catch (Zod validation should
+  // never trigger here, but we toast any unexpected failure rather
+  // than silently dropping).
+  //
+  // Audit M1 (3H.2 commit 5): both toasts honestly advertise the
+  // "applies on next start" semantics. `globalModelMode` is captured
+  // at orchestrator boot via `loadConfig` (`server.ts`); the disk
+  // write is immediate, but the orchestrator's `getDefaultModel`
+  // closure stays bound to the boot-time value until restart. Theme
+  // fallback DOES apply mid-session via the AppShell effect — the
+  // toast reflects that. Don't promise immediate effect for modelMode.
+  const { setConfig } = useConfig();
+  const cycleModelMode = useCallback(async () => {
+    try {
+      // Function-patch resolves against the freshly-committed state
+      // INSIDE the setConfig serialization queue (audit C2). Two
+      // rapid-fire `<leader>m m` chord presses each see the
+      // post-flip value rather than the same stale render capture.
+      const next = await setConfig((current) => ({
+        modelMode: current.modelMode === 'opus' ? 'mixed' : 'opus',
+      }));
+      showToast(`Model mode: ${next.modelMode} (applies on next start).`, {
+        tone: 'info',
+        ttlMs: 4_000,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Model mode change failed: ${msg}`, { tone: 'error' });
+    }
+  }, [setConfig, showToast]);
+
+  const toggleThemeFallback = useCallback(async () => {
+    try {
+      const next = await setConfig((current) => ({
+        theme: { autoFallback16Color: !current.theme.autoFallback16Color },
+      }));
+      showToast(`Theme fallback: ${next.theme.autoFallback16Color ? 'on' : 'off'}.`, {
+        tone: 'info',
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Theme fallback change failed: ${msg}`, { tone: 'error' });
+    }
+  }, [setConfig, showToast]);
 
   const commands = useMemo(
     () =>
@@ -125,6 +186,8 @@ function AppShell(props: AppProps): React.JSX.Element {
           openQuestions: () => focus.pushPopup('question'),
           openQuestionHistory: () => focus.pushPopup('question-history'),
           showLeaderToast: (message) => showToast(message, { tone: 'info' }),
+          cycleModelMode,
+          toggleThemeFallback,
           // Phase 3H.1 — Ctrl+, opens settings; palette-only command
           // `app.configEdit` shows a toast for now (the actual $EDITOR
           // spawn lives in the CLI subcommand, not the in-TUI handler —
@@ -151,11 +214,13 @@ function AppShell(props: AppProps): React.JSX.Element {
       questionsResult.count,
       workersResult.workers.length,
       showToast,
+      cycleModelMode,
+      toggleThemeFallback,
     ],
   );
 
   return (
-    <KeybindProvider initialCommands={commands}>
+    <KeybindProvider initialCommands={commands} leaderTimeoutMs={config.leaderTimeoutMs}>
       <Box flexDirection="column" width="100%" height="100%">
         <Layout
           version={props.version}

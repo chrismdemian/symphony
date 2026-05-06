@@ -23,6 +23,7 @@ import {
 } from '../orchestrator/maestro/index.js';
 import { runTui } from '../ui/runtime/runTui.js';
 import type { TuiRpc } from '../ui/runtime/rpc.js';
+import { loadConfig } from '../utils/config.js';
 
 const SYMPHONY_VERSION = '0.0.0';
 
@@ -108,6 +109,12 @@ export type MaestroFactory = (deps: {
   nodeBinary: string;
   home?: string;
   inMemory?: boolean;
+  /**
+   * Phase 3H.2 — when set, threaded into Maestro's MCP child as
+   * `--default-project <path>` so worker spawns resolve into the user's
+   * project, not Maestro's workspace.
+   */
+  defaultProjectPath?: string;
 }) => MaestroProcess;
 
 export interface RunStartHandle {
@@ -193,6 +200,40 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
     });
   }
 
+  // ── 0. Read config snapshot once (audit m1) ────────────────────────────
+  // Both the modelMode injection (Maestro prompt) and the
+  // defaultProjectPath validation read config. One disk read serves
+  // both — eliminates a TOCTOU window where the user could edit the
+  // file between the two reads.
+  let bootConfig: Awaited<ReturnType<typeof loadConfig>> | undefined;
+  try {
+    bootConfig = await loadConfig();
+  } catch {
+    // loadConfig is documented to never throw; defense-in-depth.
+  }
+  const modelMode = bootConfig?.config.modelMode ?? 'mixed';
+
+  // Phase 3H.2 — boot-time defaultProjectPath validation. Audit C1
+  // (commit 5): the validated path must reach BOTH the bootstrap
+  // mcp-server (so projects.list registers it) AND Maestro's MCP
+  // child (so spawn_worker resolves into it). Validation runs once
+  // and the result is shared by both subprocesses.
+  let validatedDefaultProject: string | undefined;
+  const candidatePath = bootConfig?.config.defaultProjectPath;
+  if (candidatePath !== undefined && candidatePath.length > 0) {
+    const resolved = path.resolve(candidatePath);
+    const gitMarker = path.join(resolved, '.git');
+    const dirOk = (await fsp.stat(resolved).catch(() => undefined))?.isDirectory() ?? false;
+    const gitOk = (await fsp.stat(gitMarker).catch(() => undefined)) !== undefined;
+    if (dirOk && gitOk) {
+      validatedDefaultProject = resolved;
+    } else {
+      log(
+        `defaultProjectPath '${candidatePath}' is not a valid git repo — falling back to cwd`,
+      );
+    }
+  }
+
   // ── 1. Bootstrap mcp-server subprocess ─────────────────────────────────
   let rpcDescriptorPath: string | undefined;
   let rpc: LauncherRpc;
@@ -223,6 +264,9 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
       rpcDescriptorPath,
     ];
     if (options.inMemory === true) bootstrapArgs.push('--in-memory');
+    if (validatedDefaultProject !== undefined) {
+      bootstrapArgs.push('--default-project', validatedDefaultProject);
+    }
     const loggedArgs = prependTsxLoaderIfTs(bootstrapArgs);
     log(`spawning bootstrap mcp-server: ${nodeBinary} ${loggedArgs.join(' ')}`);
 
@@ -367,6 +411,13 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
   };
   if (options.home !== undefined) maestroFactoryDeps.home = options.home;
   if (options.inMemory === true) maestroFactoryDeps.inMemory = true;
+  // Audit C1 (3H.2 commit 5): the validated default project must reach
+  // Maestro's MCP child, not just the bootstrap. Bootstrap handles
+  // `projects.list`; Maestro's child is the one that resolves
+  // `spawn_worker` calls into a project path.
+  if (validatedDefaultProject !== undefined) {
+    maestroFactoryDeps.defaultProjectPath = validatedDefaultProject;
+  }
   const maestro = (options.maestroFactory ?? defaultMaestroFactory)(maestroFactoryDeps);
   cleanup.push({
     label: 'kill Maestro',
@@ -410,6 +461,7 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
     previewCommand: '',
     availableTools: '',
     maestroWarmth: '',
+    modelMode,
   };
 
   // Audit M5: wire `maestro.on('error', ...)` so a fatal Maestro error
@@ -637,6 +689,7 @@ const defaultMaestroFactory: MaestroFactory = (deps) => {
   };
   if (deps.home !== undefined) processDeps.home = deps.home;
   if (deps.inMemory === true) processDeps.inMemory = true;
+  if (deps.defaultProjectPath !== undefined) processDeps.defaultProjectPath = deps.defaultProjectPath;
   return new MaestroProcess(processDeps);
 };
 

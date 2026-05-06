@@ -71,6 +71,46 @@ export interface WorkerLifecycleOptions {
    * a misbehaving consumer can't poison the lifecycle.
    */
   readonly onEvent?: (workerId: string, event: StreamEvent) => void;
+  /**
+   * Phase 3H.2 — per-project worker concurrency cap. When set, `spawn`
+   * gates new workers: under-cap → spawn immediately; at-cap → queue
+   * with backpressure and resolve when a slot frees (a running worker
+   * completes / fails / is killed). Returns `Infinity` (no cap) when
+   * undefined or returns a non-positive value.
+   *
+   * Sync because `readSymphonyConfig` (the per-project source) is sync
+   * and the global value is a snapshot at server startup. Cap changes
+   * during a session require restart — same shape as `modelMode`. See
+   * `server.ts`'s `getMaxConcurrentWorkers` constructor for the
+   * project-vs-global lookup.
+   */
+  readonly getMaxConcurrentWorkers?: (projectPath: string) => number;
+  /**
+   * Phase 3H.2 — default model when `input.model === undefined`. The
+   * server wires this to return `'claude-opus-4-7'` when the user's
+   * `modelMode === 'opus'`; when `'mixed'`, returns undefined and
+   * Maestro's explicit per-task `model` arg drives the choice
+   * (matching the prompt's "Always pass `model:` explicitly" rule).
+   * Caller-provided `input.model` ALWAYS wins.
+   */
+  readonly getDefaultModel?: () => string | undefined;
+}
+
+/**
+ * Phase 3H.2 — snapshot of the queue state for one project. Phase 3L
+ * panel reads this to render the queued task list. `running` is the
+ * number of workers currently in `spawning` or `running` state for the
+ * project; `capacity` is the cap (`Infinity` means uncapped); `pending`
+ * is the queued spawn requests in FIFO order.
+ */
+export interface QueueSnapshot {
+  readonly running: number;
+  readonly capacity: number;
+  readonly pending: ReadonlyArray<{
+    readonly recordId: string;
+    readonly featureIntent: string;
+    readonly taskDescription: string;
+  }>;
 }
 
 export interface RecoveryReport {
@@ -105,10 +145,27 @@ export interface WorkerLifecycleHandle {
    * broker regardless of who constructed the lifecycle.
    */
   setOnEvent(callback: ((workerId: string, event: StreamEvent) => void) | undefined): void;
+  /**
+   * Phase 3H.2 — current queue state for `projectPath`. Returns
+   * `{running: 0, capacity: Infinity, pending: []}` when uncapped or
+   * the project has no in-flight workers. Phase 3L panel consumer.
+   */
+  getQueueSnapshot(projectPath: string): QueueSnapshot;
 }
 
 function defaultIdGenerator(): string {
   return `wk-${randomBytes(4).toString('hex')}`;
+}
+
+/**
+ * Phase 3H.2 — internal queued-spawn entry. Holds the original input
+ * and the deferred resolver/rejector for the caller's promise.
+ */
+interface PendingSpawn {
+  readonly recordId: string;
+  readonly input: SpawnWorkerInput;
+  readonly resolve: (record: WorkerRecord) => void;
+  readonly reject: (err: Error) => void;
 }
 
 function nowIso(now: () => number): string {
@@ -177,8 +234,72 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
   };
   const inflight = new Map<string, Promise<WorkerRecord>>();
 
+  // Phase 3H.2 — concurrency cap state. Counts running spawns per
+  // project; queued spawns block until a slot frees. The counter
+  // increments at the start of `doSpawn` (after the cap check) and
+  // decrements when (a) `doSpawn` itself fails before producing a
+  // record, or (b) a successfully-spawned worker exits via wireExit.
+  // `pendingPerProject` holds queued requests in FIFO order.
+  const runningPerProject = new Map<string, number>();
+  const pendingPerProject = new Map<string, PendingSpawn[]>();
+
   function inflightKey(recordId: string, projectPath: string): string {
     return `${recordId}::${projectPath}`;
+  }
+
+  function getCap(projectPath: string): number {
+    if (opts.getMaxConcurrentWorkers === undefined) return Number.POSITIVE_INFINITY;
+    const cap = opts.getMaxConcurrentWorkers(projectPath);
+    // Audit m1: require integer in addition to finite + >= 1. A future
+    // option-injecting caller passing 2.5 would otherwise bend the
+    // running counter against a fractional cap.
+    if (!Number.isFinite(cap) || !Number.isInteger(cap) || cap < 1) {
+      return Number.POSITIVE_INFINITY;
+    }
+    return cap;
+  }
+
+  function incRunning(projectPath: string): void {
+    runningPerProject.set(projectPath, (runningPerProject.get(projectPath) ?? 0) + 1);
+  }
+
+  function decRunning(projectPath: string): void {
+    const cur = runningPerProject.get(projectPath) ?? 0;
+    if (cur <= 1) runningPerProject.delete(projectPath);
+    else runningPerProject.set(projectPath, cur - 1);
+  }
+
+  // Drain pending spawns for a project up to its capacity. Called after
+  // a slot frees (worker exits OR doSpawn rejects). Pending entries
+  // whose AbortSignal has fired since they were queued are rejected
+  // synchronously and the loop continues — they never count against
+  // the cap.
+  function drain(projectPath: string): void {
+    const cap = getCap(projectPath);
+    const list = pendingPerProject.get(projectPath);
+    if (list === undefined || list.length === 0) return;
+    while (list.length > 0) {
+      const running = runningPerProject.get(projectPath) ?? 0;
+      if (running >= cap) break;
+      const next = list.shift()!;
+      // Aborted while queued — fail without consuming a slot.
+      if (next.input.signal !== undefined && next.input.signal.aborted) {
+        next.reject(new Error(`spawn_worker aborted while queued (recordId=${next.recordId})`));
+        continue;
+      }
+      // Synchronously reserve the slot to prevent another concurrent
+      // drain/spawn from racing in. doSpawn is responsible for
+      // decrementing on failure.
+      incRunning(projectPath);
+      const promise = doSpawn(next.recordId, next.input).finally(() => {
+        if (inflight.get(inflightKey(next.recordId, next.input.projectPath)) === promise) {
+          inflight.delete(inflightKey(next.recordId, next.input.projectPath));
+        }
+      });
+      inflight.set(inflightKey(next.recordId, next.input.projectPath), promise);
+      promise.then(next.resolve, next.reject);
+    }
+    if (list.length === 0) pendingPerProject.delete(projectPath);
   }
 
   async function spawn(input: SpawnWorkerInput): Promise<WorkerRecord> {
@@ -187,6 +308,65 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
     const existing = inflight.get(key);
     if (existing !== undefined) return existing;
 
+    // Audit C1 (3H.2 review): if `signal` is ALREADY aborted before
+    // we register the listener, WHATWG fires no `abort` event. Reject
+    // synchronously so a pre-aborted spawn that would queue doesn't
+    // hang forever waiting for a worker exit to drain it.
+    if (input.signal !== undefined && input.signal.aborted) {
+      throw new Error(`spawn_worker aborted before queue (recordId=${recordId})`);
+    }
+
+    // Audit M3 (3H.2 review): close the dedup gap during the queue
+    // window. The immediate-spawn path stores the in-flight promise in
+    // `inflight` AT REGISTRATION; a concurrent `spawn` with the same
+    // recordId reuses it. The queue path also needs that. We allocate
+    // a deferred Promise + resolver, store it in `inflight` immediately,
+    // and resolve it from drain when the spawn lands.
+    let queuedResolve: ((record: WorkerRecord) => void) | undefined;
+    let queuedReject: ((err: Error) => void) | undefined;
+
+    // Phase 3H.2 — cap gate. If at capacity, queue and return a
+    // promise that resolves when drain picks up this request.
+    const cap = getCap(input.projectPath);
+    const running = runningPerProject.get(input.projectPath) ?? 0;
+    if (running >= cap) {
+      const queuedPromise = new Promise<WorkerRecord>((resolve, reject) => {
+        queuedResolve = resolve;
+        queuedReject = reject;
+        const list = pendingPerProject.get(input.projectPath) ?? [];
+        const entry: PendingSpawn = { recordId, input, resolve, reject };
+        list.push(entry);
+        pendingPerProject.set(input.projectPath, list);
+        // Cancel-on-abort: remove from queue + reject. Never spawns.
+        if (input.signal !== undefined) {
+          const onAbort = (): void => {
+            const cur = pendingPerProject.get(input.projectPath);
+            if (cur !== undefined) {
+              const idx = cur.indexOf(entry);
+              if (idx !== -1) {
+                cur.splice(idx, 1);
+                if (cur.length === 0) pendingPerProject.delete(input.projectPath);
+              }
+            }
+            // Always reject — covers both "still queued" and the
+            // (edge) case where drain already pulled the entry but
+            // its inner doSpawn hasn't progressed yet (doSpawn checks
+            // signal.aborted itself and rejects there).
+            reject(new Error(`spawn_worker aborted while queued (recordId=${recordId})`));
+          };
+          input.signal.addEventListener('abort', onAbort, { once: true });
+        }
+      });
+      inflight.set(key, queuedPromise);
+      queuedPromise
+        .finally(() => {
+          if (inflight.get(key) === queuedPromise) inflight.delete(key);
+        })
+        .catch(() => {});
+      return queuedPromise;
+    }
+
+    incRunning(input.projectPath);
     const promise = doSpawn(recordId, input);
     inflight.set(key, promise);
     promise
@@ -197,67 +377,103 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         // caller observes rejection
       });
     return promise;
+    // queuedResolve/queuedReject reference avoids "declared but never used"
+    // when the cap branch isn't taken — they're closure-only.
+    void queuedResolve;
+    void queuedReject;
   }
 
   async function doSpawn(recordId: string, input: SpawnWorkerInput): Promise<WorkerRecord> {
-    if (registry.has(recordId)) {
-      throw new Error(`worker '${recordId}' already registered`);
-    }
-    // Fast-fail if already aborted — don't touch the filesystem.
-    if (input.signal !== undefined && input.signal.aborted) {
-      throw new Error(`spawn_worker aborted before worktree creation (recordId=${recordId})`);
-    }
-    const featureIntent = input.featureIntent ?? deriveFeatureIntent(input.taskDescription);
-    const worktree = await worktreeManager.create({
-      projectPath: input.projectPath,
-      workerId: recordId,
-      shortDescription: featureIntent,
-    });
-    if (input.signal !== undefined && input.signal.aborted) {
-      throw new Error(`spawn_worker aborted after worktree creation (recordId=${recordId})`);
-    }
+    // Phase 3H.2: doSpawn ASSUMES the caller has already incremented
+    // runningPerProject (either `spawn` for the immediate path or
+    // `drain` for the queued path). On failure here, we decrement +
+    // drain so a queued sibling can take the slot.
+    let succeeded = false;
+    try {
+      if (registry.has(recordId)) {
+        throw new Error(`worker '${recordId}' already registered`);
+      }
+      // Fast-fail if already aborted — don't touch the filesystem.
+      if (input.signal !== undefined && input.signal.aborted) {
+        throw new Error(`spawn_worker aborted before worktree creation (recordId=${recordId})`);
+      }
+      const featureIntent = input.featureIntent ?? deriveFeatureIntent(input.taskDescription);
+      const worktree = await worktreeManager.create({
+        projectPath: input.projectPath,
+        workerId: recordId,
+        shortDescription: featureIntent,
+      });
+      if (input.signal !== undefined && input.signal.aborted) {
+        throw new Error(`spawn_worker aborted after worktree creation (recordId=${recordId})`);
+      }
 
-    const buffer = new CircularBuffer<StreamEvent>(bufferCap);
-    const cfg: WorkerConfig = {
-      id: recordId,
-      cwd: worktree.path,
-      prompt: input.taskDescription,
-      keepStdinOpen: true,
-      deterministicUuidInput: `${recordId}::${worktree.path}`,
-      ...(input.signal !== undefined ? { signal: input.signal } : {}),
-      ...(input.model !== undefined ? { model: input.model } : {}),
-      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
-    };
+      // Phase 3H.2 — resolve model: caller-provided wins; otherwise the
+      // server's `getDefaultModel` (driven by `modelMode`) supplies the
+      // default. The resolved value is recorded on the WorkerRecord so
+      // SQL persistence reflects the model the worker actually ran on.
+      const resolvedModel = input.model ?? opts.getDefaultModel?.();
+      const buffer = new CircularBuffer<StreamEvent>(bufferCap);
+      const cfg: WorkerConfig = {
+        id: recordId,
+        cwd: worktree.path,
+        prompt: input.taskDescription,
+        keepStdinOpen: true,
+        deterministicUuidInput: `${recordId}::${worktree.path}`,
+        ...(input.signal !== undefined ? { signal: input.signal } : {}),
+        ...(resolvedModel !== undefined ? { model: resolvedModel } : {}),
+        ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+      };
 
-    // Worktree is created before spawn. If workerManager.spawn throws, we
-    // intentionally leave the worktree in place for post-mortem. Cleaning
-    // it up is a 2A.4 `finalize` concern, not ours.
-    const worker = await workerManager.spawn(cfg);
+      // Worktree is created before spawn. If workerManager.spawn throws, we
+      // intentionally leave the worktree in place for post-mortem. Cleaning
+      // it up is a 2A.4 `finalize` concern, not ours.
+      const worker = await workerManager.spawn(cfg);
 
-    const record: WorkerRecord = {
-      id: recordId,
-      projectPath: input.projectPath,
-      projectId: input.projectId ?? null,
-      taskId: input.taskId ?? null,
-      worktreePath: worktree.path,
-      role: input.role,
-      featureIntent,
-      taskDescription: input.taskDescription,
-      autonomyTier: input.autonomyTier ?? 1,
-      dependsOn: input.dependsOn ?? [],
-      status: 'spawning',
-      createdAt: nowIso(now),
-      worker,
-      buffer,
-      detach: () => {},
-      ...(input.model !== undefined ? { model: input.model } : {}),
-    };
-    registry.register(record);
-    record.detach = attachEventTap(worker, buffer, registry, recordId, now, onEventRef);
-    wireExit(recordId, worker);
-    return record;
+      const record: WorkerRecord = {
+        id: recordId,
+        projectPath: input.projectPath,
+        projectId: input.projectId ?? null,
+        taskId: input.taskId ?? null,
+        worktreePath: worktree.path,
+        role: input.role,
+        featureIntent,
+        taskDescription: input.taskDescription,
+        autonomyTier: input.autonomyTier ?? 1,
+        dependsOn: input.dependsOn ?? [],
+        status: 'spawning',
+        createdAt: nowIso(now),
+        worker,
+        buffer,
+        detach: () => {},
+        ...(resolvedModel !== undefined ? { model: resolvedModel } : {}),
+      };
+      registry.register(record);
+      record.detach = attachEventTap(worker, buffer, registry, recordId, now, onEventRef);
+      wireExit(recordId, worker, input.projectPath);
+      succeeded = true;
+      return record;
+    } finally {
+      if (!succeeded) {
+        // Failed before the worker started — release the reservation
+        // synchronously and drain so a queued sibling can claim the
+        // slot. Successful spawns release in `wireExit` after the
+        // worker actually exits.
+        decRunning(input.projectPath);
+        drain(input.projectPath);
+      }
+    }
   }
 
+  /**
+   * Phase 3H.2 audit M1: `resume()` does NOT gate against the
+   * concurrency cap. Resume revives an EXISTING worker that the user
+   * (or Maestro) explicitly asked to bring back. Queueing a resume
+   * behind unrelated active workers would surprise a user who typed
+   * "resume the failed worker" expecting immediate action. Resumes
+   * still increment `runningPerProject` so the counter accurately
+   * reflects live workers (including over-cap during a resume burst);
+   * `getQueueSnapshot.running` may briefly exceed `capacity`.
+   */
   async function resume(input: ResumeWorkerInput): Promise<WorkerRecord> {
     const record = registry.get(input.recordId);
     if (!record) throw new Error(`worker '${input.recordId}' not found`);
@@ -297,21 +513,41 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
       ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
     };
 
-    const worker = await workerManager.spawn(cfg);
-    registry.replace(record.id, {
-      worker,
-      buffer: record.buffer,
-      detach: () => {},
-      ...(record.sessionId !== undefined ? { sessionId: record.sessionId } : {}),
-    });
-    const reloaded = registry.get(record.id);
-    if (!reloaded) throw new Error(`worker '${record.id}' disappeared during resume`);
-    reloaded.detach = attachEventTap(worker, reloaded.buffer, registry, record.id, now, onEventRef);
-    wireExit(record.id, worker);
-    return reloaded;
+    // Phase 3H.2: resume re-enters the running pool — count it against
+    // the cap. Failure rolls back via the catch block; success holds
+    // the slot until wireExit's release.
+    incRunning(record.projectPath);
+    let succeeded = false;
+    try {
+      const worker = await workerManager.spawn(cfg);
+      registry.replace(record.id, {
+        worker,
+        buffer: record.buffer,
+        detach: () => {},
+        ...(record.sessionId !== undefined ? { sessionId: record.sessionId } : {}),
+      });
+      const reloaded = registry.get(record.id);
+      if (!reloaded) throw new Error(`worker '${record.id}' disappeared during resume`);
+      reloaded.detach = attachEventTap(worker, reloaded.buffer, registry, record.id, now, onEventRef);
+      wireExit(record.id, worker, record.projectPath);
+      succeeded = true;
+      return reloaded;
+    } finally {
+      if (!succeeded) {
+        decRunning(record.projectPath);
+        drain(record.projectPath);
+      }
+    }
   }
 
-  function wireExit(recordId: string, worker: Worker): void {
+  function wireExit(recordId: string, worker: Worker, projectPath: string): void {
+    let released = false;
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      decRunning(projectPath);
+      drain(projectPath);
+    };
     void worker
       .waitForExit()
       .then((exitInfo) => {
@@ -319,11 +555,19 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         // and exit, the old worker's exit must not overwrite the new worker's
         // status or sessionId. Identity check on the live worker handle.
         const current = registry.get(recordId);
-        if (current === undefined || current.worker !== worker) return;
+        if (current === undefined || current.worker !== worker) {
+          // Old worker exited after replace — its slot was already
+          // re-claimed by the new worker. Don't release a slot the new
+          // one is using.
+          return;
+        }
         registry.markCompleted(recordId, exitInfo, now);
+        release();
       })
       .catch(() => {
-        // exit errors already surface on the buffer
+        // exit errors already surface on the buffer; release the slot
+        // anyway so a queued sibling can spawn.
+        release();
       });
   }
 
@@ -332,16 +576,31 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
   }
 
   /**
-   * Order: kill → await exits → clear. Reordered from the original
-   * (which cleared first) so `wireExit` can still observe the live
-   * record and call `markCompleted` — without it, clean shutdowns leave
-   * SQL rows in `running` state, indistinguishable from a true crash.
-   * The 8-second SIGKILL grace from `WorkerManager` still bounds the
-   * wait time.
+   * Order: reject queued → kill → await exits → clear. Reordered from
+   * the original (which cleared first) so `wireExit` can still observe
+   * the live record and call `markCompleted` — without it, clean
+   * shutdowns leave SQL rows in `running` state, indistinguishable
+   * from a true crash. The 8-second SIGKILL grace from `WorkerManager`
+   * still bounds the wait time.
+   *
+   * Audit M2 (3H.2 review): pending queued spawns are rejected BEFORE
+   * we kill running workers. Otherwise, a worker exit during
+   * `Promise.all(... waitForExit ...)` would call `release` →
+   * `drain`, which would pull a queued entry and spawn ANOTHER worker
+   * mid-shutdown. That worker's registration would survive the
+   * subsequent `registry.clear()` only as a process-without-record.
    */
   async function shutdown(): Promise<void> {
+    // 1. Reject every pending queued spawn — they will not get a slot.
+    for (const [projectPath, list] of pendingPerProject) {
+      while (list.length > 0) {
+        const entry = list.shift()!;
+        entry.reject(new Error(`spawn_worker aborted: lifecycle shutdown (recordId=${entry.recordId})`));
+      }
+      pendingPerProject.delete(projectPath);
+    }
     const snapshots = registry.list();
-    // 1. Kill first — sets stopIntent so classifier returns 'killed'.
+    // 2. Kill — sets stopIntent so classifier returns 'killed'.
     for (const r of snapshots) {
       try {
         r.worker.kill('SIGTERM');
@@ -349,12 +608,16 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         // best effort
       }
     }
-    // 2. Await exits — wireExit fires markCompleted; SQL store gets terminal status.
+    // 3. Await exits — wireExit fires markCompleted; SQL store gets terminal status.
     await Promise.all(
       snapshots.map((r) => r.worker.waitForExit().catch(() => {})),
     );
-    // 3. Now drop in-memory state. Rows remain in SQL.
+    // 4. Drop in-memory state. Rows remain in SQL.
     registry.clear();
+    // Defensive — wireExit's release() should have decremented every
+    // counter, but a race between an early return path and the clear
+    // could leave a stale entry. Cheap belt-and-suspenders.
+    runningPerProject.clear();
   }
 
   function recoverFromStore(): RecoveryReport {
@@ -387,7 +650,18 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
     onEventRef.current = callback;
   }
 
-  return { spawn, resume, cleanup, shutdown, recoverFromStore, setOnEvent };
+  function getQueueSnapshot(projectPath: string): QueueSnapshot {
+    const running = runningPerProject.get(projectPath) ?? 0;
+    const capacity = getCap(projectPath);
+    const pending = (pendingPerProject.get(projectPath) ?? []).map((p) => ({
+      recordId: p.recordId,
+      featureIntent: p.input.featureIntent ?? deriveFeatureIntent(p.input.taskDescription),
+      taskDescription: p.input.taskDescription,
+    }));
+    return { running, capacity, pending };
+  }
+
+  return { spawn, resume, cleanup, shutdown, recoverFromStore, setOnEvent, getQueueSnapshot };
 }
 
 /**

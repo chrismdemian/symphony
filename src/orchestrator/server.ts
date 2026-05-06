@@ -57,6 +57,8 @@ import {
 } from '../rpc/auth.js';
 import { startRpcServer, type RpcServerHandle } from '../rpc/server.js';
 import { createSymphonyRouter } from '../rpc/router-impl.js';
+import { loadConfig } from '../utils/config.js';
+import { readSymphonyConfig } from '../worktree/symphony-config.js';
 
 export interface OrchestratorServerOptions {
   transport?: Transport;
@@ -249,12 +251,62 @@ export async function startOrchestratorServer(
   // Phase 2B.2 — single broker per orchestrator. The lifecycle's tap fans
   // events into the broker; RPC clients subscribe through the dispatcher.
   const eventBroker = new WorkerEventBroker();
+  // Phase 3H.2 — concurrency cap. Resolve global default ONCE at server
+  // startup; cap changes mid-session require restart (same shape as
+  // `modelMode`'s mid-session contract). Per-project `.symphony.json`
+  // is read fresh on each gate check via `readSymphonyConfig`, so a
+  // project can adjust its own cap without orchestrator restart.
+  //
+  // Out-of-range values fall back to the global default. Schema bounds
+  // (`maxConcurrentWorkers: 1..32`) are enforced at the global config
+  // layer; per-project values clamp at the gate to avoid crashing
+  // worktree creation when a user typo'd their `.symphony.json`.
+  //
+  // Audit m7: defensive try/catch on loadConfig. Documented contract
+  // is "never throws", but a future regression in that contract
+  // shouldn't tank orchestrator boot for a config-read concern.
+  let globalMaxWorkers: number;
+  let globalModelMode: 'opus' | 'mixed';
+  try {
+    const bootGlobalConfig = await loadConfig();
+    globalMaxWorkers = bootGlobalConfig.config.maxConcurrentWorkers;
+    globalModelMode = bootGlobalConfig.config.modelMode;
+  } catch {
+    const fallback = (await import('../utils/config-schema.js')).defaultConfig();
+    globalMaxWorkers = fallback.maxConcurrentWorkers;
+    globalModelMode = fallback.modelMode;
+  }
+  // Phase 3H.2 — model mode → default-model resolver. opus → every
+  // spawn that doesn't pass an explicit `model:` runs on Opus 4.7.
+  // mixed → no default; Maestro's explicit per-task `model` arg wins
+  // (matching the v1 prompt's "Always pass model: explicitly" rule).
+  const getDefaultModel = (): string | undefined => {
+    return globalModelMode === 'opus' ? 'claude-opus-4-7' : undefined;
+  };
+  const getMaxConcurrentWorkers = (projectPath: string): number => {
+    // Audit C2: short-circuit on empty path. Otherwise
+    // `readSymphonyConfig('')` calls `path.join('', '.symphony.json')`
+    // → '.symphony.json' (relative) → `fs.readFileSync` reads from
+    // process.cwd(), which is whatever directory the orchestrator was
+    // launched from (commonly Maestro's workspace, NOT the user's
+    // project). Empty paths come from the rehydration fallback when a
+    // worker's `projectId` doesn't resolve back to a registered project.
+    if (projectPath.length === 0) return globalMaxWorkers;
+    const projectCfg = readSymphonyConfig(projectPath);
+    const v = projectCfg?.maxConcurrentWorkers;
+    if (v !== undefined && Number.isInteger(v) && v >= 1 && v <= 32) {
+      return v;
+    }
+    return globalMaxWorkers;
+  };
   const workerLifecycle =
     options.workerLifecycle ??
     createWorkerLifecycle({
       registry: workerRegistry,
       workerManager,
       worktreeManager,
+      getMaxConcurrentWorkers,
+      getDefaultModel,
       resolveProjectPath: (projectId) => {
         if (projectId === null) return '';
         for (const p of projectStore.list()) {

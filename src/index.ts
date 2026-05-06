@@ -84,12 +84,14 @@ program
   .option('--no-rpc', 'Skip starting the WebSocket RPC server (Phase 2B.2).')
   .option('--rpc-port <n>', 'Bind port for the RPC server (0 = ephemeral).', (v) => Number.parseInt(v, 10))
   .option('--rpc-token-file <path>', 'Path for the RPC descriptor JSON (default ~/.symphony/rpc.json).')
+  .option('--default-project <path>', 'Absolute path to the default project (overrides cwd).')
   .action(
     async (opts: {
       inMemory?: boolean;
       rpc?: boolean;
       rpcPort?: number;
       rpcTokenFile?: string;
+      defaultProject?: string;
     }) => {
       const { startOrchestratorServer, SymphonyDatabase } = await import('./orchestrator/index.js');
       const database = opts.inMemory ? undefined : SymphonyDatabase.open();
@@ -100,6 +102,7 @@ program
         const rpcTokenFilePath = opts.rpcTokenFile;
         handle = await startOrchestratorServer({
           ...(database !== undefined ? { database } : {}),
+          ...(opts.defaultProject !== undefined ? { defaultProjectPath: opts.defaultProject } : {}),
           rpc: rpcEnabled
             ? {
                 enabled: true,
