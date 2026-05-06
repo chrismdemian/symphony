@@ -17,6 +17,7 @@ import {
 } from './data/MaestroEventsProvider.js';
 import { AppActionsProvider } from './runtime/AppActions.js';
 import { ToastProvider, useToast } from './feedback/ToastProvider.js';
+import { ConfigProvider } from '../utils/config-context.js';
 import type { TuiRpc } from './runtime/rpc.js';
 
 /**
@@ -36,6 +37,12 @@ export interface AppProps {
   readonly version: string;
   /** Called when user triggers exit (Ctrl+C). Launcher owns the actual teardown. */
   readonly onRequestExit: () => void;
+  /**
+   * Phase 3H.1 — open a popup once on App mount (e.g. `'settings'`
+   * when invoked via `symphony config`). Fired via mount-effect in
+   * `<AppShell>` AFTER the focus provider has settled.
+   */
+  readonly initialPopup?: string;
 }
 
 export function App(props: AppProps): React.JSX.Element {
@@ -46,17 +53,41 @@ export function App(props: AppProps): React.JSX.Element {
   return (
     <ThemeProvider>
       <ToastProvider>
-        <FocusProvider>
-          <AppActionsProvider value={actions}>
-            <WorkerSelectionProvider>
-              <MaestroEventsProvider source={props.maestro}>
-                <AppShell {...props} />
-              </MaestroEventsProvider>
-            </WorkerSelectionProvider>
-          </AppActionsProvider>
-        </FocusProvider>
+        {/*
+         * 3H.1: ConfigProvider mounts INSIDE ToastProvider so it can
+         * surface load warnings via toast on mount, but OUTSIDE
+         * FocusProvider/MaestroEventsProvider/etc. so the popup-scoped
+         * SettingsPanel and the App-level keybind handler can both read
+         * config from a single source. Initial load is async; defaults
+         * fill until the file resolves (~5ms in practice).
+         */}
+        <ToastBoundConfigProvider>
+          <FocusProvider>
+            <AppActionsProvider value={actions}>
+              <WorkerSelectionProvider>
+                <MaestroEventsProvider source={props.maestro}>
+                  <AppShell {...props} />
+                </MaestroEventsProvider>
+              </WorkerSelectionProvider>
+            </AppActionsProvider>
+          </FocusProvider>
+        </ToastBoundConfigProvider>
       </ToastProvider>
     </ThemeProvider>
+  );
+}
+
+/**
+ * Internal helper — wires `<ConfigProvider>`'s warning sink to the
+ * toast tray. Lives inline rather than as an external file because it
+ * only exists to bridge the two providers' callback shapes.
+ */
+function ToastBoundConfigProvider(props: { readonly children: React.ReactNode }): React.JSX.Element {
+  const { showToast } = useToast();
+  return (
+    <ConfigProvider onWarning={(message) => showToast(message, { tone: 'warning', ttlMs: 6_000 })}>
+      {props.children}
+    </ConfigProvider>
   );
 }
 
@@ -68,6 +99,18 @@ function AppShell(props: AppProps): React.JSX.Element {
   const { mode } = useMode(props.rpc);
   const questionsResult = useQuestions(props.rpc);
   const { sessionId } = useMaestroData();
+
+  // Phase 3H.1 — `--initial-popup`/`symphony config` entry point.
+  // Fires exactly once after mount. The ref-guard handles the StrictMode
+  // double-invoke in development without re-pushing the popup.
+  const initialPopupFiredRef = React.useRef(false);
+  const initialPopupKey = props.initialPopup;
+  React.useEffect(() => {
+    if (initialPopupFiredRef.current) return;
+    if (initialPopupKey === undefined) return;
+    initialPopupFiredRef.current = true;
+    focus.pushPopup(initialPopupKey);
+  }, [initialPopupKey, focus.pushPopup]);
 
   const commands = useMemo(
     () =>
@@ -82,6 +125,18 @@ function AppShell(props: AppProps): React.JSX.Element {
           openQuestions: () => focus.pushPopup('question'),
           openQuestionHistory: () => focus.pushPopup('question-history'),
           showLeaderToast: (message) => showToast(message, { tone: 'info' }),
+          // Phase 3H.1 — Ctrl+, opens settings; palette-only command
+          // `app.configEdit` shows a toast for now (the actual $EDITOR
+          // spawn lives in the CLI subcommand, not the in-TUI handler —
+          // a running TUI inheriting stdio would conflict with the
+          // editor's claim on the terminal). The toast tells the user
+          // to run `symphony config --edit` from a separate shell.
+          openSettings: () => focus.pushPopup('settings'),
+          openSettingsEdit: () =>
+            showToast(
+              'Run `symphony config --edit` from a shell to edit ~/.symphony/config.json in $EDITOR.',
+              { tone: 'info', ttlMs: 5_000 },
+            ),
         },
         {
           questionsCount: questionsResult.count,

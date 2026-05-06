@@ -1,7 +1,7 @@
 import path from 'node:path';
-import os from 'node:os';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { symphonyDataDir } from '../utils/config.js';
 
 const CURRENT_DB_FILENAME = 'symphony.db';
 
@@ -30,7 +30,7 @@ export function resolveDatabasePath(): string {
     if (override === IN_MEMORY_SENTINEL) return IN_MEMORY_SENTINEL;
     return path.resolve(override);
   }
-  return path.join(os.homedir(), '.symphony', CURRENT_DB_FILENAME);
+  return path.join(symphonyDataDir(), CURRENT_DB_FILENAME);
 }
 
 /**

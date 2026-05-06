@@ -2,8 +2,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { promises as fsp } from 'node:fs';
 import { randomBytes } from 'node:crypto';
+import { symphonyDataDir } from '../../utils/config.js';
 
-const MAESTRO_WORKSPACE_DIR = '.symphony';
 const MAESTRO_SUBDIR = 'maestro';
 const CLAUDE_MD_FILENAME = 'CLAUDE.md';
 
@@ -30,7 +30,7 @@ export async function ensureMaestroWorkspace(
   options: EnsureMaestroWorkspaceOptions = {},
 ): Promise<MaestroWorkspace> {
   const home = options.home ?? os.homedir();
-  const cwd = path.resolve(path.join(home, MAESTRO_WORKSPACE_DIR, MAESTRO_SUBDIR));
+  const cwd = path.resolve(path.join(symphonyDataDir(home), MAESTRO_SUBDIR));
   await fsp.mkdir(cwd, { recursive: true });
   return {
     cwd,

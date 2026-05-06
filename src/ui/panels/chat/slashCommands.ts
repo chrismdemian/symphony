@@ -49,6 +49,15 @@ export type SlashHandler = (rest: string) => void;
 
 export interface SlashHandlers {
   readonly quit: () => void;
+  /**
+   * Phase 3H.1 — `/config` opens the settings popup. Optional during
+   * 3H transition so pre-3H.1 tests that omit it still type-check.
+   * When omitted, the `config` slash command is NOT registered in the
+   * dispatch table — `/config` becomes "unknown" so the chat panel
+   * surfaces "Unknown command: config" rather than silently swallowing.
+   * (Audit 3H.1 M2 — silent-no-op was the previous failure mode.)
+   */
+  readonly openSettings?: () => void;
 }
 
 export interface SlashTable {
@@ -56,9 +65,14 @@ export interface SlashTable {
 }
 
 export function buildSlashTable(handlers: SlashHandlers): SlashTable {
-  return {
+  const table: { [name: string]: SlashHandler | undefined } = {
     quit: () => handlers.quit(),
   };
+  if (handlers.openSettings !== undefined) {
+    const open = handlers.openSettings;
+    table['config'] = () => open();
+  }
+  return table;
 }
 
 /**

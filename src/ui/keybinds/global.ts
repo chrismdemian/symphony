@@ -54,6 +54,18 @@ export interface GlobalCommandHandlers {
    * toast IS the observable behavior gating the production scenario.
    */
   showLeaderToast?(message: string): void;
+  /**
+   * Phase 3H.1 — Ctrl+, opens the settings popup. Optional during 3H
+   * transition; tests built before 3H.1 still type-check, undefined
+   * renders the command as a no-op.
+   */
+  openSettings?(): void;
+  /**
+   * Phase 3H.1 — palette-only command "edit settings file in $EDITOR".
+   * Spawns `$EDITOR` against `~/.symphony/config.json`. Optional during
+   * 3H transition.
+   */
+  openSettingsEdit?(): void;
 }
 
 export interface GlobalCommandState {
@@ -167,6 +179,29 @@ export function buildGlobalCommands(
       displayOnScreen: false,
       onSelect: () =>
         handlers.showLeaderToast?.('Theme toggle — Phase 3H will wire the real action.'),
+    },
+    // Phase 3H.1 — settings popup. Hotkey is Ctrl+, (the editor-standard
+    // settings shortcut). Listed in the bottom keybind bar so it's
+    // discoverable; palette also lists it via `selectAllCommands`.
+    {
+      id: 'app.config',
+      title: 'settings',
+      key: { kind: 'ctrl', char: ',' },
+      scope: 'global',
+      displayOnScreen: true,
+      onSelect: handlers.openSettings ?? (() => undefined),
+    },
+    // Phase 3H.1 — palette-only command for opening the file in $EDITOR.
+    // `kind: 'none'` = no global hotkey, palette-invokable only. The
+    // 3F.3 audit C2 path through `selectCommands` skips dedup for
+    // 'none'-kind commands so this coexists with `app.config` cleanly.
+    {
+      id: 'app.configEdit',
+      title: 'edit settings file in $EDITOR',
+      key: { kind: 'none' },
+      scope: 'global',
+      displayOnScreen: false,
+      onSelect: handlers.openSettingsEdit ?? (() => undefined),
     },
   ];
 }

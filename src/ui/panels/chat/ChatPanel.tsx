@@ -53,8 +53,11 @@ export function ChatPanel(): React.JSX.Element {
     () =>
       buildSlashTable({
         quit: () => setImmediate(() => actions.onRequestExit()),
+        // Phase 3H.1 — `/config` opens the settings popup. Mirrors
+        // Ctrl+, in the global keybind table.
+        openSettings: () => focus.pushPopup('settings'),
       }),
-    [actions.onRequestExit],
+    [actions.onRequestExit, focus.pushPopup],
   );
 
   const handleSubmit = (text: string): void => {
