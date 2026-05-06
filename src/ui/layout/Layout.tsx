@@ -11,6 +11,7 @@ import { QuestionHistory } from '../panels/questions/QuestionHistory.js';
 import { Palette } from '../panels/palette/Palette.js';
 import { WorkerSelector } from '../panels/palette/WorkerSelector.js';
 import { HelpOverlay } from '../panels/help/HelpOverlay.js';
+import { SettingsPanel } from '../panels/settings/SettingsPanel.js';
 import { useFocus, type FocusContext } from '../focus/focus.js';
 import { KeybindBar } from './KeybindBar.js';
 import { StatusBar } from './StatusBar.js';
@@ -136,6 +137,8 @@ function renderPopup(
       return <HelpOverlay />;
     case 'worker-select':
       return <WorkerSelector workers={props.workers} />;
+    case 'settings':
+      return <SettingsPanel />;
     case null:
       return null;
     default:

@@ -124,4 +124,57 @@ describe('buildGlobalCommands', () => {
     q!.onSelect();
     expect(open).toHaveBeenCalledOnce();
   });
+
+  // ── Phase 3H.1 ─────────────────────────────────────────────────────────
+  it('emits app.config at scope global with Ctrl+, (3H.1)', () => {
+    const cmds = buildGlobalCommands(handlers);
+    const c = cmds.find((cmd) => cmd.id === 'app.config');
+    expect(c).toBeDefined();
+    expect(c?.scope).toBe('global');
+    expect(c?.key).toEqual({ kind: 'ctrl', char: ',' });
+    expect(c?.displayOnScreen).toBe(true);
+    expect(c?.title).toBe('settings');
+  });
+
+  it('emits app.configEdit as palette-only with kind:none (3H.1)', () => {
+    const cmds = buildGlobalCommands(handlers);
+    const e = cmds.find((cmd) => cmd.id === 'app.configEdit');
+    expect(e).toBeDefined();
+    expect(e?.key).toEqual({ kind: 'none' });
+    // displayOnScreen=false: hidden from the bottom bar (palette-only).
+    expect(e?.displayOnScreen).toBe(false);
+  });
+
+  it('app.config and app.configEdit coexist without conflicting (3H.1, 3F.3 C2)', () => {
+    // selectCommands skips dedup for 'none'-kind commands; the registry
+    // accepts both app.config (Ctrl+,) and app.configEdit (none-kind)
+    // at the same scope without DuplicateKeybindError.
+    const cmds = buildGlobalCommands(handlers);
+    const c = cmds.find((cmd) => cmd.id === 'app.config');
+    const e = cmds.find((cmd) => cmd.id === 'app.configEdit');
+    expect(c).toBeDefined();
+    expect(e).toBeDefined();
+  });
+
+  it('invokes openSettings handler when present (3H.1)', () => {
+    const open = vi.fn();
+    const cmds = buildGlobalCommands({ ...handlers, openSettings: open });
+    const c = cmds.find((cmd) => cmd.id === 'app.config');
+    c!.onSelect();
+    expect(open).toHaveBeenCalledOnce();
+  });
+
+  it('invokes openSettingsEdit handler when present (3H.1)', () => {
+    const open = vi.fn();
+    const cmds = buildGlobalCommands({ ...handlers, openSettingsEdit: open });
+    const e = cmds.find((cmd) => cmd.id === 'app.configEdit');
+    e!.onSelect();
+    expect(open).toHaveBeenCalledOnce();
+  });
+
+  it('app.config without openSettings handler is a no-op (3H.1)', () => {
+    const cmds = buildGlobalCommands(handlers);
+    const c = cmds.find((cmd) => cmd.id === 'app.config');
+    expect(() => c!.onSelect()).not.toThrow();
+  });
 });

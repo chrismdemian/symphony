@@ -49,6 +49,12 @@ export interface RunTuiInput {
   /** Override stdin/stdout (tests). Defaults to `process.stdin`/`process.stdout`. */
   readonly stdin?: NodeJS.ReadStream;
   readonly stdout?: NodeJS.WriteStream;
+  /**
+   * Phase 3H.1 — pre-open a popup on App mount. Used by `symphony config`
+   * to land directly on the settings popup. Fires exactly once via a
+   * mount-time effect in `<AppShell>`. Re-mount (e.g. tests) re-fires.
+   */
+  readonly initialPopup?: string;
 }
 
 export interface RunTuiHandle {
@@ -107,6 +113,7 @@ export function runTui(input: RunTuiInput): RunTuiHandle {
       rpc: input.rpc,
       version: input.version,
       onRequestExit: input.onRequestExit,
+      ...(input.initialPopup !== undefined ? { initialPopup: input.initialPopup } : {}),
     }),
     {
       stdout,

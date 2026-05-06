@@ -47,6 +47,37 @@ program
   });
 
 program
+  .command('config')
+  .description(
+    'Open Symphony settings (TUI). With --edit, opens ~/.symphony/config.json in $EDITOR.',
+  )
+  .option('--edit', 'Open the config file in $EDITOR ($VISUAL → $EDITOR → notepad/vi).')
+  .option(
+    '--config-file <path>',
+    'Override the config file path (default ~/.symphony/config.json or $SYMPHONY_CONFIG_FILE).',
+  )
+  .action(async (opts: { edit?: boolean; configFile?: string }) => {
+    if (opts.edit === true) {
+      const { runConfigEdit } = await import('./cli/config-edit.js');
+      const result = await runConfigEdit({
+        ...(opts.configFile !== undefined ? { configFilePath: opts.configFile } : {}),
+      });
+      if (result.created) {
+        console.error(`[symphony] created ${result.filePath}`);
+      }
+      process.exit(result.exitCode);
+    }
+    // No --edit: boot the TUI and pre-open the settings popup. This
+    // routes through the same `runStart` as `symphony start`, so the
+    // user gets the full app behind the popup — Esc closes it and they
+    // continue working.
+    const { runStart } = await import('./cli/start.js');
+    const handle = await runStart({ initialPopup: 'settings' });
+    await handle.done;
+    process.exit(0);
+  });
+
+program
   .command('mcp-server')
   .description('Run the Symphony orchestrator MCP server over stdio. Spawned as a child of claude -p.')
   .option('--in-memory', 'Skip the SQLite store; use in-memory registries only (Phase 2A behavior).')

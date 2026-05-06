@@ -72,6 +72,12 @@ export interface RunStartOptions {
     descriptor: { host: string; port: number; token: string };
     client: LauncherRpc;
   };
+  /**
+   * Phase 3H.1 — when `'settings'`, the TUI opens the settings popup
+   * once on mount (used by `symphony config` to land directly on it).
+   * Threaded through to `runTui({ initialPopup })`.
+   */
+  initialPopup?: string;
 }
 
 /**
@@ -452,6 +458,7 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
     },
     stdin: stdin as NodeJS.ReadStream,
     stdout: stdout as NodeJS.WriteStream,
+    ...(options.initialPopup !== undefined ? { initialPopup: options.initialPopup } : {}),
   });
 
   if (tui.active) {

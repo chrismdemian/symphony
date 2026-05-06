@@ -3,6 +3,7 @@ import { promises as fsp } from 'node:fs';
 import type { FileHandle } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import { symphonyDataDir } from '../utils/config.js';
 
 /**
  * RPC token persistence + validation — Phase 2B.2.
@@ -62,7 +63,7 @@ export function generateRpcToken(env: NodeJS.ProcessEnv = process.env): string {
  * created with mode 0o700 if missing.
  */
 export function defaultRpcTokenFilePath(home: string = os.homedir()): string {
-  return path.join(home, '.symphony', 'rpc.json');
+  return path.join(symphonyDataDir(home), 'rpc.json');
 }
 
 /**
