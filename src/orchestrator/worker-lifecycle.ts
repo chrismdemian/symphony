@@ -94,6 +94,21 @@ export interface WorkerLifecycleOptions {
    * Caller-provided `input.model` ALWAYS wins.
    */
   readonly getDefaultModel?: () => string | undefined;
+  /**
+   * Phase 3H.3 — fired whenever a worker transitions to a terminal
+   * status (`completed` / `failed` / `killed` / `timeout` / `crashed`).
+   * The callback receives the record AFTER `registry.markCompleted` has
+   * stamped the new status, AND AFTER the running-count `release()` has
+   * decremented the per-project counter. `totalRunning` is the global
+   * sum across every project — `0` indicates "no workers anywhere",
+   * which is the signal the notifications dispatcher uses to fire its
+   * all-done rollup.
+   *
+   * Errors thrown by the callback are swallowed so a misbehaving
+   * consumer can't poison the lifecycle's exit chain (mirrors the
+   * `onEvent` broker convention).
+   */
+  readonly onWorkerStatusChange?: (record: WorkerRecord, totalRunning: number) => void;
 }
 
 /**
@@ -151,6 +166,13 @@ export interface WorkerLifecycleHandle {
    * the project has no in-flight workers. Phase 3L panel consumer.
    */
   getQueueSnapshot(projectPath: string): QueueSnapshot;
+  /**
+   * Phase 3H.3 — global running count across every project. Sums the
+   * per-project counters maintained by `incRunning` / `decRunning`.
+   * The notifications dispatcher reads this in its `onWorkerExit`
+   * callback to detect the all-done transition (count → 0).
+   */
+  getTotalRunning(): number;
 }
 
 function defaultIdGenerator(): string {
@@ -563,12 +585,34 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         }
         registry.markCompleted(recordId, exitInfo, now);
         release();
+        // Phase 3H.3 — fire the lifecycle hook AFTER markCompleted (so
+        // record.status reflects the terminal state) AND AFTER release()
+        // (so getTotalRunning() returns the post-decrement value, which
+        // is what the notifications dispatcher's all-done condition
+        // depends on). Errors swallowed: a misbehaving consumer must
+        // not poison the exit chain.
+        if (opts.onWorkerStatusChange !== undefined) {
+          try {
+            const reloaded = registry.get(recordId);
+            if (reloaded !== undefined) {
+              opts.onWorkerStatusChange(reloaded, getTotalRunning());
+            }
+          } catch {
+            // swallow
+          }
+        }
       })
       .catch(() => {
         // exit errors already surface on the buffer; release the slot
         // anyway so a queued sibling can spawn.
         release();
       });
+  }
+
+  function getTotalRunning(): number {
+    let sum = 0;
+    for (const n of runningPerProject.values()) sum += n;
+    return sum;
   }
 
   function cleanup(id: string): void {
@@ -661,7 +705,16 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
     return { running, capacity, pending };
   }
 
-  return { spawn, resume, cleanup, shutdown, recoverFromStore, setOnEvent, getQueueSnapshot };
+  return {
+    spawn,
+    resume,
+    cleanup,
+    shutdown,
+    recoverFromStore,
+    setOnEvent,
+    getQueueSnapshot,
+    getTotalRunning,
+  };
 }
 
 /**

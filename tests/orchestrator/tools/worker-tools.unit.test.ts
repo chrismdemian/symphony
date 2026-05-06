@@ -93,6 +93,7 @@ function fakeLifecycle(): WorkerLifecycleHandle & {
     recoverFromStore: () => ({ crashedIds: [] }),
     setOnEvent: () => {},
     getQueueSnapshot: () => ({ running: 0, capacity: Number.POSITIVE_INFINITY, pending: [] }),
+    getTotalRunning: () => 0,
   };
 }
 
