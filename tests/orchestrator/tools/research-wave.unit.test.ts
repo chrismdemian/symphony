@@ -95,6 +95,7 @@ function makeFakeLifecycle(registry: WorkerRegistry): {
     shutdown: async () => {},
     recoverFromStore: () => ({ crashedIds: [] }),
     setOnEvent: () => {},
+    getQueueSnapshot: () => ({ running: 0, capacity: Number.POSITIVE_INFINITY, pending: [] }),
   };
   return {
     lifecycle,
