@@ -1,6 +1,7 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { Box } from 'ink';
-import { ThemeProvider } from './theme/context.js';
+import { ThemeProvider, useThemeController } from './theme/context.js';
+import { pickThemeJson } from './theme/theme.js';
 import { FocusProvider, useFocus } from './focus/focus.js';
 import { KeybindProvider } from './keybinds/dispatcher.js';
 import { buildGlobalCommands } from './keybinds/global.js';
@@ -17,7 +18,7 @@ import {
 } from './data/MaestroEventsProvider.js';
 import { AppActionsProvider } from './runtime/AppActions.js';
 import { ToastProvider, useToast } from './feedback/ToastProvider.js';
-import { ConfigProvider } from '../utils/config-context.js';
+import { ConfigProvider, useConfig } from '../utils/config-context.js';
 import type { TuiRpc } from './runtime/rpc.js';
 
 /**
@@ -94,11 +95,24 @@ function ToastBoundConfigProvider(props: { readonly children: React.ReactNode })
 function AppShell(props: AppProps): React.JSX.Element {
   const focus = useFocus();
   const { showToast } = useToast();
+  const { config } = useConfig();
   const { projects } = useProjects(props.rpc);
   const workersResult = useWorkers(props.rpc);
   const { mode } = useMode(props.rpc);
   const questionsResult = useQuestions(props.rpc);
   const { sessionId } = useMaestroData();
+
+  // Phase 3H.2 — own the probe-driven theme swap from inside the
+  // config-aware tree. ThemeProvider initializes truecolor; this effect
+  // runs on mount AND on every `config.theme.autoFallback16Color`
+  // change to swap to 16-color when the probe says so. `setThemeJson`
+  // is identity-stable across the provider's lifetime so the dep
+  // array doesn't churn with every render (audit M1).
+  const { setThemeJson } = useThemeController();
+  const autoFallback = config.theme.autoFallback16Color;
+  useEffect(() => {
+    setThemeJson(pickThemeJson(autoFallback));
+  }, [autoFallback, setThemeJson]);
 
   // Phase 3H.1 — `--initial-popup`/`symphony config` entry point.
   // Fires exactly once after mount. The ref-guard handles the StrictMode
