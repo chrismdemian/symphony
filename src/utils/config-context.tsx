@@ -235,6 +235,11 @@ function applyPatchInMemory(
   if (patch.modelMode !== undefined) next.modelMode = patch.modelMode;
   if (patch.maxConcurrentWorkers !== undefined) next.maxConcurrentWorkers = patch.maxConcurrentWorkers;
   if (patch.leaderTimeoutMs !== undefined) next.leaderTimeoutMs = patch.leaderTimeoutMs;
+  // Phase 3H.3 — keep this branch in sync with `mergePatch` in
+  // `src/utils/config.ts` and the field list in `applyConfigEdits`.
+  // Skipping any of the four sites silently drops the field on
+  // subsequent writes (audit Critical-1).
+  if (patch.awayMode !== undefined) next.awayMode = patch.awayMode;
   if (patch.notifications !== undefined) {
     next.notifications = { ...current.notifications, ...patch.notifications };
   }

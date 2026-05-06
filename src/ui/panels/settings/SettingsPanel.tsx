@@ -507,7 +507,7 @@ export function SettingsPanel(): React.JSX.Element {
         </Text>
         <Text color={theme['textMuted']}>
           {' '}
-          · Phase 3H.2
+          · Phase 3H.3
         </Text>
       </Box>
       <Box flexDirection="column" marginTop={1}>

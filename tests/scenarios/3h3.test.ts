@@ -1,19 +1,15 @@
 /**
- * Phase 3H.2 scenario — editable settings popup end-to-end.
+ * Phase 3H.3 scenario — notifications + awayMode toggle end-to-end.
  *
- * Mirrors `tests/scenarios/3h1.test.ts`'s shape: same FakeMaestroProcess,
- * same makeFakeRpc, same makeTtyStream, same launcher boot. Adds:
+ * Mirrors the 3H.2 scenario shape: same FakeMaestroProcess, same
+ * makeFakeRpc (extended with the `notifications` namespace), same
+ * makeTtyStream, same launcher boot. Drives the settings popup via
+ * the slash-command path (`/config Enter`) and asserts disk
+ * persistence + the awayMode true→false RPC trigger.
  *
- * - Enter on modelMode cycles `mixed → opus` and disk persists.
- * - A SECOND rapid Enter cycles back to `mixed` (audit C2 from the
- *   commit-5 review): function-patches inside `applyPatchToDisk`'s
- *   serialized queue read the just-committed value, so two synchronous
- *   chord presses produce two distinct toggles rather than collapsing
- *   to one.
- *
- * The slash-command path (`/config Enter`) is the reliable popup-open
- * route — Ctrl+, requires kitty CSI-u encoding which ink-testing-library
- * doesn't deliver. Same trade-off documented in the 3H.1 scenario.
+ * Why slash + not Ctrl+, : Ctrl+, requires kitty CSI-u encoding which
+ * ink-testing-library doesn't deliver. Same trade-off documented in
+ * the 3H.1 / 3H.2 scenarios.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter, PassThrough } from 'node:stream';
@@ -102,7 +98,7 @@ let originalCfgEnv: string | undefined;
 
 beforeEach(() => {
   _resetConfigWriteQueue();
-  sandbox = mkdtempSync(join(tmpdir(), 'symphony-3h2-scenario-'));
+  sandbox = mkdtempSync(join(tmpdir(), 'symphony-3h3-scenario-'));
   home = join(sandbox, 'home');
   cfgFile = join(sandbox, 'config.json');
   originalCfgEnv = process.env[SYMPHONY_CONFIG_FILE_ENV];
@@ -124,10 +120,12 @@ interface FakeRpcHandle {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   rpc: any;
   closeMock: ReturnType<typeof vi.fn>;
+  flushAwayDigestMock: ReturnType<typeof vi.fn>;
 }
 
 function makeFakeRpc(projects: ProjectSnapshot[]): FakeRpcHandle {
   const closeMock = vi.fn(async () => undefined);
+  const flushAwayDigestMock = vi.fn(async () => undefined);
   const rpc = {
     call: {
       projects: {
@@ -159,6 +157,9 @@ function makeFakeRpc(projects: ProjectSnapshot[]): FakeRpcHandle {
       mode: {
         get: vi.fn(async () => ({ mode: 'plan' as const })),
       },
+      notifications: {
+        flushAwayDigest: flushAwayDigestMock,
+      },
     },
     subscribe: vi.fn(async () => ({
       topic: 'workers.events',
@@ -166,7 +167,7 @@ function makeFakeRpc(projects: ProjectSnapshot[]): FakeRpcHandle {
     })),
     close: closeMock,
   };
-  return { rpc, closeMock };
+  return { rpc, closeMock, flushAwayDigestMock };
 }
 
 function makeTtyStream(isReadable: boolean): NodeJS.WriteStream | NodeJS.ReadStream {
@@ -196,9 +197,10 @@ const stripAnsi = (s: string): string =>
   s.replace(/\x1b\[[\d;?]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
 
 const ESC = '\x1b';
+const DOWN = '\x1b[B';
 
-describe('Phase 3H.2 scenario — editable settings popup', () => {
-  it('Enter cycles modelMode opus↔mixed, persists to disk, rapid double-press toggles twice', async () => {
+describe('Phase 3H.3 scenario — notifications + awayMode wiring', () => {
+  it('toggles notifications.enabled and awayMode; awayMode true→false fires flushAwayDigest', async () => {
     const fakeMaestro = new FakeMaestroProcess();
     const fakeMaestroAsProcess = fakeMaestro as unknown as MaestroProcess;
     Object.defineProperty(fakeMaestroAsProcess, 'events', {
@@ -251,38 +253,69 @@ describe('Phase 3H.2 scenario — editable settings popup', () => {
       const recent = stdoutChunks.slice(-200).join('');
       const plain = stripAnsi(recent);
       expect(plain).toContain('Settings');
-      // 3H.3 changed the header label to "Phase 3H.3" — match loosely
-      // so future header bumps don't break this scenario.
-      expect(plain).toContain('Phase 3H.');
-      expect(plain).toContain('modelMode');
-      expect(plain).toContain('mixed');
+      expect(plain).toContain('notifications.enabled');
+      expect(plain).toContain('awayMode');
     }
 
-    // ── First Enter: cycle modelMode mixed → opus, persist ─────────────
-    const beforeFirst = stdoutChunks.length;
-    (stdin as unknown as PassThrough).write('\r');
-    await settle(1000);
+    // ── Navigate to notifications.enabled.
+    // Value rows in order (nav skips 'header' rows; 'value' rows with
+    // editKind 'readonly' are still navigable):
+    //   0. modelMode                    (enum)
+    //   1. maxConcurrentWorkers         (int)
+    //   2. theme.name                   (readonly)
+    //   3. theme.autoFallback16Color    (bool)
+    //   4. notifications.enabled        (bool) ← target
+    //   5. awayMode                     (bool) ← target 2
+    // Default selection is index 0 (modelMode). Four DOWN arrows lands
+    // on notifications.enabled. Settle briefly between presses so the
+    // raw-mode stdin handler advances reducer state for each key.
+    for (let i = 0; i < 4; i += 1) {
+      (stdin as unknown as PassThrough).write(DOWN);
+       
+      await settle(80);
+    }
+
+    // Space toggles bool. After this notifications.enabled = true.
+    (stdin as unknown as PassThrough).write(' ');
+    await settle(800);
     {
-      const post = stdoutChunks.slice(beforeFirst).join('');
-      const plain = stripAnsi(post);
-      expect(plain).toContain('opus');
       const onDisk = JSON.parse(readFileSync(cfgFile, 'utf8')) as Record<string, unknown>;
-      expect(onDisk['modelMode']).toBe('opus');
+      const notif = onDisk['notifications'] as Record<string, unknown> | undefined;
+      expect(notif?.['enabled']).toBe(true);
     }
 
-    // ── Second Enter: cycle opus → mixed (audit C2 rapid-fire) ─────────
-    const beforeSecond = stdoutChunks.length;
-    (stdin as unknown as PassThrough).write('\r');
-    await settle(1000);
+    // ── Navigate down once to awayMode, Space to toggle on. Need a
+    // longer settle after the prior Space because SettingsPanel's
+    // committingRef mutex (audit M1/M2) blocks input while the disk
+    // write is in flight; the DOWN keystroke would otherwise be a
+    // no-op on the previous row.
+    await settle(800);
+    (stdin as unknown as PassThrough).write(DOWN);
+    await settle(500);
+    (stdin as unknown as PassThrough).write(' ');
+    await settle(1500);
     {
-      const post = stdoutChunks.slice(beforeSecond).join('');
-      const plain = stripAnsi(post);
-      expect(plain).toContain('mixed');
       const onDisk = JSON.parse(readFileSync(cfgFile, 'utf8')) as Record<string, unknown>;
-      expect(onDisk['modelMode']).toBe('mixed');
+      expect(onDisk['awayMode']).toBe(true);
     }
 
-    // ── Esc closes popup, chat placeholder restored ────────────────────
+    // The true→false edge has NOT happened yet; flush should not have
+    // been called.
+    expect(handle.flushAwayDigestMock).not.toHaveBeenCalled();
+
+    // ── Toggle awayMode back off — this is the edge that fires flush.
+    (stdin as unknown as PassThrough).write(' ');
+    await settle(800);
+    {
+      const onDisk = JSON.parse(readFileSync(cfgFile, 'utf8')) as Record<string, unknown>;
+      expect(onDisk['awayMode']).toBe(false);
+    }
+    // The TUI's useEffect on awayMode detected true→false and invoked
+    // the RPC procedure. settle() above gives React commit + the
+    // microtask chain time to fire.
+    expect(handle.flushAwayDigestMock).toHaveBeenCalledTimes(1);
+
+    // ── Esc closes popup, chat placeholder restored.
     const beforeEsc = stdoutChunks.length;
     (stdin as unknown as PassThrough).write(ESC);
     await settle(400);

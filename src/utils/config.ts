@@ -191,6 +191,11 @@ function applyConfigEdits(existing: string, next: SymphonyConfig): string {
     ['modelMode', next.modelMode],
     ['maxConcurrentWorkers', next.maxConcurrentWorkers],
     ['notifications', next.notifications],
+    // Phase 3H.3 — top-level awayMode flag. New fields added to the
+    // schema MUST also appear in this list, otherwise existing-file
+    // writes silently drop the change (the schema-default fills in on
+    // re-read, masking the missed write). Smoke: tests/scenarios/3h3.
+    ['awayMode', next.awayMode],
     ['theme', next.theme],
     ['leaderTimeoutMs', next.leaderTimeoutMs],
     ['keybindOverrides', next.keybindOverrides],

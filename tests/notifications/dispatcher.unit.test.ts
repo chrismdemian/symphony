@@ -71,7 +71,7 @@ function makeHarness(initial: Partial<SymphonyConfig> = {}): Harness {
       // probe→dispatch chain. Mirrors the harness shape used in the
       // 3D.1 / 3E unit tests.
       for (let i = 0; i < 16; i += 1) {
-        // eslint-disable-next-line no-await-in-loop
+         
         await Promise.resolve();
       }
       await new Promise((resolve) => setImmediate(resolve));
@@ -91,7 +91,7 @@ function makeRecord(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
     role: 'implementer',
     featureIntent: 'wire friend system endpoints',
     taskDescription: 'Friend system',
-    autonomyTier: 1 as 1,
+    autonomyTier: 1 as const,
     dependsOn: [],
     createdAt: new Date(0).toISOString(),
     status: 'completed',
@@ -179,7 +179,7 @@ describe('dispatcher — hard suppression', () => {
     });
     dispatcher.onWorkerExit(makeRecord({ status: 'failed' }), 0);
     for (let i = 0; i < 16; i += 1) {
-      // eslint-disable-next-line no-await-in-loop
+       
       await Promise.resolve();
     }
     await new Promise((resolve) => setImmediate(resolve));
@@ -200,7 +200,7 @@ describe('dispatcher — hard suppression', () => {
     });
     dispatcher.onWorkerExit(makeRecord({ status: 'failed' }), 0);
     for (let i = 0; i < 16; i += 1) {
-      // eslint-disable-next-line no-await-in-loop
+       
       await Promise.resolve();
     }
     await new Promise((resolve) => setImmediate(resolve));
@@ -222,7 +222,7 @@ describe('dispatcher — hard suppression', () => {
     });
     dispatcher.onWorkerExit(makeRecord({ status: 'failed' }), 0);
     for (let i = 0; i < 16; i += 1) {
-      // eslint-disable-next-line no-await-in-loop
+       
       await Promise.resolve();
     }
     await new Promise((resolve) => setImmediate(resolve));
@@ -372,7 +372,7 @@ describe('dispatcher — questions', () => {
   });
 
   it('non-blocking urgency does not fire', async () => {
-    h.dispatcher.onQuestion(makeQuestion({ urgency: 'background' as never }));
+    h.dispatcher.onQuestion(makeQuestion({ urgency: 'advisory' }));
     await h.flushPending();
     expect(h.spawnToast).not.toHaveBeenCalled();
   });
@@ -483,7 +483,7 @@ describe('dispatcher — shutdown', () => {
     });
     dispatcher.onWorkerExit(makeRecord({ status: 'failed' }), 1);
     for (let i = 0; i < 16; i += 1) {
-      // eslint-disable-next-line no-await-in-loop
+       
       await Promise.resolve();
     }
     await new Promise((resolve) => setImmediate(resolve));
@@ -493,6 +493,26 @@ describe('dispatcher — shutdown', () => {
     await dispatcher.shutdown();
     // Probe failed in shutdown → no extra emit, tally still gets reset.
     expect(spawnToast).toHaveBeenCalledTimes(1);
+  });
+
+  it('post-shutdown calls are short-circuited (audit Major-2)', async () => {
+    // Workers that fail during the close window between
+    // dispatcher.shutdown() and lifecycle.shutdown()'s SIGTERM round
+    // would otherwise re-enter the dispatcher and spawn orphan toast
+    // processes after the orchestrator is otherwise tearing down.
+    const h = makeHarness({ awayMode: false });
+    await h.dispatcher.shutdown();
+    h.spawnToast.mockClear();
+    h.dispatcher.onWorkerExit(makeRecord({ status: 'failed' }), 0);
+    h.dispatcher.onQuestion(makeQuestion());
+    await h.flushPending();
+    expect(h.spawnToast).not.toHaveBeenCalled();
+    // flushAwayDigest is also a no-op post-shutdown.
+    await h.dispatcher.flushAwayDigest();
+    expect(h.spawnToast).not.toHaveBeenCalled();
+    // Idempotent: a second shutdown is a no-op (no double-flush).
+    await h.dispatcher.shutdown();
+    expect(h.spawnToast).not.toHaveBeenCalled();
   });
 });
 

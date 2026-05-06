@@ -55,7 +55,8 @@ describe('<SettingsPanel> (3H.1 read-only popup)', () => {
     await settle();
     const frame = stripAnsi(lastFrame() ?? '');
     expect(frame).toContain('Settings');
-    expect(frame).toContain('Phase 3H.2');
+    // Match loosely: 3H.3 bumped this to "Phase 3H.3"; future phases will too.
+    expect(frame).toMatch(/Phase 3H\./);
     expect(frame).toContain('Model');
     expect(frame).toContain('Workers');
     expect(frame).toContain('Appearance');
@@ -176,9 +177,11 @@ describe('<SettingsPanel> (3H.1 read-only popup)', () => {
   it('Enter on the keybindOverrides row surfaces the 3H.4 deferral toast', async () => {
     const { stdin, lastFrame } = render(<Harness />);
     await settle();
-    // Navigate down to keybindOverrides (last row). 8 value rows; jump
-    // to the bottom by pressing ↓ 8 times.
-    for (let i = 0; i < 8; i += 1) stdin.write('\x1b[B');
+    // Navigate down to keybindOverrides (last row). 3H.3 added the
+    // awayMode row, bumping the value-row count to 10. From the default
+    // selection (modelMode at index 0) we need 9 ↓ presses to land on
+    // keybindOverrides at index 9.
+    for (let i = 0; i < 9; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();

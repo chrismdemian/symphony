@@ -119,6 +119,16 @@ export function createNotificationDispatcher(deps: DispatcherDeps): DispatcherHa
   const onError = deps.onError ?? ((): void => undefined);
 
   let tally: Tally = emptyTally();
+  // Phase 3H.3 audit M2: short-circuit dispatcher entry points
+  // post-shutdown. `close()` invokes `dispatcher.shutdown()` BEFORE
+  // `workerLifecycle.shutdown()`, but the latter then kills running
+  // workers — those workers' wireExit chains fire onWorkerStatusChange
+  // which would re-enter `onWorkerExit` and potentially spawn orphan
+  // toast processes after the orchestrator is otherwise tearing down.
+  // SIGTERM-classified workers exit as `'killed'` (silent path), but a
+  // worker that fails/crashes during the kill window would fall
+  // through. The disposed flag catches that.
+  let disposed = false;
 
   /**
    * Read config fresh and return a single decision object. Returns
@@ -126,22 +136,19 @@ export function createNotificationDispatcher(deps: DispatcherDeps): DispatcherHa
    * must skip all state mutations in that case.
    */
   async function probe(): Promise<{ enabled: true; awayMode: boolean } | null> {
-    let enabled = false;
-    let awayMode = false;
+    let result;
     try {
-      const result = await deps.loadConfig();
-      enabled = result.config.notifications.enabled;
-      awayMode = result.config.awayMode;
+      result = await deps.loadConfig();
     } catch (err) {
       // Config read failure is itself a no-op — fail closed (don't
       // notify). Surfaced via onError so test cases can assert it.
       onError(err instanceof Error ? err : new Error(String(err)));
       return null;
     }
-    if (!enabled) return null;
+    if (!result.config.notifications.enabled) return null;
     if (!isTTY()) return null;
     if (isCI()) return null;
-    return { enabled: true, awayMode };
+    return { enabled: true, awayMode: result.config.awayMode };
   }
 
   function fire(toast: ToastInput): void {
@@ -238,6 +245,7 @@ export function createNotificationDispatcher(deps: DispatcherDeps): DispatcherHa
 
   return {
     onWorkerExit(record, totalRunning): void {
+      if (disposed) return;
       // Fire-and-forget: the lifecycle's wireExit must NOT await this
       // (its caller is the worker's exit promise chain). Errors here
       // are surfaced through the deps.onError sink.
@@ -247,12 +255,14 @@ export function createNotificationDispatcher(deps: DispatcherDeps): DispatcherHa
     },
 
     onQuestion(record): void {
+      if (disposed) return;
       void tryHandleQuestion(record).catch((err: unknown) => {
         onError(err instanceof Error ? err : new Error(String(err)));
       });
     },
 
     async flushAwayDigest(): Promise<void> {
+      if (disposed) return;
       // Snapshot + reset BEFORE awaiting the spawn so concurrent
       // `onWorkerExit` calls during the spawn don't race with the
       // counter reset.
@@ -270,6 +280,8 @@ export function createNotificationDispatcher(deps: DispatcherDeps): DispatcherHa
     },
 
     async shutdown(): Promise<void> {
+      if (disposed) return;
+      disposed = true;
       // Best-effort final flush. If awayMode was on at shutdown, the
       // user gets one digest before the orchestrator goes away.
       // Suppression-gated: a probe failure just returns silently.
