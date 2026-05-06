@@ -169,7 +169,7 @@ function AppShell(props: AppProps): React.JSX.Element {
   );
 
   return (
-    <KeybindProvider initialCommands={commands}>
+    <KeybindProvider initialCommands={commands} leaderTimeoutMs={config.leaderTimeoutMs}>
       <Box flexDirection="column" width="100%" height="100%">
         <Layout
           version={props.version}
