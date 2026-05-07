@@ -12,7 +12,7 @@ import { PIPELINE_STAGE_COUNT, roleToStage } from './stage.js';
  *   - cells before this worker's stage   → gold (workerDone)
  *   - cell at this worker's stage:
  *       spawning / running               → violet (workerRunning) — current
- *       completed                        → gold (workerDone) — bar fully gold
+ *       completed                        → gold (workerDone) — collapses with prior gold cells; bar appears FULLY gold only when stageIndex === 4 (reviewer)
  *       failed / crashed / timeout       → red (workerFailed)
  *       killed                           → dim gray (workerPaused)
  *   - cells after this worker's stage    → dim gray (textMuted)

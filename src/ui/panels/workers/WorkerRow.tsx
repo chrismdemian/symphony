@@ -71,9 +71,15 @@ export function WorkerRow({
       ) : (
         <Text color={theme['text']}>{instrument}</Text>
       )}
+      {/* `flexShrink={0}` on padding + label mirrors PipelineBar's
+          own pin (audit M2 from 3I review). Without it, Ink's flexbox
+          would shrink the gerund label or padding before the bar
+          itself when the Workers panel renders in a narrow column. */}
       <Text>{padding} </Text>
       <PipelineBar role={worker.role} status={worker.status} />
-      <Text color={theme['text']}> {stageLabel} </Text>
+      <Box flexShrink={0}>
+        <Text color={theme['text']}> {stageLabel} </Text>
+      </Box>
       <Text color={theme['text']}>{featureIntentDisplay}</Text>
       <Box flexGrow={1} />
       {modelLabel !== '' ? (

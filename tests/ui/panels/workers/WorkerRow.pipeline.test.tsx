@@ -1,4 +1,5 @@
 import React from 'react';
+import { Box } from 'ink';
 import { describe, it, expect } from 'vitest';
 import { render } from 'ink-testing-library';
 import { ThemeProvider } from '../../../../src/ui/theme/context.js';
@@ -94,6 +95,34 @@ describe('<WorkerRow> + pipeline bar', () => {
     expect(frame).toMatch(/\x1b\[7m.*Violin/);
     expect(frame).not.toMatch(/\x1b\[7m[^\x1b]*█/);
     /* eslint-enable no-control-regex */
+    unmount();
+  });
+
+  it('keeps the gerund label intact under a narrow column (40-col Box wrapper)', () => {
+    // Audit M2 from 3I review — without `flexShrink={0}` on the
+    // bar's outer box AND the label's wrapper, Ink's flexbox shrinks
+    // the label or a bar cell when the row is constrained.
+    const { lastFrame, unmount } = render(
+      <ThemeProvider>
+        <Box width={40} flexDirection="row">
+          <WorkerRow
+            worker={snap({ role: 'implementer', status: 'running' })}
+            instrument="Violin"
+            selected={false}
+            featureIntentDisplay="X"
+            runtimeDisplay="3m"
+          />
+        </Box>
+      </ThemeProvider>,
+    );
+    const frame = lastFrame() ?? '';
+    // Label "Implementing" must survive intact even though the row
+    // overflows the 40-col width (Ink wraps; the label should not
+    // truncate to "Implem…" or similar).
+    expect(frame).toContain('Implementing');
+    // Bar still emits its 5 cells.
+    const cellCount = (frame.match(/█/g) ?? []).length;
+    expect(cellCount).toBe(5);
     unmount();
   });
 
