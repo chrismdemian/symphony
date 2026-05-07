@@ -323,13 +323,17 @@ export function SettingsPanel(): React.JSX.Element {
         return;
       case 'readonly':
         if (row.label === 'keybindOverrides') {
-          showToast('Keybind override editor ships in 3H.4.', { tone: 'info' });
+          // Phase 3H.4 — push the editor popup. The settings popup
+          // stays mounted underneath; Esc inside the editor pops back
+          // here. No state hand-off needed (the editor reads
+          // `config.keybindOverrides` from the same context).
+          focus.pushPopup('keybind-list');
         } else {
           showToast(`${row.label} is intrinsic and not editable.`, { tone: 'info' });
         }
         return;
     }
-  }, [toggleBool, cycleEnum, startIntEdit, startTextEdit, showToast, config]);
+  }, [toggleBool, cycleEnum, startIntEdit, startTextEdit, showToast, config, focus.pushPopup]);
 
   // Handle Space on a bool row (consistent shortcut).
   const handleSpace = useCallback((): void => {
@@ -685,7 +689,7 @@ function buildRows(
       value: `${Object.keys(config.keybindOverrides).length} entries`,
       source: fromFileSource,
       editKind: 'readonly',
-      description: 'Per-command keybind overrides. Edit affordance ships in Phase 3H.4.',
+      description: 'Per-command keybind overrides. Enter opens the editor (Phase 3H.4).',
     },
   ];
 }

@@ -6,6 +6,8 @@ import { useTheme } from '../../theme/context.js';
 import { useFocus } from '../../focus/focus.js';
 import { useRegisterCommands } from '../../keybinds/dispatcher.js';
 import type { Command } from '../../keybinds/registry.js';
+import { applyKeybindOverrides } from '../../keybinds/overrides.js';
+import { useConfig } from '../../../utils/config-context.js';
 import { useProjectGroups, type ProjectGroup } from '../../data/useProjectGroups.js';
 import { useInstrumentNames } from '../../data/useInstrumentNames.js';
 import { useWorkerSelection } from '../../data/WorkerSelection.js';
@@ -262,7 +264,16 @@ export function WorkerPanel({ rpc, workersResult }: WorkerPanelProps): React.JSX
     [moveBy, toggleCurrentHeader, killSelected, ordinalSelect],
   );
 
-  useRegisterCommands(commands, isFocused);
+  // Phase 3H.4 — apply user keybind overrides before registering. The
+  // helper is identity-preserving when no override matches a panel
+  // command id, so users with a default config see no extra render
+  // churn here. Internal commands are skipped by the helper itself.
+  const { config } = useConfig();
+  const overriddenCommands = useMemo(
+    () => applyKeybindOverrides(commands, config.keybindOverrides),
+    [commands, config.keybindOverrides],
+  );
+  useRegisterCommands(overriddenCommands, isFocused);
 
   // Drives runtime label refresh once per second. The frame value is
   // unused, but the subscription is the point — re-render at 1 Hz so

@@ -5,6 +5,7 @@ import { pickThemeJson } from './theme/theme.js';
 import { FocusProvider, useFocus } from './focus/focus.js';
 import { KeybindProvider } from './keybinds/dispatcher.js';
 import { buildGlobalCommands } from './keybinds/global.js';
+import { applyKeybindOverrides } from './keybinds/overrides.js';
 import { Layout } from './layout/Layout.js';
 import { useProjects } from './data/useProjects.js';
 import { useWorkers } from './data/useWorkers.js';
@@ -227,6 +228,11 @@ function AppShell(props: AppProps): React.JSX.Element {
               'Run `symphony config --edit` from a shell to edit ~/.symphony/config.json in $EDITOR.',
               { tone: 'info', ttlMs: 5_000 },
             ),
+          // Phase 3H.4 — both palette commands route to the same
+          // keybind-list popup. `openKeybindReset` is a discovery
+          // surface; the actual reset action is `r` on a list row.
+          openKeybindEditor: () => focus.pushPopup('keybind-list'),
+          openKeybindReset: () => focus.pushPopup('keybind-list'),
         },
         {
           questionsCount: questionsResult.count,
@@ -246,8 +252,20 @@ function AppShell(props: AppProps): React.JSX.Element {
     ],
   );
 
+  // Phase 3H.4 — apply user keybind overrides. `applyKeybindOverrides`
+  // is identity-preserving when no overrides are present, so this
+  // useMemo doesn't churn for users with a default config. Internal
+  // popup-nav commands are excluded by the helper itself, so popup
+  // Esc/Enter/arrows are never overridden even if a malformed override
+  // entry targets one (defense-in-depth alongside salvage).
+  const keybindOverrides = config.keybindOverrides;
+  const overriddenCommands = useMemo(
+    () => applyKeybindOverrides(commands, keybindOverrides),
+    [commands, keybindOverrides],
+  );
+
   return (
-    <KeybindProvider initialCommands={commands} leaderTimeoutMs={config.leaderTimeoutMs}>
+    <KeybindProvider initialCommands={overriddenCommands} leaderTimeoutMs={config.leaderTimeoutMs}>
       <Box flexDirection="column" width="100%" height="100%">
         <Layout
           version={props.version}

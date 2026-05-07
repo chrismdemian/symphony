@@ -78,6 +78,19 @@ export interface GlobalCommandHandlers {
    * 3H transition.
    */
   openSettingsEdit?(): void;
+  /**
+   * Phase 3H.4 — palette-only command "edit keybinds". Pushes the
+   * keybind-list popup onto the focus stack. Optional during 3H
+   * transition.
+   */
+  openKeybindEditor?(): void;
+  /**
+   * Phase 3H.4 — palette-only command "reset keybind". Pushes the
+   * keybind-list popup; the user picks a row and presses `r` to reset
+   * its override. We don't auto-pick a target — the editor IS the
+   * picker. Optional during 3H transition.
+   */
+  openKeybindReset?(): void;
 }
 
 export interface GlobalCommandState {
@@ -96,6 +109,12 @@ export function buildGlobalCommands(
   const workersCount = state?.workersCount ?? 0;
   const workersDisabled = workersCount === 0;
   return [
+    // Phase 3H.4: Tab focus-cycle and Ctrl+C exit are flagged
+    // `unbindable: true` so the override editor refuses to rebind
+    // them. Rebinding Tab would brick panel navigation; rebinding
+    // Ctrl+C would brick the only launcher kill switch. They remain
+    // visible in the editor list for awareness but Enter on the row
+    // toasts a deferred message rather than entering capture mode.
     {
       id: 'focus.cycle',
       title: 'next panel',
@@ -103,6 +122,7 @@ export function buildGlobalCommands(
       scope: 'global',
       displayOnScreen: true,
       onSelect: handlers.cycleFocus,
+      unbindable: true,
     },
     {
       id: 'focus.cycleReverse',
@@ -111,6 +131,7 @@ export function buildGlobalCommands(
       scope: 'global',
       displayOnScreen: false,
       onSelect: handlers.cycleFocusReverse,
+      unbindable: true,
     },
     {
       id: 'app.exit',
@@ -119,6 +140,7 @@ export function buildGlobalCommands(
       scope: 'global',
       displayOnScreen: true,
       onSelect: handlers.requestExit,
+      unbindable: true,
     },
     {
       id: 'palette.open',
@@ -216,6 +238,31 @@ export function buildGlobalCommands(
       scope: 'global',
       displayOnScreen: false,
       onSelect: handlers.openSettingsEdit ?? (() => undefined),
+    },
+    // Phase 3H.4 — palette-only entry into the keybind editor. The
+    // editor's own row-Enter is the chord-capture entry point; this
+    // command is the discovery surface for users browsing the palette.
+    // `displayOnScreen: false` keeps the bottom keybind bar uncluttered.
+    {
+      id: 'keybinds.open',
+      title: 'edit keybinds',
+      key: { kind: 'none' },
+      scope: 'global',
+      displayOnScreen: false,
+      onSelect: handlers.openKeybindEditor ?? (() => undefined),
+    },
+    // Phase 3H.4 — palette-only "reset a keybind". Routes to the same
+    // editor popup; the user picks the target row and presses `r`. A
+    // separate "reset all" surface is intentionally not exposed — the
+    // schema-default is recoverable by deleting `keybindOverrides`
+    // from `~/.symphony/config.json` directly.
+    {
+      id: 'keybinds.reset',
+      title: 'reset a keybind',
+      key: { kind: 'none' },
+      scope: 'global',
+      displayOnScreen: false,
+      onSelect: handlers.openKeybindReset ?? (() => undefined),
     },
   ];
 }
