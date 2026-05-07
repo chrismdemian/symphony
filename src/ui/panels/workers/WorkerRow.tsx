@@ -3,12 +3,14 @@ import { Box, Text } from 'ink';
 import type { WorkerRecordSnapshot } from '../../../orchestrator/worker-registry.js';
 import { useTheme } from '../../theme/context.js';
 import { StatusDot } from './StatusDot.js';
+import { PipelineBar } from './PipelineBar.js';
+import { stageLabelFor } from './stage.js';
 
 /**
  * Single-line representation of a worker.
  *
  * Layout (left → right):
- *   [dot] [instrument] [feature-intent (truncated)] [model] [runtime]
+ *   [dot] [instrument] [pipeline-bar] [stage-label] [feature-intent] [model] [runtime]
  *
  * Selected rows render with `inverse` styling — readable in every
  * terminal regardless of theme.
@@ -46,7 +48,12 @@ export function WorkerRow({
   //   - The leading gutter is a literal space (no color attribute on
   //     the non-selected branch) so non-selected rows don't render a
   //     dim-gray pixel column against the panel background.
+  //
+  // Phase 3I: pipeline bar + stage label sit between the instrument
+  // padding and the feature intent. Both are OUTSIDE the inverse block
+  // (same audit rule — inverse is reserved for the instrument glyphs).
   const padding = ' '.repeat(Math.max(0, 8 - instrument.length));
+  const stageLabel = stageLabelFor(worker.role);
   return (
     <Box flexDirection="row">
       {selected ? (
@@ -64,8 +71,10 @@ export function WorkerRow({
       ) : (
         <Text color={theme['text']}>{instrument}</Text>
       )}
-      <Text>{padding}</Text>
-      <Text color={theme['text']}> {featureIntentDisplay}</Text>
+      <Text>{padding} </Text>
+      <PipelineBar role={worker.role} status={worker.status} />
+      <Text color={theme['text']}> {stageLabel} </Text>
+      <Text color={theme['text']}>{featureIntentDisplay}</Text>
       <Box flexGrow={1} />
       {modelLabel !== '' ? (
         <Text color={theme['textMuted']}> {modelLabel} </Text>
