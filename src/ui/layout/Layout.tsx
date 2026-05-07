@@ -12,6 +12,7 @@ import { Palette } from '../panels/palette/Palette.js';
 import { WorkerSelector } from '../panels/palette/WorkerSelector.js';
 import { HelpOverlay } from '../panels/help/HelpOverlay.js';
 import { SettingsPanel } from '../panels/settings/SettingsPanel.js';
+import { KeybindEditorPopup } from '../panels/settings/KeybindEditorPopup.js';
 import { useFocus, type FocusContext } from '../focus/focus.js';
 import { KeybindBar } from './KeybindBar.js';
 import { StatusBar } from './StatusBar.js';
@@ -139,6 +140,13 @@ function renderPopup(
       return <WorkerSelector workers={props.workers} />;
     case 'settings':
       return <SettingsPanel />;
+    case 'keybind-list':
+    case 'keybind-capture':
+      // Phase 3H.4 — both scopes route to the same component instance
+      // so React preserves component-level state (capturingId,
+      // selectedIdx, lastError) across the list↔capture transition.
+      // The component branches its render on `useFocus().currentScope`.
+      return <KeybindEditorPopup />;
     case null:
       return null;
     default:

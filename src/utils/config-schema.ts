@@ -157,7 +157,22 @@ export function parseConfig(input: unknown): ParseResult {
     };
   }
   const warnings: string[] = [];
+  // Phase 3H.4 — per-entry salvage for `keybindOverrides`. The 3H.1
+  // salvage loop dropped the WHOLE record when ONE entry's chord shape
+  // was bad (3H.1 m2). 3H.4 needs this granular: a typo in one
+  // override shouldn't reset the user's other rebinds. Pre-validate
+  // each value against KeyChordSchema, drop invalid entries with a
+  // warning naming the command id, and replace the field with the
+  // cleaned record before the schema-wide salvage runs.
   let candidate: Record<string, unknown> = { ...obj };
+  const rawOverrides = candidate['keybindOverrides'];
+  if (rawOverrides !== undefined) {
+    const salvage = salvageKeybindOverrides(rawOverrides);
+    candidate['keybindOverrides'] = salvage.cleaned;
+    for (const w of salvage.warnings) {
+      if (!warnings.includes(w)) warnings.push(w);
+    }
+  }
   for (let pass = 0; pass < 16; pass += 1) {
     const result = SymphonyConfigSchema.safeParse(candidate);
     if (result.success) {
@@ -177,6 +192,54 @@ export function parseConfig(input: unknown): ParseResult {
     if (!stripped) break;
   }
   return { config: defaultConfig(), warnings };
+}
+
+/**
+ * Phase 3H.4 — per-entry salvage for the `keybindOverrides` record.
+ *
+ * Validates each `[id, chord]` entry against `KeyChordSchema`. Drops
+ * invalid entries with a warning naming the command id. Returns the
+ * cleaned record + warning lines.
+ *
+ * Non-record / null / array input falls through with a single warning
+ * and an empty cleaned record — the schema's `.default({})` then
+ * applies on the next pass through `safeParse`.
+ *
+ * Why this lives outside the schema-wide salvage loop: the salvage
+ * loop strips the WHOLE record on a single bad entry (3H.1 m2). Per-
+ * entry salvage requires the loop to walk the record, and that's
+ * cleaner as a dedicated helper than a path-truncation special-case
+ * inside `stripField`.
+ */
+interface KeybindSalvageResult {
+  readonly cleaned: Record<string, KeyChord>;
+  readonly warnings: readonly string[];
+}
+
+function salvageKeybindOverrides(input: unknown): KeybindSalvageResult {
+  const warnings: string[] = [];
+  if (input === null || input === undefined) {
+    return { cleaned: {}, warnings };
+  }
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    return {
+      cleaned: {},
+      warnings: ['config.json field "keybindOverrides": expected object — dropped'],
+    };
+  }
+  const cleaned: Record<string, KeyChord> = {};
+  for (const [id, raw] of Object.entries(input as Record<string, unknown>)) {
+    const result = KeyChordSchema.safeParse(raw);
+    if (result.success) {
+      cleaned[id] = result.data;
+      continue;
+    }
+    const reason = result.error.issues[0]?.message ?? 'invalid chord shape';
+    warnings.push(
+      `config.json field "keybindOverrides.${id}": ${reason} — entry dropped`,
+    );
+  }
+  return { cleaned, warnings };
 }
 
 /**

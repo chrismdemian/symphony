@@ -10,6 +10,8 @@ import { Box, Text, useBoxMetrics, useInput, type DOMElement } from 'ink';
 import { useTheme } from '../../theme/context.js';
 import { useRegisterCommands } from '../../keybinds/dispatcher.js';
 import type { Command } from '../../keybinds/registry.js';
+import { applyKeybindOverrides } from '../../keybinds/overrides.js';
+import { useConfig } from '../../../utils/config-context.js';
 import { Equalizer } from '../../anim/Equalizer.js';
 import type { TuiRpc } from '../../runtime/rpc.js';
 import { useWorkerEvents } from '../../data/useWorkerEvents.js';
@@ -192,7 +194,14 @@ export function WorkerOutputView({
     [jumpTop, jumpBottom, lineUp, lineDown],
   );
 
-  useRegisterCommands(commands, isFocused);
+  // Phase 3H.4 — apply user keybind overrides; identity-preserving
+  // when no override matches an output-scope command id.
+  const { config } = useConfig();
+  const overriddenCommands = useMemo(
+    () => applyKeybindOverrides(commands, config.keybindOverrides),
+    [commands, config.keybindOverrides],
+  );
+  useRegisterCommands(overriddenCommands, isFocused);
 
   // Slice the visible window. End-exclusive index from the array end is
   // `eventCount - scrollOffset`; start is `end - viewportEvents`.

@@ -89,6 +89,20 @@ export interface Command {
    * commands at popup scope — those should still appear in the palette.
    */
   readonly internal?: boolean;
+  /**
+   * Phase 3H.4 — escape-hatch flag for the keybind-override editor. A
+   * `true` value means the user CANNOT rebind this chord through the
+   * UI; the editor lists it visibly (so the user knows it exists) but
+   * Enter on the row toasts a deferred message and `applyKeybindOverrides`
+   * silently ignores any matching entry in `config.keybindOverrides`.
+   *
+   * Use for the launcher's only kill switch (`app.exit` / Ctrl+C) and
+   * the Tab-cycle commands that the user would otherwise be unable to
+   * recover from a bad rebind. Different from `internal: true` (which
+   * hides from palette + editor entirely): unbindable commands STAY
+   * visible everywhere — they just can't be edited.
+   */
+  readonly unbindable?: boolean;
 }
 
 /** Render a key chord as a short user-facing string ("Tab", "Ctrl+C", "?"). */
