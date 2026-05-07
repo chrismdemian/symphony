@@ -284,6 +284,13 @@ export function WorkerPanel({ rpc, workersResult }: WorkerPanelProps): React.JSX
     return Date.now();
   }, [secondsTick]);
 
+  // `widthBudget` is the TRUNCATION cap for feature intent — it does
+  // NOT represent measured panel width. The bar (5) + space (1) +
+  // stage label (12) + space (1) added in Phase 3I consume real row
+  // width but don't constrain the intent's truncation length, since
+  // the row's `<Box flexGrow={1}/>` absorbs any overflow at the
+  // model/runtime gap. Keep the cap unchanged so wide-panel users
+  // still see the full 30-char intent.
   const widthBudget = 60;
   const featureIntentBudget = Math.max(12, widthBudget - 30);
 
