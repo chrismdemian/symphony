@@ -418,13 +418,22 @@ export function persistedToSnapshot(
   };
 }
 
-const TERMINAL_STATUSES: ReadonlySet<WorkerStatus> = new Set<WorkerStatus>([
+/**
+ * Single source of truth for "this worker is done" status set. Phase 3J
+ * audit M5 — three callers (`mergeLiveAndPersisted` here, the RPC kill
+ * handler, and the output panel container's auto-refresh edge detector)
+ * had local copies. A future status (`'archived'`, `'cancelled'`)
+ * silently diverged.
+ */
+export const TERMINAL_WORKER_STATUSES: ReadonlySet<WorkerStatus> = new Set<WorkerStatus>([
   'completed',
   'failed',
   'killed',
   'timeout',
   'crashed',
 ]);
+
+const TERMINAL_STATUSES = TERMINAL_WORKER_STATUSES;
 
 export interface MergeLiveAndPersistedOptions {
   readonly projectStore?: ProjectStore;
