@@ -175,7 +175,78 @@ export async function diffWorktree(opts: DiffWorktreeOptions): Promise<DiffResul
   };
 }
 
-/** Current branch of a worktree, or null when detached-HEAD. */
+/**
+ * Resolve a baseRef name to the merge-base SHA against HEAD in the given
+ * worktree. Phase 3J — the diff view wants "what did this worker do
+ * relative to where the branch diverged from the parent", not "what is
+ * different between this commit and the tip of master". The latter would
+ * surface parent-branch commits made after the worker started as
+ * spurious removals.
+ *
+ * Throws `GitOpsError` when the ref is unknown or histories are unrelated.
+ */
+export async function mergeBase(
+  worktreePath: string,
+  baseRef: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['merge-base', baseRef, 'HEAD'],
+      {
+        cwd: worktreePath,
+        ...(signal !== undefined ? { signal } : {}),
+      },
+    );
+    const sha = stdout.trim();
+    if (sha.length === 0) {
+      throw new GitOpsError(`merge-base ${baseRef} HEAD returned empty`);
+    }
+    return sha;
+  } catch (err) {
+    if (err instanceof GitOpsError) throw err;
+    const message = err instanceof Error ? err.message : String(err);
+    const stderr = (err as { stderr?: string })?.stderr ?? '';
+    const exitCode = (err as { code?: number })?.code ?? null;
+    throw new GitOpsError(`merge-base failed: ${message}`, { stderr, exitCode });
+  }
+}
+
+/**
+ * Verify that a ref exists in the worktree. Returns true if `git rev-parse
+ * --verify <ref>` resolves; false otherwise. Used by the baseRef fallback
+ * chain in `workers.diff` to walk down candidates without surfacing
+ * spurious git errors.
+ *
+ * Phase 3J audit M1: rethrow `AbortError` rather than swallowing it as
+ * `false`. Without this, an aborted fetch silently advances to the next
+ * candidate or produces a misleading "no base ref resolved" envelope.
+ */
+export async function refExists(
+  worktreePath: string,
+  ref: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  try {
+    await execFileAsync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], {
+      cwd: worktreePath,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+    return true;
+  } catch (err) {
+    if (isAbortError(err)) throw err;
+    return false;
+  }
+}
+
+/**
+ * Current branch of a worktree, or null when detached-HEAD.
+ *
+ * Phase 3J audit M1: rethrow `AbortError` (don't coerce to `null`).
+ * Detached-HEAD legitimately produces null; an aborted call should
+ * propagate so the caller can decide.
+ */
 export async function currentBranch(
   worktreePath: string,
   signal?: AbortSignal,
@@ -191,9 +262,20 @@ export async function currentBranch(
     );
     const branch = stdout.trim();
     return branch.length > 0 ? branch : null;
-  } catch {
+  } catch (err) {
+    if (isAbortError(err)) throw err;
     return null;
   }
+}
+
+function isAbortError(err: unknown): boolean {
+  if (err instanceof Error && err.name === 'AbortError') return true;
+  // Node 20+ DOMException with name 'AbortError' from `signal` option.
+  if (typeof err === 'object' && err !== null && 'name' in err) {
+    const name = (err as { name: unknown }).name;
+    if (name === 'AbortError') return true;
+  }
+  return false;
 }
 
 export interface CommitAllOptions {

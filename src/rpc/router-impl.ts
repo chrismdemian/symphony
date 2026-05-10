@@ -11,6 +11,7 @@ import type { QuestionStore, QuestionSnapshot } from '../state/question-registry
 import type { WaveStore, WaveSnapshot } from '../orchestrator/research-wave-registry.js';
 import type { ModeController } from '../orchestrator/mode.js';
 import {
+  TERMINAL_WORKER_STATUSES,
   mergeLiveAndPersisted,
   type WorkerRecordSnapshot,
   type WorkerRegistry,
@@ -20,6 +21,14 @@ import type { ToolMode, AutonomyTier } from '../orchestrator/types.js';
 import { createRPCController, createRPCRouter } from './router.js';
 import { applyPatchToDisk, loadConfig } from '../utils/config.js';
 import type { DispatcherHandle } from '../notifications/types.js';
+import {
+  GitOpsError,
+  currentBranch,
+  diffWorktree,
+  mergeBase,
+  refExists,
+} from '../orchestrator/git-ops.js';
+import { getCurrentSignal } from './dispatcher.js';
 
 /**
  * Symphony WS-RPC router definition — Phase 2B.2.
@@ -100,6 +109,33 @@ export interface WorkersTailArgs {
 export interface WorkersTailResult {
   readonly events: readonly StreamEvent[];
   readonly total: number;
+}
+
+export interface WorkersDiffArgs {
+  readonly workerId: string;
+  readonly capBytes?: number;
+}
+
+export interface WorkersDiffFile {
+  readonly path: string;
+  readonly status: string;
+}
+
+export interface WorkersDiffResult {
+  readonly resolvedBase: string;
+  readonly mergeBaseSha: string;
+  readonly branch: string | null;
+  readonly diff: string;
+  readonly bytes: number;
+  readonly truncated: boolean;
+  /**
+   * The cap (in bytes) applied to the diff body when `truncated === true`,
+   * else `null`. Phase 3J audit M3: the TUI must display the byte cap that
+   * was actually enforced, not the JS string length of the truncated body
+   * (which mixes UTF-16 code units with the appended trailer line).
+   */
+  readonly cappedAt: number | null;
+  readonly files: readonly WorkersDiffFile[];
 }
 
 export interface QuestionsListArgs {
@@ -251,14 +287,7 @@ export function createSymphonyRouter(deps: RouterDeps) {
       // `kill()` is a no-op. Returning `{killed: true}` would mislead the
       // user. Report the terminal status instead so the TUI can render
       // accurate state.
-      const TERMINAL: ReadonlySet<string> = new Set([
-        'completed',
-        'failed',
-        'killed',
-        'timeout',
-        'crashed',
-      ]);
-      if (TERMINAL.has(record.status)) {
+      if (TERMINAL_WORKER_STATUSES.has(record.status)) {
         return { killed: false, reason: `already terminal: ${record.status}` };
       }
       try {
@@ -294,6 +323,96 @@ export function createSymphonyRouter(deps: RouterDeps) {
       }
       const events = record.buffer.tail(n);
       return { events, total: record.buffer.total() };
+    },
+    /**
+     * Phase 3J — capture the worker's worktree diff against the project
+     * base branch via merge-base. The TUI's diff view consumes this
+     * directly (no MCP roundtrip; Maestro has its own `review_diff` tool).
+     *
+     * BaseRef resolution chain (first existing ref wins):
+     *   1. project.baseRef (explicit config)
+     *   2. project.gitBranch (typically the parent branch)
+     *   3. 'master'
+     *   4. 'main'
+     *
+     * If none resolve, throws bad_args — the worker's worktree has no
+     * known parent reference. Workers spawned without a registered
+     * project still get the 'master' / 'main' fallback.
+     *
+     * Cap: 256 KB default, 512 KB max (the WS frame budget is 1 MiB so
+     * 512 KB leaves headroom for the JSON envelope around the body).
+     */
+    async diff(args: WorkersDiffArgs): Promise<WorkersDiffResult> {
+      requireString(args?.workerId, 'workerId');
+      const cap = args?.capBytes ?? WORKERS_DIFF_CAP_DEFAULT;
+      if (
+        !Number.isInteger(cap) ||
+        cap < WORKERS_DIFF_CAP_MIN ||
+        cap > WORKERS_DIFF_CAP_MAX
+      ) {
+        throw badArgs(
+          `capBytes must be an integer in [${WORKERS_DIFF_CAP_MIN}, ${WORKERS_DIFF_CAP_MAX}]`,
+        );
+      }
+      const record = workerRegistry.get(args.workerId);
+      if (record === undefined) {
+        throw notFound(`worker '${args.workerId}' is not registered`);
+      }
+      const project =
+        record.projectId !== null ? projectStore.snapshot(record.projectId) : undefined;
+      const candidates: readonly string[] = [
+        ...(project?.baseRef !== undefined ? [project.baseRef] : []),
+        ...(project?.gitBranch !== undefined ? [project.gitBranch] : []),
+        'master',
+        'main',
+      ];
+      // Phase 3J audit M2: thread the per-call AbortSignal through every
+      // `git` invocation. `refExists` and `currentBranch` rethrow
+      // `AbortError`; `mergeBase` and `diffWorktree` propagate it via
+      // `execFile`'s native signal option.
+      const signal = getCurrentSignal();
+      let resolvedBase: string | null = null;
+      for (const candidate of candidates) {
+        if (await refExists(record.worktreePath, candidate, signal)) {
+          resolvedBase = candidate;
+          break;
+        }
+      }
+      if (resolvedBase === null) {
+        throw badArgs(
+          `no base ref resolved for worker '${args.workerId}': tried ${candidates.join(', ')}`,
+        );
+      }
+      try {
+        const sha = await mergeBase(record.worktreePath, resolvedBase, signal);
+        const [diffResult, branch] = await Promise.all([
+          diffWorktree({
+            worktreePath: record.worktreePath,
+            baseRef: sha,
+            capBytes: cap,
+            ...(signal !== undefined ? { signal } : {}),
+          }),
+          currentBranch(record.worktreePath, signal),
+        ]);
+        return {
+          resolvedBase,
+          mergeBaseSha: sha,
+          branch,
+          diff: diffResult.diff,
+          bytes: diffResult.bytes,
+          truncated: diffResult.truncated,
+          cappedAt: diffResult.truncated ? cap : null,
+          files: diffResult.files.map((f) => ({ path: f.path, status: f.status })),
+        };
+      } catch (err) {
+        if (err instanceof GitOpsError) {
+          throw new RpcArgError(
+            'bad_args',
+            `git error: ${err.message}${err.stderr ? ` :: ${err.stderr.trim().slice(0, 200)}` : ''}`,
+          );
+        }
+        throw err;
+      }
     },
   });
 
@@ -426,6 +545,16 @@ function requireString(value: unknown, name: string): asserts value is string {
  */
 const TASKS_DESCRIPTION_MAX = 16 * 1024;
 const TASKS_NOTES_MAX = 64 * 1024;
+
+/**
+ * Phase 3J — `workers.diff` body cap bounds. Default 256 KB matches
+ * what the TUI scroll view can actually consume comfortably; 512 KB max
+ * leaves headroom under the 1 MiB WS frame budget for the JSON
+ * envelope. Min 4 KB so callers can't dial in absurdly small caps.
+ */
+const WORKERS_DIFF_CAP_MIN = 4_000;
+const WORKERS_DIFF_CAP_DEFAULT = 256_000;
+const WORKERS_DIFF_CAP_MAX = 512_000;
 
 function requireBoundedString(
   value: unknown,

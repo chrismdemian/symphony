@@ -6,13 +6,16 @@ import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   DEFAULT_DIFF_SIZE_CAP_BYTES,
+  GitOpsError,
   NothingToCommitError,
   PushRejectedError,
   commitAll,
   currentBranch,
   diffWorktree,
+  mergeBase,
   mergeBranch,
   push,
+  refExists,
 } from '../../src/orchestrator/git-ops.js';
 
 const execFileAsync = promisify(execFile);
@@ -148,6 +151,96 @@ describe('currentBranch', () => {
     });
     await execFileAsync('git', ['checkout', '-q', stdout.trim()], { cwd: dir });
     expect(await currentBranch(dir)).toBeNull();
+  });
+});
+
+describe('mergeBase (Phase 3J)', () => {
+  let dir = '';
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sym-mergebase-'));
+    await initRepo(dir);
+  });
+
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('returns HEAD when baseRef is HEAD itself', async () => {
+    const head = (await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: dir })).stdout.trim();
+    const result = await mergeBase(dir, 'HEAD');
+    expect(result).toBe(head);
+  });
+
+  it('resolves the divergence sha for a feature branch', async () => {
+    // Capture main tip BEFORE branching, then advance both branches.
+    const mainTipAtDiverge = (
+      await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: dir })
+    ).stdout.trim();
+    await execFileAsync('git', ['checkout', '-q', '-b', 'feature/x'], { cwd: dir });
+    await fs.writeFile(path.join(dir, 'feat.txt'), 'feature work\n', 'utf8');
+    await execFileAsync('git', ['add', '.'], { cwd: dir });
+    await execFileAsync('git', ['commit', '-q', '-m', 'feat work'], { cwd: dir });
+
+    // Advance main with a divergent commit that should NOT be the merge-base.
+    await execFileAsync('git', ['checkout', '-q', 'main'], { cwd: dir });
+    await fs.writeFile(path.join(dir, 'main-only.txt'), 'main\n', 'utf8');
+    await execFileAsync('git', ['add', '.'], { cwd: dir });
+    await execFileAsync('git', ['commit', '-q', '-m', 'main divergence'], { cwd: dir });
+    await execFileAsync('git', ['checkout', '-q', 'feature/x'], { cwd: dir });
+
+    const base = await mergeBase(dir, 'main');
+    expect(base).toBe(mainTipAtDiverge);
+  });
+
+  it('throws GitOpsError when ref is unknown', async () => {
+    await expect(mergeBase(dir, 'no-such-ref')).rejects.toBeInstanceOf(GitOpsError);
+  });
+
+  it('throws GitOpsError when histories are unrelated', async () => {
+    // Create an orphan branch with no shared history.
+    await execFileAsync('git', ['checkout', '-q', '--orphan', 'orphan'], { cwd: dir });
+    await execFileAsync('git', ['rm', '-rf', '-q', '.'], { cwd: dir });
+    await fs.writeFile(path.join(dir, 'O.md'), 'orphan\n', 'utf8');
+    await execFileAsync('git', ['add', '.'], { cwd: dir });
+    await execFileAsync('git', ['commit', '-q', '-m', 'orphan'], { cwd: dir });
+
+    await expect(mergeBase(dir, 'main')).rejects.toBeInstanceOf(GitOpsError);
+  });
+
+  it('honors AbortSignal', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(mergeBase(dir, 'HEAD', controller.signal)).rejects.toBeInstanceOf(GitOpsError);
+  });
+});
+
+describe('refExists (Phase 3J)', () => {
+  let dir = '';
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), 'sym-refexists-'));
+    await initRepo(dir);
+  });
+
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it('returns true for an existing branch', async () => {
+    expect(await refExists(dir, 'main')).toBe(true);
+  });
+
+  it('returns true for HEAD', async () => {
+    expect(await refExists(dir, 'HEAD')).toBe(true);
+  });
+
+  it('returns false for an unknown ref', async () => {
+    expect(await refExists(dir, 'definitely-not-a-branch')).toBe(false);
+  });
+
+  it('returns false for an empty ref name', async () => {
+    expect(await refExists(dir, '')).toBe(false);
   });
 });
 
