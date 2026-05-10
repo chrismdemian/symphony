@@ -112,11 +112,10 @@ export interface WorkerLifecycleOptions {
 }
 
 /**
- * Phase 3H.2 — snapshot of the queue state for one project. Phase 3L
- * panel reads this to render the queued task list. `running` is the
- * number of workers currently in `spawning` or `running` state for the
- * project; `capacity` is the cap (`Infinity` means uncapped); `pending`
- * is the queued spawn requests in FIFO order.
+ * Phase 3H.2 — snapshot of the queue state for one project. `running` is
+ * the number of workers currently in `spawning` or `running` state for
+ * the project; `capacity` is the cap (`Infinity` means uncapped);
+ * `pending` is the queued spawn requests in FIFO order.
  */
 export interface QueueSnapshot {
   readonly running: number;
@@ -126,6 +125,37 @@ export interface QueueSnapshot {
     readonly featureIntent: string;
     readonly taskDescription: string;
   }>;
+}
+
+/**
+ * Phase 3L — wire-shape for one queued spawn, suitable for cross-project
+ * display in the TUI's task queue panel. `enqueuedAt` is the epoch-ms
+ * timestamp captured when `spawn()` queued the request; the TUI sorts
+ * the flat list ascending by this field so the global "Next →" pointer
+ * is the earliest enqueued across all projects.
+ */
+export interface PendingSpawnSnapshot {
+  readonly recordId: string;
+  readonly projectPath: string;
+  readonly featureIntent: string;
+  readonly taskDescription: string;
+  readonly enqueuedAt: number;
+}
+
+/**
+ * Phase 3L — thrown into the caller's `spawn()` promise when
+ * `cancelQueued` removes a still-pending entry from the queue. Maestro's
+ * `spawn_worker` tool surfaces the typed code so the chat can render
+ * "task cancelled while queued" distinctly from generic spawn failure.
+ */
+export class QueueCancelledError extends Error {
+  readonly code = 'queue-cancelled';
+  readonly recordId: string;
+  constructor(recordId: string) {
+    super(`spawn_worker cancelled while queued (recordId=${recordId})`);
+    this.name = 'QueueCancelledError';
+    this.recordId = recordId;
+  }
 }
 
 export interface RecoveryReport {
@@ -163,7 +193,7 @@ export interface WorkerLifecycleHandle {
   /**
    * Phase 3H.2 — current queue state for `projectPath`. Returns
    * `{running: 0, capacity: Infinity, pending: []}` when uncapped or
-   * the project has no in-flight workers. Phase 3L panel consumer.
+   * the project has no in-flight workers.
    */
   getQueueSnapshot(projectPath: string): QueueSnapshot;
   /**
@@ -173,6 +203,31 @@ export interface WorkerLifecycleHandle {
    * callback to detect the all-done transition (count → 0).
    */
   getTotalRunning(): number;
+  /**
+   * Phase 3L — flat list of every pending spawn across every project,
+   * sorted ascending by `enqueuedAt`. The TUI's task queue panel renders
+   * this directly; the "Next →" marker is index 0.
+   */
+  listPendingGlobal(): readonly PendingSpawnSnapshot[];
+  /**
+   * Phase 3L — remove `recordId` from its project's pending queue and
+   * reject the caller's `spawn()` promise with `QueueCancelledError`.
+   * No-op (returns `{cancelled:false, reason:'not in queue'}`) if the
+   * record is not currently pending — caller may be racing the drain.
+   */
+  cancelQueued(recordId: string): { cancelled: boolean; reason?: string };
+  /**
+   * Phase 3L — swap `recordId` with its same-project neighbor in the
+   * pending queue, also swapping `enqueuedAt` so the global merge
+   * reflects the new order. `up` swaps with the predecessor; `down`
+   * with the successor. Cross-project reorder is meaningless (per-
+   * project drain) and returns `{moved:false, reason:'no neighbor'}`
+   * at project boundaries.
+   */
+  reorderQueued(
+    recordId: string,
+    direction: 'up' | 'down',
+  ): { moved: boolean; reason?: string };
 }
 
 function defaultIdGenerator(): string {
@@ -182,12 +237,18 @@ function defaultIdGenerator(): string {
 /**
  * Phase 3H.2 — internal queued-spawn entry. Holds the original input
  * and the deferred resolver/rejector for the caller's promise.
+ *
+ * Phase 3L — `enqueuedAt` (epoch ms) lets `listPendingGlobal()` merge
+ * pending entries across projects in deterministic order, and lets
+ * `reorderQueued()` swap timestamps alongside positions so the merge
+ * reflects the new order.
  */
 interface PendingSpawn {
   readonly recordId: string;
   readonly input: SpawnWorkerInput;
   readonly resolve: (record: WorkerRecord) => void;
   readonly reject: (err: Error) => void;
+  enqueuedAt: number;
 }
 
 function nowIso(now: () => number): string {
@@ -356,7 +417,13 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         queuedResolve = resolve;
         queuedReject = reject;
         const list = pendingPerProject.get(input.projectPath) ?? [];
-        const entry: PendingSpawn = { recordId, input, resolve, reject };
+        const entry: PendingSpawn = {
+          recordId,
+          input,
+          resolve,
+          reject,
+          enqueuedAt: now(),
+        };
         list.push(entry);
         pendingPerProject.set(input.projectPath, list);
         // Cancel-on-abort: remove from queue + reject. Never spawns.
@@ -705,6 +772,72 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
     return { running, capacity, pending };
   }
 
+  function listPendingGlobal(): readonly PendingSpawnSnapshot[] {
+    const flat: PendingSpawnSnapshot[] = [];
+    for (const [projectPath, list] of pendingPerProject) {
+      for (const entry of list) {
+        flat.push({
+          recordId: entry.recordId,
+          projectPath,
+          featureIntent:
+            entry.input.featureIntent ?? deriveFeatureIntent(entry.input.taskDescription),
+          taskDescription: entry.input.taskDescription,
+          enqueuedAt: entry.enqueuedAt,
+        });
+      }
+    }
+    // Stable secondary sort by recordId keeps test fixtures with
+    // identical timestamps deterministic across runs.
+    flat.sort((a, b) => {
+      if (a.enqueuedAt !== b.enqueuedAt) return a.enqueuedAt - b.enqueuedAt;
+      return a.recordId < b.recordId ? -1 : a.recordId > b.recordId ? 1 : 0;
+    });
+    return flat;
+  }
+
+  function findPending(
+    recordId: string,
+  ): { list: PendingSpawn[]; index: number; projectPath: string } | null {
+    for (const [projectPath, list] of pendingPerProject) {
+      const index = list.findIndex((p) => p.recordId === recordId);
+      if (index !== -1) return { list, index, projectPath };
+    }
+    return null;
+  }
+
+  function cancelQueued(recordId: string): { cancelled: boolean; reason?: string } {
+    const hit = findPending(recordId);
+    if (hit === null) return { cancelled: false, reason: 'not in queue' };
+    const [entry] = hit.list.splice(hit.index, 1);
+    if (hit.list.length === 0) pendingPerProject.delete(hit.projectPath);
+    // Reject AFTER removing from the list so the rejection handler can
+    // observe the post-removal state. Synchronous — no I/O here.
+    entry!.reject(new QueueCancelledError(recordId));
+    return { cancelled: true };
+  }
+
+  function reorderQueued(
+    recordId: string,
+    direction: 'up' | 'down',
+  ): { moved: boolean; reason?: string } {
+    const hit = findPending(recordId);
+    if (hit === null) return { moved: false, reason: 'not in queue' };
+    const neighborIdx = direction === 'up' ? hit.index - 1 : hit.index + 1;
+    if (neighborIdx < 0 || neighborIdx >= hit.list.length) {
+      return { moved: false, reason: 'no neighbor' };
+    }
+    const a = hit.list[hit.index]!;
+    const b = hit.list[neighborIdx]!;
+    // Swap positions AND timestamps so the cross-project merge in
+    // `listPendingGlobal` reflects the new order.
+    hit.list[hit.index] = b;
+    hit.list[neighborIdx] = a;
+    const tmp = a.enqueuedAt;
+    a.enqueuedAt = b.enqueuedAt;
+    b.enqueuedAt = tmp;
+    return { moved: true };
+  }
+
   return {
     spawn,
     resume,
@@ -714,6 +847,9 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
     setOnEvent,
     getQueueSnapshot,
     getTotalRunning,
+    listPendingGlobal,
+    cancelQueued,
+    reorderQueued,
   };
 }
 
