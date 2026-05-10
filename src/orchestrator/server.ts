@@ -62,6 +62,13 @@ import { readSymphonyConfig } from '../worktree/symphony-config.js';
 import { createNotificationDispatcher } from '../notifications/dispatcher.js';
 import type { DispatcherHandle } from '../notifications/types.js';
 import { spawnToast } from '../notifications/spawn-toast.js';
+import { createCompletionSummarizer } from './completion-summarizer.js';
+import { WorkerCompletionsBroker } from './completions-broker.js';
+import type {
+  CompletionsBroker,
+  CompletionSummarizerHandle,
+  OneShotInvoker,
+} from './completion-summarizer-types.js';
 
 export interface OrchestratorServerOptions {
   transport?: Transport;
@@ -125,6 +132,19 @@ export interface OrchestratorServerOptions {
    * dispatcher with `loadConfig` + `spawnToast` from `src/notifications`.
    */
   notificationDispatcher?: DispatcherHandle;
+  /**
+   * Phase 3K — override the completion-summarizer broker. Test seam:
+   * pass a `WorkerCompletionsBroker` stub or spy to inspect what the
+   * summarizer publishes. Defaults to a fresh `WorkerCompletionsBroker`.
+   */
+  completionsBroker?: CompletionsBroker;
+  /**
+   * Phase 3K — override the completion summarizer. Test seam: pass a
+   * stub `CompletionSummarizerHandle` to bypass the one-shot Claude
+   * call entirely. Defaults to a real summarizer wrapping the same
+   * `oneShotRunner` used by `audit_changes` + `finalize`.
+   */
+  completionSummarizer?: CompletionSummarizerHandle;
 }
 
 export interface RpcOptions {
@@ -156,6 +176,10 @@ export interface OrchestratorServerHandle {
   waveStore: WaveStore;
   /** Phase 3H.3 — exposed for tests + the RPC layer's `flushAwayDigest`. */
   notificationDispatcher: DispatcherHandle;
+  /** Phase 3K — exposed for tests that need to subscribe directly. */
+  completionsBroker: CompletionsBroker;
+  /** Phase 3K — exposed for tests that need to wait on shutdown drain. */
+  completionSummarizer: CompletionSummarizerHandle;
   defaultProjectPath: string;
   resolveProjectPath: (project?: string) => string;
   setContext: (partial: Partial<DispatchContext>) => void;
@@ -238,6 +262,41 @@ export async function startOrchestratorServer(
         const stored = projectStore.get(projectId);
         return stored?.name ?? fallbackProjectLabel;
       },
+    });
+
+  // Phase 3K — completion summarizer broker + dispatcher. Both default
+  // to fresh instances; tests can inject their own. The summarizer
+  // wraps the same `oneShotRunner` used by `audit_changes` + `finalize`
+  // so a single `--claude-binary` swap covers all three call sites.
+  // `getProjectName` mirrors the notifications dispatcher for parity;
+  // `getWorkerName` returns a server-side fallback (the TUI overrides
+  // via its instrument allocator at receipt time — see
+  // `useCompletionEvents`). Server-side has no instrument concept.
+  const completionsBroker: CompletionsBroker =
+    options.completionsBroker ?? new WorkerCompletionsBroker();
+  const projectNameForRecord = (record: { projectId: string | null }): string => {
+    if (record.projectId === null || record.projectId === '') return fallbackProjectLabel;
+    const stored = projectStore.get(record.projectId);
+    return stored?.name ?? fallbackProjectLabel;
+  };
+  const summarizerOneShot: OneShotInvoker = async (input) => {
+    const runner = options.oneShotRunner ?? defaultOneShotRunner;
+    const result = await runner({
+      prompt: input.prompt,
+      cwd: input.cwd,
+      ...(input.model !== undefined ? { model: input.model } : {}),
+      ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+      ...(input.signal !== undefined ? { signal: input.signal } : {}),
+    });
+    return { text: result.text, exitCode: result.exitCode };
+  };
+  const completionSummarizer: CompletionSummarizerHandle =
+    options.completionSummarizer ??
+    createCompletionSummarizer({
+      broker: completionsBroker,
+      oneShot: summarizerOneShot,
+      getWorkerName: (record) => `worker-${record.id.slice(0, 6)}`,
+      getProjectName: (record) => projectNameForRecord(record),
     });
 
   const questionStore: QuestionStore =
@@ -354,8 +413,15 @@ export async function startOrchestratorServer(
       // running count. The lifecycle fires this AFTER markCompleted +
       // release(), so totalRunning === 0 truly means "no workers
       // anywhere" by the time the all-done check runs.
-      onWorkerStatusChange: (record, totalRunning) =>
-        notificationDispatcher.onWorkerExit(record, totalRunning),
+      // Phase 3K — completion summarizer rides the same hook in
+      // parallel. Order: notifications first (toast latency-sensitive),
+      // summarizer second (one-shot is fire-and-forget). Both calls are
+      // sync from the lifecycle's perspective; their internal awaits
+      // don't block the lifecycle wireExit chain.
+      onWorkerStatusChange: (record, totalRunning) => {
+        notificationDispatcher.onWorkerExit(record, totalRunning);
+        completionSummarizer.onWorkerExit(record);
+      },
     });
   // Late-bind the broker callback so it works whether the lifecycle was
   // default-constructed above OR injected via `options.workerLifecycle`
@@ -478,6 +544,8 @@ export async function startOrchestratorServer(
       // workers ARE in the registry here. New workers spawned via MCP after
       // this point register synchronously before any event fans out.
       workerExists: (workerId: string) => workerRegistry.get(workerId) !== undefined,
+      // Phase 3K — accept `subscribe('completions.events')` from the TUI.
+      completionsBroker,
       ...(rpcConfig.host !== undefined ? { host: rpcConfig.host } : {}),
       ...(rpcConfig.port !== undefined ? { port: rpcConfig.port } : {}),
     });
@@ -515,10 +583,17 @@ export async function startOrchestratorServer(
     if (rpcHandle !== undefined) {
       await rpcHandle.close().catch(() => {});
       eventBroker.clear();
+      completionsBroker.clear();
       if (rpcHandle.tokenFilePath !== undefined) {
         await deleteRpcDescriptor(rpcHandle.tokenFilePath).catch(() => {});
       }
     }
+    // Phase 3K — drain summarizer in-flights BEFORE the lifecycle's
+    // SIGTERM kill window. Workers that fail-class-exit during the kill
+    // would otherwise re-enter `onWorkerExit` post-disposed and (with
+    // the disposed-flag guard) silently no-op. Drain first to publish
+    // legitimate summaries, then disposed-flag covers the rest.
+    await completionSummarizer.shutdown().catch(() => {});
     await notificationDispatcher.shutdown().catch(() => {});
     await workerLifecycle.shutdown().catch(() => {});
     await workerManager.shutdown().catch(() => {});
@@ -545,6 +620,8 @@ export async function startOrchestratorServer(
     questionStore,
     waveStore,
     notificationDispatcher,
+    completionsBroker,
+    completionSummarizer,
     defaultProjectPath,
     resolveProjectPath,
     setContext: (partial) => {

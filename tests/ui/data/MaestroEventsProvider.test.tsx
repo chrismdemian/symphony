@@ -77,7 +77,9 @@ function Probe(): React.JSX.Element {
       ? '(no turns)'
       : lastTurn.kind === 'user'
         ? `user: ${lastTurn.text}`
-        : `assistant: ${lastTurn.blocks.map((b) => (b.kind === 'text' ? b.text : `[${b.kind}]`)).join(' | ')}`;
+        : lastTurn.kind === 'system'
+          ? `system: ${lastTurn.summary.headline}`
+          : `assistant: ${lastTurn.blocks.map((b) => (b.kind === 'text' ? b.text : `[${b.kind}]`)).join(' | ')}`;
   return (
     <Text>
       session={data.sessionId ?? 'null'} | turns={data.turns.length} | inFlight={data.turn.inFlight ? 'yes' : 'no'} | tool={data.turn.currentTool ?? 'null'} | last={summary}

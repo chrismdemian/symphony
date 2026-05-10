@@ -311,9 +311,14 @@ describe('Phase 3D.2 scenario — json-render integration through the launcher',
       workerManager: { ensureClaudeTrust: async () => undefined } as never,
     });
 
-    // Phase 1 — empty workers list. Subscribe + tail not yet called.
+    // Phase 1 — empty workers list. workers.events subscribe + tail not
+    // yet called. (Phase 3K's `completions.events` subscribe is global
+    // and fires on App mount; filter the assertion accordingly.)
     await settle(200);
-    expect(handle.subscribeMock).not.toHaveBeenCalled();
+    const workersSubscribes = handle.subscribeMock.mock.calls.filter(
+      (c) => c[0] === 'workers.events',
+    );
+    expect(workersSubscribes).toHaveLength(0);
     expect(handle.tailMock).not.toHaveBeenCalled();
 
     // Phase 2 — add one worker. Reconcile auto-selects after the next

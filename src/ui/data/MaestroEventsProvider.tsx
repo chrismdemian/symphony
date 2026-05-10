@@ -17,6 +17,7 @@ import {
   chatHistoryReducer,
   INITIAL_CHAT_HISTORY,
   type ChatHistoryState,
+  type SystemSummary,
   type Turn,
 } from './chatHistoryReducer.js';
 import {
@@ -61,7 +62,8 @@ const INITIAL_COMBINED: CombinedState = {
 
 type CombinedAction =
   | { readonly kind: 'event'; readonly event: MaestroEvent; readonly ts: number }
-  | { readonly kind: 'pushUser'; readonly text: string; readonly ts: number };
+  | { readonly kind: 'pushUser'; readonly text: string; readonly ts: number }
+  | { readonly kind: 'pushSystem'; readonly summary: SystemSummary; readonly ts: number };
 
 function combinedReducer(state: CombinedState, action: CombinedAction): CombinedState {
   // Audit M2: the combined reducer must short-circuit when ALL three
@@ -69,7 +71,7 @@ function combinedReducer(state: CombinedState, action: CombinedAction): Combined
   // a fresh state object and re-renders the provider, even no-op
   // events like empty `assistant_text` chunks. Children already enforce
   // referential stability; we propagate it.
-  if (action.kind === 'pushUser') {
+  if (action.kind === 'pushUser' || action.kind === 'pushSystem') {
     const nextChat = chatHistoryReducer(state.chat, action);
     if (nextChat === state.chat) return state;
     return { sessionId: state.sessionId, chat: nextChat, turn: state.turn };
@@ -121,6 +123,15 @@ export interface MaestroDataController {
    * the load-bearing signal.
    */
   readonly sendUserMessage: (text: string) => SendUserMessageResult;
+  /**
+   * Phase 3K — append a system row (worker completion summary) to
+   * chat history. Source-agnostic entry point so `useCompletionEvents`
+   * can dispatch without knowing about the combined reducer. The
+   * reducer defers insertion until any in-flight assistant turn
+   * completes (preserves bubble integrity); see chatHistoryReducer
+   * `pendingSystems` queue.
+   */
+  readonly pushSystem: (summary: SystemSummary) => void;
 }
 
 const MaestroDataContext = createContext<MaestroDataController | null>(null);
@@ -184,6 +195,10 @@ export function MaestroEventsProvider({
     dispatch({ kind: 'pushUser', text, ts: nowRef.current() });
   }, []);
 
+  const pushSystem = useCallback((summary: SystemSummary) => {
+    dispatch({ kind: 'pushSystem', summary, ts: nowRef.current() });
+  }, []);
+
   const sendUserMessage = useCallback(
     (text: string): SendUserMessageResult => {
       try {
@@ -222,8 +237,9 @@ export function MaestroEventsProvider({
       turn: state.turn,
       pushUserMessage,
       sendUserMessage,
+      pushSystem,
     }),
-    [state.sessionId, state.chat.turns, state.turn, pushUserMessage, sendUserMessage],
+    [state.sessionId, state.chat.turns, state.turn, pushUserMessage, sendUserMessage, pushSystem],
   );
 
   return (

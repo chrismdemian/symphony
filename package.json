@@ -42,6 +42,7 @@
     "visual:3h4": "node tests/visual/run.mjs tests/visual/3h4-frames.tsx",
     "visual:3i": "node tests/visual/run.mjs tests/visual/3i-frames.tsx",
     "visual:3j": "node tests/visual/run.mjs tests/visual/3j-frames.tsx",
+    "visual:3k": "node tests/visual/run.mjs tests/visual/3k-frames.tsx",
     "smoke:3b3": "node tests/smoke/3b3-pty-smoke.mjs"
   },
   "dependencies": {

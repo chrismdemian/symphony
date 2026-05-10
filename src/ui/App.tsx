@@ -17,6 +17,9 @@ import {
   useMaestroData,
   type MaestroController,
 } from './data/MaestroEventsProvider.js';
+import { useCompletionEvents } from './data/useCompletionEvents.js';
+import { useInstrumentNames } from './data/useInstrumentNames.js';
+import { InstrumentNameProvider } from './data/InstrumentNameContext.js';
 import { AppActionsProvider } from './runtime/AppActions.js';
 import { ToastProvider, useToast } from './feedback/ToastProvider.js';
 import { ConfigProvider, useConfig } from '../utils/config-context.js';
@@ -101,7 +104,24 @@ function AppShell(props: AppProps): React.JSX.Element {
   const workersResult = useWorkers(props.rpc);
   const { mode } = useMode(props.rpc);
   const questionsResult = useQuestions(props.rpc);
-  const { sessionId } = useMaestroData();
+  const { sessionId, pushSystem } = useMaestroData();
+
+  // Phase 3K — subscribe to the orchestrator's `completions.events`
+  // topic and forward each summary into the chat panel as a system
+  // turn. Instrument name resolution happens at render time (in the
+  // Bubble, via InstrumentNameContext) rather than at receipt — workers
+  // that complete inside a single 1-s poll window aren't yet in the
+  // allocator's input set; a render-time lookup recovers the proper
+  // name once the next poll surfaces them. Audit C1.
+  const instruments = useInstrumentNames(workersResult.workers);
+  const resolveInstrumentName = useCallback(
+    (workerId: string) => instruments.get(workerId),
+    [instruments],
+  );
+  useCompletionEvents({
+    rpc: props.rpc,
+    pushSystem,
+  });
 
   // Phase 3H.2 — own the probe-driven theme swap from inside the
   // config-aware tree. ThemeProvider initializes truecolor; this effect
@@ -266,18 +286,20 @@ function AppShell(props: AppProps): React.JSX.Element {
 
   return (
     <KeybindProvider initialCommands={overriddenCommands} leaderTimeoutMs={config.leaderTimeoutMs}>
-      <Box flexDirection="column" width="100%" height="100%">
-        <Layout
-          version={props.version}
-          mode={mode}
-          projects={projects}
-          workers={workersResult.workers}
-          sessionId={sessionId}
-          rpc={props.rpc}
-          workersResult={workersResult}
-          questionsResult={questionsResult}
-        />
-      </Box>
+      <InstrumentNameProvider value={resolveInstrumentName}>
+        <Box flexDirection="column" width="100%" height="100%">
+          <Layout
+            version={props.version}
+            mode={mode}
+            projects={projects}
+            workers={workersResult.workers}
+            sessionId={sessionId}
+            rpc={props.rpc}
+            workersResult={workersResult}
+            questionsResult={questionsResult}
+          />
+        </Box>
+      </InstrumentNameProvider>
     </KeybindProvider>
   );
 }

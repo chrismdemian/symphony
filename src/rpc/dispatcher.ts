@@ -11,6 +11,7 @@ import type {
 import { ProtocolError, decodeFrame, encodeFrame, err, ok } from './protocol.js';
 import { resolveProcedure } from './router.js';
 import type { WorkerEventBroker } from './event-broker.js';
+import type { CompletionsBroker } from '../orchestrator/completion-summarizer-types.js';
 
 /**
  * Per-connection dispatcher — Phase 2B.2.
@@ -70,6 +71,14 @@ export interface DispatcherOptions {
   readonly closeOnProtocolError?: DispatcherProtocolViolationCloser;
   /** 2B.2 m6: optional registry-existence probe for `workers.events` subscribes. */
   readonly workerExists?: DispatcherWorkerExistsCheck;
+  /**
+   * Phase 3K — optional completions broker. When supplied,
+   * `subscribe('completions.events')` is accepted; subscribers receive
+   * every `CompletionSummary` published server-side. When omitted,
+   * subscribes to that topic resolve `not_found` (preserves prior
+   * behavior for tests that don't need the channel).
+   */
+  readonly completionsBroker?: CompletionsBroker;
 }
 
 interface SubscriptionEntry {
@@ -78,10 +87,12 @@ interface SubscriptionEntry {
 }
 
 const WORKERS_EVENTS_TOPIC = 'workers.events' as const;
+const COMPLETIONS_EVENTS_TOPIC = 'completions.events' as const;
 
 export class Dispatcher {
   private readonly router: RouterMap;
   private readonly broker: WorkerEventBroker;
+  private readonly completionsBroker: CompletionsBroker | undefined;
   private readonly send: DispatcherSend;
   private readonly signal: AbortSignal;
   private readonly closeOnProtocolError: DispatcherProtocolViolationCloser;
@@ -92,6 +103,7 @@ export class Dispatcher {
   constructor(opts: DispatcherOptions) {
     this.router = opts.router;
     this.broker = opts.broker;
+    this.completionsBroker = opts.completionsBroker;
     this.send = opts.send;
     this.signal = opts.signal;
     this.closeOnProtocolError = opts.closeOnProtocolError ?? (() => {});
@@ -190,6 +202,10 @@ export class Dispatcher {
       this.sendResult(frame.id, err('bad_args', `subscription id '${frame.id}' already in use`));
       return;
     }
+    if (frame.topic === COMPLETIONS_EVENTS_TOPIC) {
+      this.handleCompletionsSubscribe(frame);
+      return;
+    }
     if (frame.topic !== WORKERS_EVENTS_TOPIC) {
       this.sendResult(
         frame.id,
@@ -235,6 +251,38 @@ export class Dispatcher {
     });
     this.subscriptions.set(frame.id, { topic: eventTopic, unsubscribe });
     this.sendResult(frame.id, ok({ topic: eventTopic }));
+  }
+
+  private handleCompletionsSubscribe(frame: SubscribeFrame): void {
+    // Phase 3K — global completion summary feed. No args required (the
+    // channel is global, no per-worker keying). Reject when the broker
+    // wasn't wired (legacy callers / unit tests that don't care).
+    // Audit m2: defensive duplicate-id check matches the parent
+    // handleSubscribe's gate so a future refactor that calls this
+    // helper directly doesn't silently bypass dedup.
+    if (this.subscriptions.has(frame.id)) {
+      this.sendResult(frame.id, err('bad_args', `subscription id '${frame.id}' already in use`));
+      return;
+    }
+    if (this.completionsBroker === undefined) {
+      this.sendResult(
+        frame.id,
+        err('not_found', `subscription topic '${COMPLETIONS_EVENTS_TOPIC}' is not configured`),
+      );
+      return;
+    }
+    const unsubscribe = this.completionsBroker.subscribe((summary) => {
+      const out: EventFrame = {
+        kind: 'event',
+        topic: COMPLETIONS_EVENTS_TOPIC,
+        payload: summary,
+      };
+      // Same drop-on-backpressure policy as workers.events. Slow client
+      // misses a summary rather than blocking the global broker.
+      this.send(encodeFrame(out), { dropOnBackpressure: true });
+    });
+    this.subscriptions.set(frame.id, { topic: COMPLETIONS_EVENTS_TOPIC, unsubscribe });
+    this.sendResult(frame.id, ok({ topic: COMPLETIONS_EVENTS_TOPIC }));
   }
 
   private handleUnsubscribe(frame: UnsubscribeFrame): void {

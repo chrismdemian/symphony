@@ -4,6 +4,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { Dispatcher, type DispatcherSendOptions } from './dispatcher.js';
 import { UnauthorizedError, validateAuthHeader, validateQueryToken } from './auth.js';
 import type { WorkerEventBroker } from './event-broker.js';
+import type { CompletionsBroker } from '../orchestrator/completion-summarizer-types.js';
 import { MAX_FRAME_BYTES } from './protocol.js';
 
 /**
@@ -42,6 +43,13 @@ export interface RpcServerOptions {
    * `WorkerRegistry`; unit tests omit it.
    */
   readonly workerExists?: (workerId: string) => boolean;
+  /**
+   * Phase 3K — global completions broker. When supplied, per-connection
+   * dispatchers accept `subscribe('completions.events')`. When omitted,
+   * subscribes to that topic resolve `not_found` (preserves prior
+   * behavior for unit tests).
+   */
+  readonly completionsBroker?: CompletionsBroker;
 }
 
 export interface RpcServerHandle {
@@ -128,6 +136,9 @@ export async function startRpcServer(opts: RpcServerOptions): Promise<RpcServerH
         if (ws.readyState === ws.OPEN) ws.close(code, reason);
       },
       ...(opts.workerExists !== undefined ? { workerExists: opts.workerExists } : {}),
+      ...(opts.completionsBroker !== undefined
+        ? { completionsBroker: opts.completionsBroker }
+        : {}),
     });
     ws.on('message', (data) => {
       const text = typeof data === 'string' ? data : Buffer.isBuffer(data) ? data.toString('utf8')
