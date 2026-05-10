@@ -34,7 +34,11 @@ export function QueueRow({
   selected,
 }: QueueRowProps): React.JSX.Element {
   const theme = useTheme();
-  const prefix = ordinal === 1 ? 'Next →' : `${formatOrdinal(ordinal)}.    `;
+  // 3L visual review: head row prefix must be the SAME width as the
+  // ordinal-row prefix (` 2.    ` = 7 chars) so feature-intent text
+  // aligns to the same column across all rows. Without the trailing
+  // pad, "Next →" is 6 chars and the body shifts left by 1 cell.
+  const prefix = ordinal === 1 ? 'Next → ' : `${formatOrdinal(ordinal)}.    `;
   return (
     <Box flexDirection="row">
       {selected ? <Text color={theme['accent']}>▌</Text> : <Text> </Text>}

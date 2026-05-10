@@ -356,6 +356,12 @@ export function WorkerPanel({
     (n: number) => {
       selection.selectByOrdinal(visibleWorkerIds, n);
       setSelectedHeader(null);
+      // 3L audit M3: ordinal-select MUST also clear the queue row
+      // selection so the worker row's render-time mutex shows the
+      // new highlight. Without this, an ordinal press while a queue
+      // row is selected leaves the cursor visually stuck on the
+      // queue row (worker isSelected gate fails on selectedQueueRecordId).
+      setSelectedQueueRecordId(null);
     },
     [selection, visibleWorkerIds],
   );

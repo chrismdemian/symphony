@@ -33,11 +33,21 @@ export function useQueue(rpc: TuiRpc, options?: UseQueueOptions): UseQueueResult
   const [tick, setTick] = useState<number>(0);
   const pollIntervalMs = options?.pollIntervalMs ?? 1000;
   const inFlightRef = useRef(false);
+  // 3L diff audit M1: when `refresh()` fires while an earlier poll is
+  // still in flight, the new `tick` value is observed by the effect
+  // but the early-return on inFlightRef drops it. The user sees stale
+  // queue state for up to 1 poll interval after every cancel/reorder.
+  // Track the pending refresh in a ref, and when the in-flight poll
+  // resolves, re-arm one more tick.
+  const pendingRefreshRef = useRef(false);
 
   const refresh = useCallback(() => setTick((n) => n + 1), []);
 
   useEffect(() => {
-    if (inFlightRef.current) return;
+    if (inFlightRef.current) {
+      pendingRefreshRef.current = true;
+      return;
+    }
     let cancelled = false;
     inFlightRef.current = true;
     setLoading(true);
@@ -56,6 +66,13 @@ export function useQueue(rpc: TuiRpc, options?: UseQueueOptions): UseQueueResult
         inFlightRef.current = false;
         if (cancelled) return;
         setLoading(false);
+        // Drain any refresh request that arrived while the previous
+        // poll was in flight. Bumping `tick` re-runs this effect, which
+        // dispatches the fresh `queue.list()`.
+        if (pendingRefreshRef.current) {
+          pendingRefreshRef.current = false;
+          setTick((n) => n + 1);
+        }
       });
     return () => {
       cancelled = true;
