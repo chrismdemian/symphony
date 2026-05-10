@@ -21,6 +21,10 @@ import type { ToolMode, AutonomyTier } from '../orchestrator/types.js';
 import { createRPCController, createRPCRouter } from './router.js';
 import { applyPatchToDisk, loadConfig } from '../utils/config.js';
 import type { DispatcherHandle } from '../notifications/types.js';
+import type {
+  PendingSpawnSnapshot,
+  WorkerLifecycleHandle,
+} from '../orchestrator/worker-lifecycle.js';
 import {
   GitOpsError,
   currentBranch,
@@ -63,6 +67,16 @@ export interface RouterDeps {
    * notifications can leave it out.
    */
   readonly notificationDispatcher?: DispatcherHandle;
+  /**
+   * Phase 3L — optional. When omitted, the `queue.list`/`queue.cancel`/
+   * `queue.reorder` RPC procedures resolve `not_found` so legacy test
+   * rigs that don't construct a real lifecycle keep working. CLI server
+   * wires the lifecycle in `server.ts`.
+   */
+  readonly workerLifecycle?: Pick<
+    WorkerLifecycleHandle,
+    'listPendingGlobal' | 'cancelQueued' | 'reorderQueued'
+  >;
 }
 
 // ── Argument shapes (validated at the boundary) ──────────────────────
@@ -166,6 +180,31 @@ export interface ModeSetModelResult {
    */
   readonly warnings: readonly string[];
 }
+
+// ── Queue argument shapes (Phase 3L) ─────────────────────────────────
+
+export interface QueueCancelArgs {
+  readonly recordId: string;
+}
+
+export interface QueueCancelResult {
+  readonly cancelled: boolean;
+  readonly reason?: string;
+}
+
+export interface QueueReorderArgs {
+  readonly recordId: string;
+  readonly direction: 'up' | 'down';
+}
+
+export interface QueueReorderResult {
+  readonly moved: boolean;
+  readonly reason?: string;
+}
+
+// Re-export so client SDKs can type the wire shape without reaching
+// into orchestrator/worker-lifecycle.js.
+export type { PendingSpawnSnapshot };
 
 // ── Router builder ────────────────────────────────────────────────────
 
@@ -497,6 +536,41 @@ export function createSymphonyRouter(deps: RouterDeps) {
     },
   });
 
+  /**
+   * Phase 3L — task queue panel surface. `list` returns the flat
+   * cross-project queue sorted by enqueue timestamp; `cancel` removes
+   * a pending entry and rejects the caller's spawn promise;
+   * `reorder` swaps a pending entry with its same-project neighbor.
+   *
+   * All three return `not_found` if `workerLifecycle` is missing from
+   * `RouterDeps` (legacy test rigs). The CLI server always wires it.
+   */
+  const queue = createRPCController({
+    list(): readonly PendingSpawnSnapshot[] {
+      if (deps.workerLifecycle === undefined) {
+        throw notFound('queue subsystem not configured');
+      }
+      return deps.workerLifecycle.listPendingGlobal();
+    },
+    cancel(args: QueueCancelArgs): QueueCancelResult {
+      requireString(args?.recordId, 'recordId');
+      if (deps.workerLifecycle === undefined) {
+        throw notFound('queue subsystem not configured');
+      }
+      return deps.workerLifecycle.cancelQueued(args.recordId);
+    },
+    reorder(args: QueueReorderArgs): QueueReorderResult {
+      requireString(args?.recordId, 'recordId');
+      if (args?.direction !== 'up' && args?.direction !== 'down') {
+        throw badArgs('direction must be "up" or "down"');
+      }
+      if (deps.workerLifecycle === undefined) {
+        throw notFound('queue subsystem not configured');
+      }
+      return deps.workerLifecycle.reorderQueued(args.recordId, args.direction);
+    },
+  });
+
   return createRPCRouter({
     projects,
     tasks,
@@ -505,6 +579,7 @@ export function createSymphonyRouter(deps: RouterDeps) {
     waves,
     mode,
     notifications,
+    queue,
   });
 }
 

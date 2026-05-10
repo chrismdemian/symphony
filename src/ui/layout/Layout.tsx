@@ -20,6 +20,7 @@ import { useStdoutDimensions } from './useDimensions.js';
 import { ToastTray } from '../feedback/ToastTray.js';
 import type { TuiRpc } from '../runtime/rpc.js';
 import type { UseWorkersResult } from '../data/useWorkers.js';
+import type { UseQueueResult } from '../data/useQueue.js';
 import type { UseQuestionsResult } from '../data/useQuestions.js';
 
 /**
@@ -56,6 +57,8 @@ export interface LayoutProps {
   readonly sessionId: string | null;
   readonly rpc: TuiRpc;
   readonly workersResult: UseWorkersResult;
+  /** Phase 3L — task queue snapshot (polled at App level). */
+  readonly queueResult?: UseQueueResult;
   /** Phase 3E — question queue (polled at App level). */
   readonly questionsResult?: UseQuestionsResult;
 }
@@ -71,7 +74,11 @@ export function Layout(props: LayoutProps): React.JSX.Element {
   const wide = columns >= NARROW_THRESHOLD;
   const popupKey = getPopupOnTopKey(focus.state.stack);
   const workersPanel = (
-    <WorkerPanel rpc={props.rpc} workersResult={props.workersResult} />
+    <WorkerPanel
+      rpc={props.rpc}
+      workersResult={props.workersResult}
+      queueResult={props.queueResult}
+    />
   );
   const outputPanel = <OutputPanel rpc={props.rpc} />;
   const popupNode = renderPopup(popupKey, props);

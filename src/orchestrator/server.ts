@@ -533,6 +533,7 @@ export async function startOrchestratorServer(
       workerRegistry,
       modeController: mode,
       notificationDispatcher,
+      workerLifecycle,
     });
     const handle = await startRpcServer({
       router: router as unknown as Parameters<typeof startRpcServer>[0]['router'],

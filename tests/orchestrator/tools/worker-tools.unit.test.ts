@@ -94,6 +94,9 @@ function fakeLifecycle(): WorkerLifecycleHandle & {
     setOnEvent: () => {},
     getQueueSnapshot: () => ({ running: 0, capacity: Number.POSITIVE_INFINITY, pending: [] }),
     getTotalRunning: () => 0,
+    listPendingGlobal: () => [],
+    cancelQueued: () => ({ cancelled: false, reason: 'not in queue' }),
+    reorderQueued: () => ({ moved: false, reason: 'not in queue' }),
   };
 }
 
