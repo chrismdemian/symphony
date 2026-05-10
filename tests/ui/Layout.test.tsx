@@ -61,6 +61,14 @@ function makeFakeRpc(): TuiRpc {
       mode: {
         get: async () => ({ mode: 'plan' as const }),
       },
+      queue: {
+        list: async () => [],
+        cancel: async () => ({ cancelled: false, reason: 'not in queue' }),
+        reorder: async () => ({ moved: false, reason: 'not in queue' }),
+      },
+      notifications: {
+        flushAwayDigest: async () => {},
+      },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any,
     subscribe: async () => ({

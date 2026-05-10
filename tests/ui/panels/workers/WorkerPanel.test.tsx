@@ -289,16 +289,15 @@ describe('<WorkerPanel>', () => {
     const rpc = makeFakeRpc({ onKill: (id) => (killed = id) });
     const { stdin, unmount } = render(<Harness rpc={rpc} workersResult={wr} />);
     await flush();
-    // Initial selection: header of group, then j → first worker.
-    stdin.write('j');
-    await flush();
+    // WorkerSelectionProvider.reconcile pre-selects worker 'a' on mount,
+    // so the cursor starts on row 'a'. One j press advances to 'b'.
+    // (3L follow-up: K is now guarded against firing on header /
+    // queue rows — it only fires when a worker row is selected.)
     stdin.write('j');
     await flush();
     stdin.write('K');
     await flush();
     await flush();
-    // After two j presses from the header, selection should be on
-    // the SECOND worker (header → a → b).
     expect(killed).toBe('b');
     unmount();
   });

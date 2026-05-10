@@ -9,6 +9,7 @@ import { applyKeybindOverrides } from './keybinds/overrides.js';
 import { Layout } from './layout/Layout.js';
 import { useProjects } from './data/useProjects.js';
 import { useWorkers } from './data/useWorkers.js';
+import { useQueue } from './data/useQueue.js';
 import { useMode } from './data/useMode.js';
 import { useQuestions } from './data/useQuestions.js';
 import { WorkerSelectionProvider } from './data/WorkerSelection.js';
@@ -102,6 +103,7 @@ function AppShell(props: AppProps): React.JSX.Element {
   const { config } = useConfig();
   const { projects } = useProjects(props.rpc);
   const workersResult = useWorkers(props.rpc);
+  const queueResult = useQueue(props.rpc);
   const { mode } = useMode(props.rpc);
   const questionsResult = useQuestions(props.rpc);
   const { sessionId, pushSystem } = useMaestroData();
@@ -296,6 +298,7 @@ function AppShell(props: AppProps): React.JSX.Element {
             sessionId={sessionId}
             rpc={props.rpc}
             workersResult={workersResult}
+            queueResult={queueResult}
             questionsResult={questionsResult}
           />
         </Box>

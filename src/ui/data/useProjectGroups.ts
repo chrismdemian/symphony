@@ -12,7 +12,14 @@ export interface ProjectGroup {
 
 const UNREGISTERED = '(unregistered)';
 
-function deriveDisplayName(projectPath: string): string {
+/**
+ * Convert a project path to a display name (last path segment). Empty
+ * string → `(unregistered)`. Exported for Phase 3L queue rows whose
+ * project may not yet have any workers in the local worker list, so
+ * they can derive the same label that ProjectGroupHeader uses without
+ * round-tripping through `useProjectGroups`.
+ */
+export function deriveDisplayName(projectPath: string): string {
   if (projectPath === '' || projectPath === UNREGISTERED) return UNREGISTERED;
   const trimmed = projectPath.replace(/[\\/]+$/, '');
   const lastSep = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'));

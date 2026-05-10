@@ -151,6 +151,11 @@ function makeFakeRpc(projects: ProjectSnapshot[]): FakeRpcHandle {
       mode: {
         get: vi.fn(async () => ({ mode: 'plan' as const })),
       },
+      queue: {
+        list: vi.fn(async () => []),
+        cancel: vi.fn(async () => ({ cancelled: false, reason: 'not in queue' })),
+        reorder: vi.fn(async () => ({ moved: false, reason: 'not in queue' })),
+      },
       notifications: {
         flushAwayDigest: vi.fn(async () => undefined),
       },
