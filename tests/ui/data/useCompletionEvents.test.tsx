@@ -86,14 +86,12 @@ function makeSummary(overrides: Partial<CompletionSummary> = {}): CompletionSumm
 interface ProbeProps {
   readonly rpc: TuiRpc;
   readonly pushSystem: (summary: SystemSummary) => void;
-  readonly getWorkerName?: (workerId: string) => string | undefined;
 }
 
 function Probe(props: ProbeProps): React.JSX.Element {
   useCompletionEvents({
     rpc: props.rpc,
     pushSystem: props.pushSystem,
-    ...(props.getWorkerName !== undefined ? { getWorkerName: props.getWorkerName } : {}),
   });
   return <Text>probe</Text>;
 }
@@ -123,6 +121,7 @@ describe('useCompletionEvents', () => {
     await flush();
     handle.subscription().emit(
       makeSummary({
+        workerId: 'wk-1',
         workerName: 'worker-abc123',
         headline: 'h1',
         metrics: 'm1',
@@ -132,6 +131,7 @@ describe('useCompletionEvents', () => {
     );
     expect(pushSystem).toHaveBeenCalledTimes(1);
     expect(pushSystem.mock.calls[0]?.[0]).toEqual({
+      workerId: 'wk-1',
       workerName: 'worker-abc123',
       projectName: 'MathScrabble',
       statusKind: 'completed',
@@ -143,41 +143,28 @@ describe('useCompletionEvents', () => {
     });
   });
 
-  it('overrides workerName via getWorkerName when defined', async () => {
+  it('forwards workerId verbatim so the Bubble can resolve at render time', async () => {
     const handle = makeFakeRpc();
     const pushSystem = vi.fn();
-    const getWorkerName = (workerId: string): string | undefined =>
-      workerId === 'wk-1' ? 'Violin' : undefined;
-    render(
-      <Probe rpc={handle.rpc} pushSystem={pushSystem} getWorkerName={getWorkerName} />,
-    );
+    render(<Probe rpc={handle.rpc} pushSystem={pushSystem} />);
     await flush();
-    handle.subscription().emit(makeSummary({ workerId: 'wk-1' }));
-    expect(pushSystem.mock.calls[0]?.[0].workerName).toBe('Violin');
+    handle.subscription().emit(makeSummary({ workerId: 'wk-renderer-resolves' }));
+    expect(pushSystem.mock.calls[0]?.[0].workerId).toBe('wk-renderer-resolves');
   });
 
-  it('falls back to server payload workerName when getWorkerName returns undefined', async () => {
+  it('does NOT dedupe by workerId — server is the source of truth', async () => {
+    // A worker that completes, gets resumed, and completes again should
+    // legitimately produce two summaries; dropping the second would
+    // hide the resumed-worker case from the user.
     const handle = makeFakeRpc();
     const pushSystem = vi.fn();
-    const getWorkerName = (): string | undefined => undefined;
-    render(
-      <Probe rpc={handle.rpc} pushSystem={pushSystem} getWorkerName={getWorkerName} />,
-    );
+    render(<Probe rpc={handle.rpc} pushSystem={pushSystem} />);
     await flush();
-    handle.subscription().emit(makeSummary({ workerName: 'worker-fallback' }));
-    expect(pushSystem.mock.calls[0]?.[0].workerName).toBe('worker-fallback');
-  });
-
-  it('falls back to server workerName when getWorkerName returns empty string', async () => {
-    const handle = makeFakeRpc();
-    const pushSystem = vi.fn();
-    const getWorkerName = (): string | undefined => '';
-    render(
-      <Probe rpc={handle.rpc} pushSystem={pushSystem} getWorkerName={getWorkerName} />,
-    );
-    await flush();
-    handle.subscription().emit(makeSummary({ workerName: 'worker-fallback' }));
-    expect(pushSystem.mock.calls[0]?.[0].workerName).toBe('worker-fallback');
+    handle.subscription().emit(makeSummary({ workerId: 'wk-1', headline: 'one' }));
+    handle.subscription().emit(makeSummary({ workerId: 'wk-1', headline: 'two' }));
+    handle.subscription().emit(makeSummary({ workerId: 'wk-2', headline: 'three' }));
+    expect(pushSystem).toHaveBeenCalledTimes(3);
+    expect(pushSystem.mock.calls.map((c) => c[0].headline)).toEqual(['one', 'two', 'three']);
   });
 
   it('omits metrics/details from the dispatched summary when absent in payload', async () => {
@@ -189,19 +176,6 @@ describe('useCompletionEvents', () => {
     const dispatched = pushSystem.mock.calls[0]?.[0];
     expect(dispatched.metrics).toBeUndefined();
     expect(dispatched.details).toBeUndefined();
-  });
-
-  it('deduplicates by workerId — second emit for same id is dropped', async () => {
-    const handle = makeFakeRpc();
-    const pushSystem = vi.fn();
-    render(<Probe rpc={handle.rpc} pushSystem={pushSystem} />);
-    await flush();
-    handle.subscription().emit(makeSummary({ workerId: 'wk-1', headline: 'one' }));
-    handle.subscription().emit(makeSummary({ workerId: 'wk-1', headline: 'two' }));
-    handle.subscription().emit(makeSummary({ workerId: 'wk-2', headline: 'three' }));
-    expect(pushSystem).toHaveBeenCalledTimes(2);
-    expect(pushSystem.mock.calls[0]?.[0].headline).toBe('one');
-    expect(pushSystem.mock.calls[1]?.[0].headline).toBe('three');
   });
 
   it('survives subscribe rejection silently (no throw, no pushSystem call)', async () => {

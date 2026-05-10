@@ -36,6 +36,7 @@ function pushSystem(summary: SystemSummary, ts = TS): ChatHistoryAction {
 
 function makeSummary(overrides: Partial<SystemSummary> = {}): SystemSummary {
   return {
+    workerId: 'wk-1',
     workerName: 'Violin',
     projectName: 'MathScrabble',
     statusKind: 'completed',

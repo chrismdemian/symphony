@@ -5,7 +5,8 @@ import type { Block, SystemTurn, Turn } from '../../data/chatHistoryReducer.js';
 import type { CompletionStatusKind } from '../../../orchestrator/completion-summarizer-types.js';
 import { ToolCallSummary } from './ToolCallSummary.js';
 import { ThinkingBubble } from './ThinkingBubble.js';
-import { formatDuration } from '../../../orchestrator/completion-summarizer.js';
+import { formatDuration } from '../../../orchestrator/completion-summarizer-format.js';
+import { useResolveWorkerName } from '../../data/InstrumentNameContext.js';
 
 /**
  * One conversation turn — user message OR assistant turn (which can
@@ -106,6 +107,17 @@ function SystemBubble({ turn }: SystemBubbleProps): React.JSX.Element {
   const theme = useTheme();
   const glyph = statusGlyph(turn.summary.statusKind);
   const headerColor = theme[glyph.token];
+  // Audit C1: resolve the instrument name at render time rather than
+  // at receipt. Workers that complete faster than one poll-tick window
+  // aren't in the allocator at receipt; later polls surface them and
+  // this lookup recovers the proper name. Falls back to the stored
+  // fallback (server's slug or whatever pushSystem was called with).
+  const resolveWorkerName = useResolveWorkerName();
+  const resolvedName = resolveWorkerName(turn.summary.workerId);
+  const workerName =
+    resolvedName !== undefined && resolvedName.length > 0
+      ? resolvedName
+      : turn.summary.workerName;
   const durationLabel =
     turn.summary.durationMs !== null ? formatDuration(turn.summary.durationMs) : '(unknown)';
   const headline = turn.summary.headline;
@@ -118,7 +130,7 @@ function SystemBubble({ turn }: SystemBubbleProps): React.JSX.Element {
           {glyph.icon}{' '}
         </Text>
         <Text color={headerColor} bold>
-          {turn.summary.workerName}
+          {workerName}
         </Text>
         <Text color={theme['textMuted']}>
           {' ('}
@@ -127,29 +139,30 @@ function SystemBubble({ turn }: SystemBubbleProps): React.JSX.Element {
           {durationLabel}
         </Text>
       </Box>
+      {/*
+        * Visual review (3K) flagged a wrap-indent regression: a row
+        * Box with a 2-space `<Text>` leader + a content `<Text>`
+        * dropped the leader on Ink's wrapped continuation lines (the
+        * leader rendered once on row 1; rows 2+ started at col 0).
+        * `paddingLeft={2}` applies to every wrapped sub-row, keeping
+        * the indent stable across wrap boundaries.
+        */}
       {headline.split('\n').map((line, i) => (
-        <Box key={`h-${i}`} flexDirection="row">
-          <Text color={theme['textMuted']}>{'  '}</Text>
+        <Box key={`h-${i}`} paddingLeft={2}>
           <Text color={theme['text']}>{line.length === 0 ? ' ' : line}</Text>
         </Box>
       ))}
       {metrics !== undefined
         ? metrics.split('\n').map((line, i) => (
-            <Box key={`m-${i}`} flexDirection="row">
-              <Text color={theme['textMuted']}>
-                {'  '}
-                {line.length === 0 ? ' ' : line}
-              </Text>
+            <Box key={`m-${i}`} paddingLeft={2}>
+              <Text color={theme['textMuted']}>{line.length === 0 ? ' ' : line}</Text>
             </Box>
           ))
         : null}
       {details !== undefined
         ? details.split('\n').map((line, i) => (
-            <Box key={`d-${i}`} flexDirection="row">
-              <Text color={theme['textMuted']}>
-                {'  '}
-                {line.length === 0 ? ' ' : line}
-              </Text>
+            <Box key={`d-${i}`} paddingLeft={2}>
+              <Text color={theme['textMuted']}>{line.length === 0 ? ' ' : line}</Text>
             </Box>
           ))
         : null}

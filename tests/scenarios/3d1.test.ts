@@ -290,7 +290,13 @@ describe('Phase 3D.1 scenario — output panel through the launcher', () => {
     const initialFrame = stripAnsi(stdoutChunks.join(''));
     expect(initialFrame).toContain('Output');
     expect(initialFrame).toContain('Select a worker');
-    expect(handle.subscribeMock).not.toHaveBeenCalled();
+    // Phase 3K: useCompletionEvents subscribes to `completions.events` on
+    // App mount unconditionally. Filter the assertion to the topic this
+    // scenario actually cares about — workers.events.
+    const workersSubscribes = handle.subscribeMock.mock.calls.filter(
+      (c) => c[0] === 'workers.events',
+    );
+    expect(workersSubscribes).toHaveLength(0);
     expect(handle.tailMock).not.toHaveBeenCalled();
 
     // Phase 2 — add one worker. Reconcile auto-selects it after the next

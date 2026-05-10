@@ -257,6 +257,13 @@ export class Dispatcher {
     // Phase 3K — global completion summary feed. No args required (the
     // channel is global, no per-worker keying). Reject when the broker
     // wasn't wired (legacy callers / unit tests that don't care).
+    // Audit m2: defensive duplicate-id check matches the parent
+    // handleSubscribe's gate so a future refactor that calls this
+    // helper directly doesn't silently bypass dedup.
+    if (this.subscriptions.has(frame.id)) {
+      this.sendResult(frame.id, err('bad_args', `subscription id '${frame.id}' already in use`));
+      return;
+    }
     if (this.completionsBroker === undefined) {
       this.sendResult(
         frame.id,

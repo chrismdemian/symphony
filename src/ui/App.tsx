@@ -19,6 +19,7 @@ import {
 } from './data/MaestroEventsProvider.js';
 import { useCompletionEvents } from './data/useCompletionEvents.js';
 import { useInstrumentNames } from './data/useInstrumentNames.js';
+import { InstrumentNameProvider } from './data/InstrumentNameContext.js';
 import { AppActionsProvider } from './runtime/AppActions.js';
 import { ToastProvider, useToast } from './feedback/ToastProvider.js';
 import { ConfigProvider, useConfig } from '../utils/config-context.js';
@@ -107,22 +108,19 @@ function AppShell(props: AppProps): React.JSX.Element {
 
   // Phase 3K — subscribe to the orchestrator's `completions.events`
   // topic and forward each summary into the chat panel as a system
-  // turn. The TUI's instrument allocator (Violin/Cello/...) is
-  // server-blind, so we resolve the worker's display name here at
-  // receipt time and the chat reducer stores the resolved name in the
-  // SystemTurn (so the row keeps reading correctly even after the
-  // worker drops from the live registry). Falls back to the server's
-  // slug payload (`worker-abc123`) when the worker isn't in the live
-  // registry at receipt time.
+  // turn. Instrument name resolution happens at render time (in the
+  // Bubble, via InstrumentNameContext) rather than at receipt — workers
+  // that complete inside a single 1-s poll window aren't yet in the
+  // allocator's input set; a render-time lookup recovers the proper
+  // name once the next poll surfaces them. Audit C1.
   const instruments = useInstrumentNames(workersResult.workers);
-  const getCompletionWorkerName = useCallback(
+  const resolveInstrumentName = useCallback(
     (workerId: string) => instruments.get(workerId),
     [instruments],
   );
   useCompletionEvents({
     rpc: props.rpc,
     pushSystem,
-    getWorkerName: getCompletionWorkerName,
   });
 
   // Phase 3H.2 — own the probe-driven theme swap from inside the
@@ -288,18 +286,20 @@ function AppShell(props: AppProps): React.JSX.Element {
 
   return (
     <KeybindProvider initialCommands={overriddenCommands} leaderTimeoutMs={config.leaderTimeoutMs}>
-      <Box flexDirection="column" width="100%" height="100%">
-        <Layout
-          version={props.version}
-          mode={mode}
-          projects={projects}
-          workers={workersResult.workers}
-          sessionId={sessionId}
-          rpc={props.rpc}
-          workersResult={workersResult}
-          questionsResult={questionsResult}
-        />
-      </Box>
+      <InstrumentNameProvider value={resolveInstrumentName}>
+        <Box flexDirection="column" width="100%" height="100%">
+          <Layout
+            version={props.version}
+            mode={mode}
+            projects={projects}
+            workers={workersResult.workers}
+            sessionId={sessionId}
+            rpc={props.rpc}
+            workersResult={workersResult}
+            questionsResult={questionsResult}
+          />
+        </Box>
+      </InstrumentNameProvider>
     </KeybindProvider>
   );
 }

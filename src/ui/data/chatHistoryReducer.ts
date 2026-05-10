@@ -54,11 +54,20 @@ export type Block =
 /**
  * Phase 3K — payload shape for the `pushSystem` action.
  *
- * Mirrors `CompletionSummary` minus the `workerId` (the reducer only
- * needs the display fields; the id is consumed by the caller hook for
- * idempotency / instrument lookup before dispatch).
+ * Mirrors `CompletionSummary` plus a stable `workerId` so the Bubble
+ * can re-resolve the instrument name at render time. Resolution races
+ * exist when a worker spawns + completes faster than the TUI's 1 s
+ * worker-list poll cycle: at receipt time the allocator hasn't seen
+ * the worker yet, so we can't resolve it. Storing the workerId lets a
+ * later render — once the worker shows up in the list — pull the
+ * allocated name (Violin / Cello / ...) instead of being frozen on
+ * the server's slug fallback (`worker-abc123`).
+ *
+ * `workerName` remains the fallback the Bubble uses when no resolver
+ * is in scope or returns `undefined`.
  */
 export interface SystemSummary {
+  readonly workerId: string;
   readonly workerName: string;
   readonly projectName: string;
   readonly statusKind: CompletionStatusKind;

@@ -3,6 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { render } from 'ink-testing-library';
 import { ThemeProvider } from '../../../../src/ui/theme/context.js';
 import { Bubble } from '../../../../src/ui/panels/chat/Bubble.js';
+import { InstrumentNameProvider } from '../../../../src/ui/data/InstrumentNameContext.js';
 import type { SystemTurn, Turn } from '../../../../src/ui/data/chatHistoryReducer.js';
 import type { CompletionStatusKind } from '../../../../src/orchestrator/completion-summarizer-types.js';
 
@@ -18,6 +19,7 @@ function makeSystemTurn(overrides: Partial<SystemTurn['summary']> = {}): Turn {
     kind: 'system',
     id: 'system-0',
     summary: {
+      workerId: 'wk-1',
       workerName: 'Violin',
       projectName: 'MathScrabble',
       statusKind: 'completed',
@@ -154,5 +156,55 @@ describe('SystemBubble — every CompletionStatusKind handled', () => {
   it.each(kinds)('renders without throwing for %s', (kind) => {
     const { lastFrame } = renderBubble(makeSystemTurn({ statusKind: kind }));
     expect(lastFrame().length).toBeGreaterThan(0);
+  });
+});
+
+describe('SystemBubble — render-time instrument name resolution (audit C1)', () => {
+  function renderWithResolver(
+    turn: Turn,
+    resolver: (workerId: string) => string | undefined,
+  ): { lastFrame: () => string } {
+    const result = render(
+      <ThemeProvider>
+        <InstrumentNameProvider value={resolver}>
+          <Bubble turn={turn} />
+        </InstrumentNameProvider>
+      </ThemeProvider>,
+    );
+    return { lastFrame: () => result.lastFrame() ?? '' };
+  }
+
+  it('uses the resolver name when defined for the workerId', () => {
+    const { lastFrame } = renderWithResolver(
+      makeSystemTurn({ workerId: 'wk-1', workerName: 'worker-fallback' }),
+      (id) => (id === 'wk-1' ? 'Cello' : undefined),
+    );
+    const frame = lastFrame();
+    expect(frame).toContain('Cello');
+    expect(frame).not.toContain('worker-fallback');
+  });
+
+  it('falls back to summary.workerName when resolver returns undefined', () => {
+    const { lastFrame } = renderWithResolver(
+      makeSystemTurn({ workerId: 'wk-unknown', workerName: 'worker-fallback' }),
+      () => undefined,
+    );
+    expect(lastFrame()).toContain('worker-fallback');
+  });
+
+  it('falls back to summary.workerName when resolver returns empty string', () => {
+    const { lastFrame } = renderWithResolver(
+      makeSystemTurn({ workerId: 'wk-1', workerName: 'worker-fallback' }),
+      () => '',
+    );
+    expect(lastFrame()).toContain('worker-fallback');
+  });
+
+  it('uses summary.workerName when no provider in scope (default resolver)', () => {
+    // No InstrumentNameProvider — context default is the noop resolver.
+    const { lastFrame } = renderBubble(
+      makeSystemTurn({ workerId: 'wk-1', workerName: 'fallback-name' }),
+    );
+    expect(lastFrame()).toContain('fallback-name');
   });
 });

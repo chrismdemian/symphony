@@ -33,13 +33,11 @@ import type {
   OneShotInvoker,
 } from './completion-summarizer-types.js';
 import type { WorkerRecord } from './worker-registry.js';
-import type {
-  AssistantTextEvent,
-  StreamEvent,
-  ToolUseEvent,
-  WorkerStatus,
-} from '../workers/types.js';
+import type { StreamEvent, WorkerStatus } from '../workers/types.js';
 import { parseStructuredResponse } from './one-shot.js';
+import { formatDuration } from './completion-summarizer-format.js';
+
+export { formatDuration };
 
 const FINAL_MESSAGE_CAP_BYTES = 4 * 1024;
 const TOOL_CALL_TOP_N = 8;
@@ -109,7 +107,7 @@ function extractFinalAssistantMessage(events: readonly StreamEvent[]): string {
     if (event === undefined) continue;
     if (event.type === 'assistant_text') {
       foundAssistantText = true;
-      tail.unshift((event as AssistantTextEvent).text);
+      tail.unshift(event.text);
       continue;
     }
     if (foundAssistantText) break;
@@ -131,33 +129,13 @@ function summarizeToolCalls(events: readonly StreamEvent[]): string {
   const counts = new Map<string, number>();
   for (const event of events) {
     if (event.type !== 'tool_use') continue;
-    const name = (event as ToolUseEvent).name;
-    counts.set(name, (counts.get(name) ?? 0) + 1);
+    counts.set(event.name, (counts.get(event.name) ?? 0) + 1);
   }
   if (counts.size === 0) return '(none observed)';
   const sorted = Array.from(counts.entries())
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
     .slice(0, TOOL_CALL_TOP_N);
   return sorted.map(([name, count]) => `- ${count}× ${name}`).join('\n');
-}
-
-/**
- * Format a duration in ms to a human-friendly compact string (`2m 18s`,
- * `38s`, `3h 4m`). Used in the system Bubble's header line. Exported
- * for the heuristic fallback to share the same shape the LLM sees.
- */
-export function formatDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return '(unknown)';
-  const totalSeconds = Math.floor(ms / 1000);
-  if (totalSeconds < 60) return `${totalSeconds}s`;
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  if (minutes < 60) {
-    return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
-  }
-  const hours = Math.floor(minutes / 60);
-  const remMinutes = minutes % 60;
-  return remMinutes === 0 ? `${hours}h` : `${hours}h ${remMinutes}m`;
 }
 
 /**
@@ -170,20 +148,23 @@ export function coerceParsedSummary(parsed: unknown): ParsedSummary | null {
   if (parsed === null || typeof parsed !== 'object') return null;
   const obj = parsed as Record<string, unknown>;
   const headline = trimToCap(obj.headline, HEADLINE_MAX_CHARS);
-  if (headline === undefined || headline.length === 0) return null;
+  if (headline === undefined) return null;
   const metrics = trimToCap(obj.metrics, FIELD_MAX_CHARS);
   const details = trimToCap(obj.details, FIELD_MAX_CHARS);
   return {
     headline,
-    ...(metrics !== undefined && metrics.length > 0 ? { metrics } : {}),
-    ...(details !== undefined && details.length > 0 ? { details } : {}),
+    ...(metrics !== undefined ? { metrics } : {}),
+    ...(details !== undefined ? { details } : {}),
   };
 }
 
 function trimToCap(value: unknown, cap: number): string | undefined {
+  // Audit m1: empty / whitespace-only field is "absent", not "present
+  // and empty" — return undefined so the spread at the call site omits
+  // the key entirely.
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
-  if (trimmed.length === 0) return '';
+  if (trimmed.length === 0) return undefined;
   if (trimmed.length <= cap) return trimmed;
   return `${trimmed.slice(0, cap - 1)}…`;
 }
