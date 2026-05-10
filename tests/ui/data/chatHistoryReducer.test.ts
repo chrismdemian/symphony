@@ -33,7 +33,7 @@ function lastAssistant(state: ChatHistoryState): AssistantTurn {
 
 describe('chatHistoryReducer', () => {
   it('initial state is empty', () => {
-    expect(INITIAL_CHAT_HISTORY).toEqual({ turns: [], nextTurnId: 0 });
+    expect(INITIAL_CHAT_HISTORY).toEqual({ turns: [], nextTurnId: 0, pendingSystems: [] });
   });
 
   it('appends a user turn on pushUser', () => {

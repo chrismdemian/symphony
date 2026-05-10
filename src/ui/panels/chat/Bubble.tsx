@@ -1,9 +1,11 @@
 import React, { memo } from 'react';
 import { Box, Text } from 'ink';
 import { useTheme } from '../../theme/context.js';
-import type { Block, Turn } from '../../data/chatHistoryReducer.js';
+import type { Block, SystemTurn, Turn } from '../../data/chatHistoryReducer.js';
+import type { CompletionStatusKind } from '../../../orchestrator/completion-summarizer-types.js';
 import { ToolCallSummary } from './ToolCallSummary.js';
 import { ThinkingBubble } from './ThinkingBubble.js';
+import { formatDuration } from '../../../orchestrator/completion-summarizer.js';
 
 /**
  * One conversation turn — user message OR assistant turn (which can
@@ -44,6 +46,10 @@ function BubbleImpl({ turn }: BubbleProps): React.JSX.Element {
     );
   }
 
+  if (turn.kind === 'system') {
+    return <SystemBubble turn={turn} />;
+  }
+
   return (
     <Box flexDirection="column" marginTop={1}>
       {turn.blocks.map((block) => (
@@ -66,6 +72,89 @@ export const Bubble = memo(BubbleImpl, (prev, next) => prev.turn === next.turn);
 
 interface BlockViewProps {
   readonly block: Block;
+}
+
+/**
+ * Phase 3K — completion summary row. Flat layout (no bordered bubble)
+ * with a status icon + worker · project · duration header line, then
+ * 1-3 indented body lines (headline / metrics / details). Visually
+ * distinct from user (`❯`-prefixed) and assistant (multi-block) turns
+ * so it reads as "system event in the timeline" rather than dialogue.
+ */
+interface SystemBubbleProps {
+  readonly turn: SystemTurn;
+}
+
+interface StatusGlyph {
+  readonly icon: string;
+  readonly token: 'success' | 'error' | 'warning';
+}
+
+function statusGlyph(kind: CompletionStatusKind): StatusGlyph {
+  switch (kind) {
+    case 'completed':
+      return { icon: '✓', token: 'success' };
+    case 'failed':
+    case 'crashed':
+      return { icon: '✗', token: 'error' };
+    case 'timeout':
+      return { icon: '⏱', token: 'warning' };
+  }
+}
+
+function SystemBubble({ turn }: SystemBubbleProps): React.JSX.Element {
+  const theme = useTheme();
+  const glyph = statusGlyph(turn.summary.statusKind);
+  const headerColor = theme[glyph.token];
+  const durationLabel =
+    turn.summary.durationMs !== null ? formatDuration(turn.summary.durationMs) : '(unknown)';
+  const headline = turn.summary.headline;
+  const metrics = turn.summary.metrics;
+  const details = turn.summary.details;
+  return (
+    <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="row">
+        <Text color={headerColor} bold>
+          {glyph.icon}{' '}
+        </Text>
+        <Text color={headerColor} bold>
+          {turn.summary.workerName}
+        </Text>
+        <Text color={theme['textMuted']}>
+          {' ('}
+          {turn.summary.projectName}
+          {') · '}
+          {durationLabel}
+        </Text>
+      </Box>
+      {headline.split('\n').map((line, i) => (
+        <Box key={`h-${i}`} flexDirection="row">
+          <Text color={theme['textMuted']}>{'  '}</Text>
+          <Text color={theme['text']}>{line.length === 0 ? ' ' : line}</Text>
+        </Box>
+      ))}
+      {metrics !== undefined
+        ? metrics.split('\n').map((line, i) => (
+            <Box key={`m-${i}`} flexDirection="row">
+              <Text color={theme['textMuted']}>
+                {'  '}
+                {line.length === 0 ? ' ' : line}
+              </Text>
+            </Box>
+          ))
+        : null}
+      {details !== undefined
+        ? details.split('\n').map((line, i) => (
+            <Box key={`d-${i}`} flexDirection="row">
+              <Text color={theme['textMuted']}>
+                {'  '}
+                {line.length === 0 ? ' ' : line}
+              </Text>
+            </Box>
+          ))
+        : null}
+    </Box>
+  );
 }
 
 function BlockView({ block }: BlockViewProps): React.JSX.Element {

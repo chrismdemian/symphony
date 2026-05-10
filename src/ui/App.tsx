@@ -17,6 +17,8 @@ import {
   useMaestroData,
   type MaestroController,
 } from './data/MaestroEventsProvider.js';
+import { useCompletionEvents } from './data/useCompletionEvents.js';
+import { useInstrumentNames } from './data/useInstrumentNames.js';
 import { AppActionsProvider } from './runtime/AppActions.js';
 import { ToastProvider, useToast } from './feedback/ToastProvider.js';
 import { ConfigProvider, useConfig } from '../utils/config-context.js';
@@ -101,7 +103,27 @@ function AppShell(props: AppProps): React.JSX.Element {
   const workersResult = useWorkers(props.rpc);
   const { mode } = useMode(props.rpc);
   const questionsResult = useQuestions(props.rpc);
-  const { sessionId } = useMaestroData();
+  const { sessionId, pushSystem } = useMaestroData();
+
+  // Phase 3K — subscribe to the orchestrator's `completions.events`
+  // topic and forward each summary into the chat panel as a system
+  // turn. The TUI's instrument allocator (Violin/Cello/...) is
+  // server-blind, so we resolve the worker's display name here at
+  // receipt time and the chat reducer stores the resolved name in the
+  // SystemTurn (so the row keeps reading correctly even after the
+  // worker drops from the live registry). Falls back to the server's
+  // slug payload (`worker-abc123`) when the worker isn't in the live
+  // registry at receipt time.
+  const instruments = useInstrumentNames(workersResult.workers);
+  const getCompletionWorkerName = useCallback(
+    (workerId: string) => instruments.get(workerId),
+    [instruments],
+  );
+  useCompletionEvents({
+    rpc: props.rpc,
+    pushSystem,
+    getWorkerName: getCompletionWorkerName,
+  });
 
   // Phase 3H.2 — own the probe-driven theme swap from inside the
   // config-aware tree. ThemeProvider initializes truecolor; this effect

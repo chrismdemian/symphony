@@ -1,0 +1,234 @@
+import React from 'react';
+import { describe, it, expect, vi } from 'vitest';
+import { render } from 'ink-testing-library';
+import { Text } from 'ink';
+import { useCompletionEvents } from '../../../src/ui/data/useCompletionEvents.js';
+import type { TuiRpc } from '../../../src/ui/runtime/rpc.js';
+import type { CompletionSummary } from '../../../src/orchestrator/completion-summarizer-types.js';
+import type { SystemSummary } from '../../../src/ui/data/chatHistoryReducer.js';
+
+/**
+ * Phase 3K — useCompletionEvents hook tests.
+ *
+ * Strategy mirrors `tests/ui/data/useWorkerEvents.test.tsx`: build a
+ * fake `TuiRpc` whose `subscribe` returns a controllable handle, mount
+ * a tiny Probe via `ink-testing-library`, drive the listener directly,
+ * assert pushSystem callback invocations + name-resolution behavior.
+ */
+
+interface FakeSubscription {
+  emit(summary: CompletionSummary): void;
+  unsubscribed: boolean;
+}
+
+interface FakeRpcHandle {
+  rpc: TuiRpc;
+  subscription(): FakeSubscription;
+  subscribeCallCount(): number;
+}
+
+function makeFakeRpc(): FakeRpcHandle {
+  const subs: Array<{
+    listener: (e: unknown) => void;
+    unsubscribed: boolean;
+    handle: FakeSubscription;
+  }> = [];
+  const rpc: TuiRpc = {
+    call: {} as never,
+    subscribe: vi.fn(async (_topic: string, _args: unknown, listener: (e: unknown) => void) => {
+      const entry = {
+        listener,
+        unsubscribed: false,
+        handle: {
+          emit(summary: CompletionSummary): void {
+            entry.listener(summary);
+          },
+          get unsubscribed(): boolean {
+            return entry.unsubscribed;
+          },
+        } as FakeSubscription,
+      };
+      subs.push(entry);
+      return {
+        topic: 'completions.events',
+        unsubscribe: async (): Promise<void> => {
+          entry.unsubscribed = true;
+        },
+      };
+    }) as unknown as TuiRpc['subscribe'],
+    close: vi.fn(),
+  } as unknown as TuiRpc;
+  return {
+    rpc,
+    subscription(): FakeSubscription {
+      const last = subs[subs.length - 1];
+      if (last === undefined) throw new Error('no subscription yet');
+      return last.handle;
+    },
+    subscribeCallCount: () => subs.length,
+  };
+}
+
+function makeSummary(overrides: Partial<CompletionSummary> = {}): CompletionSummary {
+  return {
+    workerId: 'wk-1',
+    workerName: 'worker-abc123',
+    projectName: 'MathScrabble',
+    statusKind: 'completed',
+    durationMs: 60_000,
+    headline: 'wired endpoints',
+    ts: new Date(0).toISOString(),
+    fallback: false,
+    ...overrides,
+  };
+}
+
+interface ProbeProps {
+  readonly rpc: TuiRpc;
+  readonly pushSystem: (summary: SystemSummary) => void;
+  readonly getWorkerName?: (workerId: string) => string | undefined;
+}
+
+function Probe(props: ProbeProps): React.JSX.Element {
+  useCompletionEvents({
+    rpc: props.rpc,
+    pushSystem: props.pushSystem,
+    ...(props.getWorkerName !== undefined ? { getWorkerName: props.getWorkerName } : {}),
+  });
+  return <Text>probe</Text>;
+}
+
+function flush(): Promise<void> {
+  return new Promise((r) => setImmediate(r));
+}
+
+describe('useCompletionEvents', () => {
+  it('subscribes once on mount and unsubscribes on unmount', async () => {
+    const handle = makeFakeRpc();
+    const pushSystem = vi.fn();
+    const tree = render(<Probe rpc={handle.rpc} pushSystem={pushSystem} />);
+    await flush();
+    expect(handle.subscribeCallCount()).toBe(1);
+    const sub = handle.subscription();
+    expect(sub.unsubscribed).toBe(false);
+    tree.unmount();
+    await flush();
+    expect(sub.unsubscribed).toBe(true);
+  });
+
+  it('forwards each summary to pushSystem with all fields preserved', async () => {
+    const handle = makeFakeRpc();
+    const pushSystem = vi.fn();
+    render(<Probe rpc={handle.rpc} pushSystem={pushSystem} />);
+    await flush();
+    handle.subscription().emit(
+      makeSummary({
+        workerName: 'worker-abc123',
+        headline: 'h1',
+        metrics: 'm1',
+        details: 'd1',
+        durationMs: 1500,
+      }),
+    );
+    expect(pushSystem).toHaveBeenCalledTimes(1);
+    expect(pushSystem.mock.calls[0]?.[0]).toEqual({
+      workerName: 'worker-abc123',
+      projectName: 'MathScrabble',
+      statusKind: 'completed',
+      durationMs: 1500,
+      headline: 'h1',
+      metrics: 'm1',
+      details: 'd1',
+      fallback: false,
+    });
+  });
+
+  it('overrides workerName via getWorkerName when defined', async () => {
+    const handle = makeFakeRpc();
+    const pushSystem = vi.fn();
+    const getWorkerName = (workerId: string): string | undefined =>
+      workerId === 'wk-1' ? 'Violin' : undefined;
+    render(
+      <Probe rpc={handle.rpc} pushSystem={pushSystem} getWorkerName={getWorkerName} />,
+    );
+    await flush();
+    handle.subscription().emit(makeSummary({ workerId: 'wk-1' }));
+    expect(pushSystem.mock.calls[0]?.[0].workerName).toBe('Violin');
+  });
+
+  it('falls back to server payload workerName when getWorkerName returns undefined', async () => {
+    const handle = makeFakeRpc();
+    const pushSystem = vi.fn();
+    const getWorkerName = (): string | undefined => undefined;
+    render(
+      <Probe rpc={handle.rpc} pushSystem={pushSystem} getWorkerName={getWorkerName} />,
+    );
+    await flush();
+    handle.subscription().emit(makeSummary({ workerName: 'worker-fallback' }));
+    expect(pushSystem.mock.calls[0]?.[0].workerName).toBe('worker-fallback');
+  });
+
+  it('falls back to server workerName when getWorkerName returns empty string', async () => {
+    const handle = makeFakeRpc();
+    const pushSystem = vi.fn();
+    const getWorkerName = (): string | undefined => '';
+    render(
+      <Probe rpc={handle.rpc} pushSystem={pushSystem} getWorkerName={getWorkerName} />,
+    );
+    await flush();
+    handle.subscription().emit(makeSummary({ workerName: 'worker-fallback' }));
+    expect(pushSystem.mock.calls[0]?.[0].workerName).toBe('worker-fallback');
+  });
+
+  it('omits metrics/details from the dispatched summary when absent in payload', async () => {
+    const handle = makeFakeRpc();
+    const pushSystem = vi.fn();
+    render(<Probe rpc={handle.rpc} pushSystem={pushSystem} />);
+    await flush();
+    handle.subscription().emit(makeSummary({}));
+    const dispatched = pushSystem.mock.calls[0]?.[0];
+    expect(dispatched.metrics).toBeUndefined();
+    expect(dispatched.details).toBeUndefined();
+  });
+
+  it('deduplicates by workerId — second emit for same id is dropped', async () => {
+    const handle = makeFakeRpc();
+    const pushSystem = vi.fn();
+    render(<Probe rpc={handle.rpc} pushSystem={pushSystem} />);
+    await flush();
+    handle.subscription().emit(makeSummary({ workerId: 'wk-1', headline: 'one' }));
+    handle.subscription().emit(makeSummary({ workerId: 'wk-1', headline: 'two' }));
+    handle.subscription().emit(makeSummary({ workerId: 'wk-2', headline: 'three' }));
+    expect(pushSystem).toHaveBeenCalledTimes(2);
+    expect(pushSystem.mock.calls[0]?.[0].headline).toBe('one');
+    expect(pushSystem.mock.calls[1]?.[0].headline).toBe('three');
+  });
+
+  it('survives subscribe rejection silently (no throw, no pushSystem call)', async () => {
+    const pushSystem = vi.fn();
+    const rpc: TuiRpc = {
+      call: {} as never,
+      subscribe: vi.fn().mockRejectedValue(new Error('boom')) as unknown as TuiRpc['subscribe'],
+      close: vi.fn(),
+    } as unknown as TuiRpc;
+    expect(() => render(<Probe rpc={rpc} pushSystem={pushSystem} />)).not.toThrow();
+    await flush();
+    expect(pushSystem).not.toHaveBeenCalled();
+  });
+
+  it('cancelled flag suppresses push if event arrives during teardown', async () => {
+    // This race is hard to deterministically reproduce in unit tests
+    // (cleanup runs synchronously on unmount). The hook's internal
+    // cancelled flag and the dispatched-once dedupe both prevent
+    // late-fire issues; this test just asserts unmount-after-emit
+    // doesn't replay.
+    const handle = makeFakeRpc();
+    const pushSystem = vi.fn();
+    const tree = render(<Probe rpc={handle.rpc} pushSystem={pushSystem} />);
+    await flush();
+    handle.subscription().emit(makeSummary({ workerId: 'wk-1' }));
+    tree.unmount();
+    await flush();
+    expect(pushSystem).toHaveBeenCalledTimes(1);
+  });
+});
