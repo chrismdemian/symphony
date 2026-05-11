@@ -38,6 +38,7 @@ function makeRecord(overrides: Partial<PersistedWorkerRecord> = {}): PersistedWo
     ...(overrides.exitCode !== undefined ? { exitCode: overrides.exitCode } : {}),
     ...(overrides.exitSignal !== undefined ? { exitSignal: overrides.exitSignal } : {}),
     ...(overrides.costUsd !== undefined ? { costUsd: overrides.costUsd } : {}),
+    ...(overrides.sessionUsage !== undefined ? { sessionUsage: overrides.sessionUsage } : {}),
   };
 }
 
@@ -318,6 +319,156 @@ describe('SqliteWorkerStore — corrupt JSON tolerance (audit M5 parity)', () =>
       db.db.prepare(`UPDATE workers SET depends_on = ? WHERE id = ?`).run('{"a":1}', 'bad');
       // Object-not-array → CorruptRecordError → rethrown
       expect(() => store.list()).toThrow(CorruptRecordError);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('SqliteWorkerStore — sessionUsage (Phase 3N.1)', () => {
+  it('insert + get round-trips a record with sessionUsage populated', () => {
+    const db = makeDb();
+    seedProject(db);
+    try {
+      const store = new SqliteWorkerStore(db.db);
+      store.insert(
+        makeRecord({
+          id: 'wk-1',
+          sessionUsage: {
+            inputTokens: 12_000,
+            outputTokens: 3_400,
+            cacheReadTokens: 8_900,
+            cacheWriteTokens: 1_100,
+          },
+        }),
+      );
+      const got = store.get('wk-1')!;
+      expect(got.sessionUsage).toEqual({
+        inputTokens: 12_000,
+        outputTokens: 3_400,
+        cacheReadTokens: 8_900,
+        cacheWriteTokens: 1_100,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('insert + get omits sessionUsage when not provided (all four columns NULL)', () => {
+    const db = makeDb();
+    seedProject(db);
+    try {
+      const store = new SqliteWorkerStore(db.db);
+      store.insert(makeRecord({ id: 'wk-no-result' }));
+      const got = store.get('wk-no-result')!;
+      expect(got.sessionUsage).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('update with sessionUsage TokenUsage writes all four columns', () => {
+    const db = makeDb();
+    seedProject(db);
+    try {
+      const store = new SqliteWorkerStore(db.db);
+      store.insert(makeRecord({ id: 'wk-1' }));
+      store.update('wk-1', {
+        sessionUsage: {
+          inputTokens: 7,
+          outputTokens: 11,
+          cacheReadTokens: 13,
+          cacheWriteTokens: 17,
+        },
+      });
+      const got = store.get('wk-1')!;
+      expect(got.sessionUsage).toEqual({
+        inputTokens: 7,
+        outputTokens: 11,
+        cacheReadTokens: 13,
+        cacheWriteTokens: 17,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('update with sessionUsage:null clears all four columns (resume parity)', () => {
+    const db = makeDb();
+    seedProject(db);
+    try {
+      const store = new SqliteWorkerStore(db.db);
+      store.insert(
+        makeRecord({
+          id: 'wk-1',
+          sessionUsage: {
+            inputTokens: 1,
+            outputTokens: 2,
+            cacheReadTokens: 3,
+            cacheWriteTokens: 4,
+          },
+        }),
+      );
+      store.update('wk-1', { sessionUsage: null });
+      const got = store.get('wk-1')!;
+      expect(got.sessionUsage).toBeUndefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it('update with sessionUsage omitted preserves prior usage (absent-vs-null semantics)', () => {
+    const db = makeDb();
+    seedProject(db);
+    try {
+      const store = new SqliteWorkerStore(db.db);
+      store.insert(
+        makeRecord({
+          id: 'wk-1',
+          sessionUsage: {
+            inputTokens: 100,
+            outputTokens: 200,
+            cacheReadTokens: 300,
+            cacheWriteTokens: 400,
+          },
+        }),
+      );
+      // Update only status — sessionUsage must persist.
+      store.update('wk-1', { status: 'completed' });
+      const got = store.get('wk-1')!;
+      expect(got.status).toBe('completed');
+      expect(got.sessionUsage).toEqual({
+        inputTokens: 100,
+        outputTokens: 200,
+        cacheReadTokens: 300,
+        cacheWriteTokens: 400,
+      });
+    } finally {
+      db.close();
+    }
+  });
+
+  it('rowToRecord coerces NULL columns to 0 when partial usage is stored', () => {
+    // Pathological edge case: production code never writes a partial
+    // usage object, but if a manual SQL fix-up leaves three columns NULL
+    // and one populated, we shouldn't crash or drop the data. Coerce
+    // NULLs to 0 inside the composite so SUM aggregates downstream stay
+    // honest about the workload at least one column witnessed.
+    const db = makeDb();
+    seedProject(db);
+    try {
+      const store = new SqliteWorkerStore(db.db);
+      store.insert(makeRecord({ id: 'wk-1' }));
+      db.db
+        .prepare(`UPDATE workers SET input_tokens = ? WHERE id = ?`)
+        .run(42, 'wk-1');
+      const got = store.get('wk-1')!;
+      expect(got.sessionUsage).toEqual({
+        inputTokens: 42,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+      });
     } finally {
       db.close();
     }

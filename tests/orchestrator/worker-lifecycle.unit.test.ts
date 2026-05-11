@@ -199,6 +199,65 @@ describe('createWorkerLifecycle', () => {
     expect(reloaded?.buffer.size()).toBeGreaterThan(0);
   });
 
+  it('event tap captures sessionUsage + costUsd from a result event (3N.1)', async () => {
+    const registry = new WorkerRegistry();
+    const { mgr: wm, spawnCalls } = stubWorkerManager();
+    const { mgr: wt } = stubWorktreeManager();
+    const events: StreamEvent[] = [
+      {
+        type: 'system_init',
+        sessionId: 'sess-3n1',
+        model: 'claude-opus',
+      } as StreamEvent,
+      {
+        type: 'result',
+        sessionId: 'sess-3n1',
+        isError: false,
+        resultText: 'done',
+        durationMs: 1234,
+        numTurns: 1,
+        costUsd: 0.0427,
+        usageByModel: {},
+        sessionUsage: {
+          inputTokens: 15_000,
+          outputTokens: 2_100,
+          cacheReadTokens: 12_500,
+          cacheWriteTokens: 800,
+        },
+      } as StreamEvent,
+    ];
+    const worker = new ScriptedWorker('wk-usage', emitEvents(events));
+    const stubbed = wm as unknown as { spawn: (cfg: WorkerConfig) => Promise<Worker> };
+    stubbed.spawn = (async (cfg: WorkerConfig) => {
+      spawnCalls.push(cfg);
+      return worker;
+    }) as unknown as (cfg: WorkerConfig) => Promise<Worker>;
+
+    const lc = createWorkerLifecycle({
+      registry,
+      workerManager: wm,
+      worktreeManager: wt,
+      idGenerator: () => 'wk-usage',
+    });
+    await lc.spawn({
+      projectPath: '/proj',
+      taskDescription: 'Capture tokens',
+      role: 'implementer',
+      autonomyTier: 2,
+    });
+    // Drain the event-tap microtask so all events flow through.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    const rec = registry.get('wk-usage');
+    expect(rec?.costUsd).toBeCloseTo(0.0427);
+    expect(rec?.sessionUsage).toEqual({
+      inputTokens: 15_000,
+      outputTokens: 2_100,
+      cacheReadTokens: 12_500,
+      cacheWriteTokens: 800,
+    });
+  });
+
   it('spawn() deduplicates concurrent calls with the same id+projectPath', async () => {
     const registry = new WorkerRegistry();
     const { mgr: wm, spawnCalls } = stubWorkerManager();

@@ -1,4 +1,4 @@
-import type { StreamEvent, Worker, WorkerExitInfo, WorkerStatus } from '../workers/types.js';
+import type { StreamEvent, TokenUsage, Worker, WorkerExitInfo, WorkerStatus } from '../workers/types.js';
 import type { ProjectStore } from '../projects/types.js';
 import type { PersistedWorkerRecord, WorkerStore } from '../state/sqlite-worker-store.js';
 import { matchesFeatureIntent } from './feature-intent.js';
@@ -50,6 +50,13 @@ export interface WorkerRecord {
    * the reserved `workers.cost_usd` SQL column gets populated. Phase 2B.1b m1.
    */
   costUsd?: number;
+  /**
+   * Cumulative token usage from the most recent `result` event's
+   * `usage` payload (CLI's session-wide roll-up — last-wins). Persisted
+   * via `markCompleted` into the four `workers.{input,output,cache_read,
+   * cache_write}_tokens` columns. Phase 3N.1.
+   */
+  sessionUsage?: TokenUsage;
   /** Unsubscribe callback for the event-tap consumer. Called on remove/shutdown. */
   detach: () => void;
 }
@@ -70,6 +77,8 @@ export interface WorkerRecordSnapshot {
   readonly completedAt?: string;
   readonly lastEventAt?: string;
   readonly costUsd?: number;
+  /** Phase 3N.1 — see `WorkerRecord.sessionUsage`. */
+  readonly sessionUsage?: TokenUsage;
   readonly exitCode?: number | null;
   readonly exitSignal?: NodeJS.Signals | null;
 }
@@ -202,6 +211,11 @@ export class WorkerRegistry {
     // the new completedAt, producing a misleading audit trail. Pair with
     // the explicit `costUsd: null` patch below.
     existing.costUsd = undefined;
+    // Phase 3N.1 — same rationale for sessionUsage. The CLI's
+    // `total_cost_usd` and `usage` roll-ups are cumulative per session;
+    // resuming starts a fresh session (or continues an old one with a
+    // fresh first-turn roll-up). Either way, the prior values are stale.
+    existing.sessionUsage = undefined;
     // Explicitly clear prior terminal columns in SQL — without this, a
     // crashed worker that gets resumed would carry stale completedAt /
     // exitCode / exitSignal forever, surfacing a misleading audit trail
@@ -212,6 +226,7 @@ export class WorkerRegistry {
       exitCode: null,
       exitSignal: null,
       costUsd: null,
+      sessionUsage: null,
       ...(update.sessionId !== undefined ? { sessionId: update.sessionId } : {}),
     });
   }
@@ -275,6 +290,11 @@ export class WorkerRegistry {
       // `T | null` semantics treat absence as "preserve" so we explicitly
       // pass null in that case to clear stale data on resume.
       costUsd: record.costUsd ?? null,
+      // Phase 3N.1 — mirror cost semantics: persist the cumulative
+      // session usage captured by the lifecycle tap. Composite patch
+      // writes all four token columns; `null` clears all four on
+      // workers that never emitted a `result` event.
+      sessionUsage: record.sessionUsage ?? null,
     });
   }
 
@@ -288,6 +308,20 @@ export class WorkerRegistry {
     if (!record) return;
     if (!Number.isFinite(costUsd) || costUsd < 0) return;
     record.costUsd = costUsd;
+  }
+
+  /**
+   * Phase 3N.1 — capture the cumulative session usage emitted by
+   * `result` events so it can be persisted on completion. Idempotent;
+   * last value wins (matches `updateCostUsd`). Rejects non-finite or
+   * negative counts on any of the four fields without throwing — the
+   * lifecycle tap shouldn't be killed by a malformed payload.
+   */
+  updateSessionUsage(id: string, usage: TokenUsage): void {
+    const record = this.records.get(id);
+    if (!record) return;
+    if (!isValidUsage(usage)) return;
+    record.sessionUsage = usage;
   }
 
   updateSessionId(id: string, sessionId: string): void {
@@ -377,6 +411,7 @@ export function toPersisted(record: WorkerRecord): PersistedWorkerRecord {
     ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
     ...(record.lastEventAt !== undefined ? { lastEventAt: record.lastEventAt } : {}),
     ...(record.costUsd !== undefined ? { costUsd: record.costUsd } : {}),
+    ...(record.sessionUsage !== undefined ? { sessionUsage: record.sessionUsage } : {}),
     ...(record.exitInfo !== undefined
       ? {
           exitCode: record.exitInfo.exitCode,
@@ -413,6 +448,7 @@ export function persistedToSnapshot(
     ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
     ...(record.lastEventAt !== undefined ? { lastEventAt: record.lastEventAt } : {}),
     ...(record.costUsd !== undefined ? { costUsd: record.costUsd } : {}),
+    ...(record.sessionUsage !== undefined ? { sessionUsage: record.sessionUsage } : {}),
     ...(record.exitCode !== undefined ? { exitCode: record.exitCode } : {}),
     ...(record.exitSignal !== undefined ? { exitSignal: record.exitSignal } : {}),
   };
@@ -511,6 +547,7 @@ export function toSnapshot(r: WorkerRecord): WorkerRecordSnapshot {
     ...(r.completedAt !== undefined ? { completedAt: r.completedAt } : {}),
     ...(r.lastEventAt !== undefined ? { lastEventAt: r.lastEventAt } : {}),
     ...(r.costUsd !== undefined ? { costUsd: r.costUsd } : {}),
+    ...(r.sessionUsage !== undefined ? { sessionUsage: r.sessionUsage } : {}),
     ...(r.exitInfo !== undefined
       ? {
           exitCode: r.exitInfo.exitCode,
@@ -518,4 +555,17 @@ export function toSnapshot(r: WorkerRecord): WorkerRecordSnapshot {
         }
       : {}),
   };
+}
+
+function isValidUsage(usage: TokenUsage): boolean {
+  return (
+    Number.isFinite(usage.inputTokens) &&
+    usage.inputTokens >= 0 &&
+    Number.isFinite(usage.outputTokens) &&
+    usage.outputTokens >= 0 &&
+    Number.isFinite(usage.cacheReadTokens) &&
+    usage.cacheReadTokens >= 0 &&
+    Number.isFinite(usage.cacheWriteTokens) &&
+    usage.cacheWriteTokens >= 0
+  );
 }

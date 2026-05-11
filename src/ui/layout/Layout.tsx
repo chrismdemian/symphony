@@ -13,6 +13,7 @@ import { WorkerSelector } from '../panels/palette/WorkerSelector.js';
 import { HelpOverlay } from '../panels/help/HelpOverlay.js';
 import { SettingsPanel } from '../panels/settings/SettingsPanel.js';
 import { KeybindEditorPopup } from '../panels/settings/KeybindEditorPopup.js';
+import { StatsPanel } from '../panels/stats/StatsPanel.js';
 import { useFocus, type FocusContext } from '../focus/focus.js';
 import { KeybindBar } from './KeybindBar.js';
 import { StatusBar } from './StatusBar.js';
@@ -22,6 +23,7 @@ import type { TuiRpc } from '../runtime/rpc.js';
 import type { UseWorkersResult } from '../data/useWorkers.js';
 import type { UseQueueResult } from '../data/useQueue.js';
 import type { UseQuestionsResult } from '../data/useQuestions.js';
+import type { SessionTotals } from '../../orchestrator/session-totals.js';
 
 /**
  * Top-level layout: status bar (top) → main split (chat | workers+output)
@@ -63,6 +65,8 @@ export interface LayoutProps {
   readonly questionsResult?: UseQuestionsResult;
   /** Phase 3M — Away Mode flag for StatusBar segment + capability surfacing. */
   readonly awayMode?: boolean;
+  /** Phase 3N.2 — session token + cost totals for StatusBar segment. */
+  readonly sessionTotals?: SessionTotals;
 }
 
 function getPopupOnTopKey(stack: readonly FocusContext[]): string | null {
@@ -97,6 +101,7 @@ export function Layout(props: LayoutProps): React.JSX.Element {
         blockingCount={props.questionsResult?.blockingCount ?? 0}
         awayMode={props.awayMode ?? false}
         pendingQueueCount={props.queueResult?.pending.length ?? 0}
+        {...(props.sessionTotals !== undefined ? { sessionTotals: props.sessionTotals } : {})}
       />
       {/*
        * Phase 3F.3 — popup-mount strategy. We considered an
@@ -151,6 +156,10 @@ function renderPopup(
       return <WorkerSelector workers={props.workers} />;
     case 'settings':
       return <SettingsPanel />;
+    case 'stats':
+      // Phase 3N.3 — `/stats` opens this read-only popup with three
+      // sections: session totals, by-project rollup, recent workers.
+      return <StatsPanel rpc={props.rpc} />;
     case 'keybind-list':
     case 'keybind-capture':
       // Phase 3H.4 — both scopes route to the same component instance

@@ -4,6 +4,11 @@ import { useTheme } from '../theme/context.js';
 import type { ProjectSnapshot } from '../../projects/types.js';
 import type { WorkerRecordSnapshot } from '../../orchestrator/worker-registry.js';
 import type { ToolMode } from '../../orchestrator/types.js';
+import {
+  formatCostUsd,
+  formatTokenCount,
+  type SessionTotals,
+} from '../../orchestrator/session-totals.js';
 
 /**
  * Top status bar: `Symphony v0.1.0 │ Mode: PLAN │ Workers: 0 │ Project: <name>`.
@@ -43,6 +48,13 @@ export interface StatusBarProps {
    * queueResult was omitted).
    */
   readonly pendingQueueCount?: number;
+  /**
+   * Phase 3N.2 — cumulative session totals (tokens + cost). When both
+   * `totalTokens` and `totalCostUsd` are 0, the segment is hidden
+   * entirely to avoid splash-state noise. The token figure displayed is
+   * `inputTokens + outputTokens` (cache counts visible in `/stats`).
+   */
+  readonly sessionTotals?: SessionTotals;
 }
 
 function activeCount(workers: readonly WorkerRecordSnapshot[]): number {
@@ -104,6 +116,12 @@ export function StatusBar(props: StatusBarProps): React.JSX.Element {
   const awayMode = props.awayMode === true;
   const done = doneCount(props.workers);
   const pending = props.pendingQueueCount ?? 0;
+  // Phase 3N.2 — segment visibility: hidden until at least one worker
+  // has contributed tokens or cost. Mid-session 0/0 happens only on
+  // splash / pre-first-spawn; once anything bills, the segment stays.
+  const totals = props.sessionTotals;
+  const showUsageSegment =
+    totals !== undefined && (totals.totalTokens > 0 || totals.totalCostUsd > 0);
   return (
     <Box flexDirection="row" paddingX={1}>
       <Text color={theme['accent']} bold>
@@ -116,6 +134,31 @@ export function StatusBar(props: StatusBarProps): React.JSX.Element {
       <Text color={theme['border']}>{SEPARATOR}</Text>
       <Text color={theme['textMuted']}>Workers: </Text>
       <Text color={active > 0 ? theme['accent'] : theme['text']}>{String(active)}</Text>
+      {showUsageSegment && totals !== undefined && (
+        <Box flexShrink={0}>
+          {/*
+           * Phase 3N.2 — `↑ {tokens} · ${cost}` segment. The up-arrow
+           * is the universal "outbound traffic" glyph. Label is muted
+           * (chrome); values are accent (signal) so the eye lands on
+           * the magnitudes. Token count uses `inputTokens +
+           * outputTokens` only — cache counts surface in `/stats`
+           * (Phase 3N.3).
+           *
+           * Audit M4 (3N.2): wrap in `<Box flexShrink={0}>` so Ink's
+           * flex-row layout cannot chop the segment under width
+           * pressure (3I rule). The surrounding `<Text>` siblings in
+           * this bar still flex-shrink — adding the wrapper here pins
+           * the new segment specifically; other segments retain their
+           * pre-existing behavior. Position stays between Workers and
+           * Q because the Box renders inline in the row.
+           */}
+          <Text color={theme['border']}>{SEPARATOR}</Text>
+          <Text color={theme['textMuted']}>↑ </Text>
+          <Text color={theme['accent']}>{formatTokenCount(totals.totalTokens)}</Text>
+          <Text color={theme['textMuted']}> · </Text>
+          <Text color={theme['accent']}>{formatCostUsd(totals.totalCostUsd)}</Text>
+        </Box>
+      )}
       <Text color={theme['border']}>{SEPARATOR}</Text>
       <Text color={theme['textMuted']}>Q: </Text>
       <Text color={questionsColor(theme, questionsCount, blockingCount)}>

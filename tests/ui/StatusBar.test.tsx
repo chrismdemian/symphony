@@ -311,4 +311,109 @@ describe('<StatusBar>', () => {
     // unreliable. The 3m visual frames (commit 3) render at 120 cols
     // and exercise the order directly.
   });
+
+  describe('session totals segment (Phase 3N.2)', () => {
+    it('omits the segment when sessionTotals is undefined', () => {
+      const { lastFrame } = renderStatusBar({
+        version: '0.0.0',
+        mode: 'act',
+        projects: [],
+        workers: [],
+        sessionId: null,
+      });
+      expect(lastFrame()).not.toContain('↑');
+    });
+
+    it('omits the segment when both totals are 0 (splash / pre-first-spawn)', () => {
+      const { lastFrame } = renderStatusBar({
+        version: '0.0.0',
+        mode: 'act',
+        projects: [],
+        workers: [],
+        sessionId: null,
+        sessionTotals: {
+          totalTokens: 0,
+          totalCostUsd: 0,
+          workerCount: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+        },
+      });
+      expect(lastFrame()).not.toContain('↑');
+    });
+
+    it('renders the segment once any tokens have been billed', () => {
+      const { lastFrame } = renderStatusBar({
+        version: '0.0.0',
+        mode: 'act',
+        projects: [],
+        workers: [],
+        sessionId: null,
+        sessionTotals: {
+          totalTokens: 47_120,
+          totalCostUsd: 0.12,
+          workerCount: 3,
+          cacheReadTokens: 30_000,
+          cacheWriteTokens: 0,
+        },
+      });
+      const frame = lastFrame();
+      expect(frame).toContain('↑');
+      expect(frame).toContain('47K');
+      expect(frame).toContain('$0.12');
+    });
+
+    it('renders the segment when cost > 0 but tokens are 0 (cost-only worker)', () => {
+      const { lastFrame } = renderStatusBar({
+        version: '0.0.0',
+        mode: 'act',
+        projects: [],
+        workers: [],
+        sessionId: null,
+        sessionTotals: {
+          totalTokens: 0,
+          totalCostUsd: 0.0042,
+          workerCount: 1,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+        },
+      });
+      const frame = lastFrame();
+      expect(frame).toContain('↑');
+      // <$0.01 → 4 decimals (matches completion-summarizer precedent)
+      expect(frame).toContain('$0.0042');
+    });
+
+    it('paints the values with the violet accent truecolor escape', () => {
+      const result = render(
+        <ThemeProvider>
+          <StatusBar
+            version="0.0.0"
+            mode="act"
+            projects={[]}
+            workers={[]}
+            sessionId={null}
+            sessionTotals={{
+              totalTokens: 1_200_000,
+              totalCostUsd: 4.25,
+              workerCount: 5,
+              cacheReadTokens: 0,
+              cacheWriteTokens: 0,
+            }}
+          />
+        </ThemeProvider>,
+      );
+      const frame = result.lastFrame() ?? '';
+      // theme['accent'] = violet #7C6FEB → truecolor escape
+      expect(frame).toContain('\x1b[38;2;124;111;235m');
+      // Strip escapes for content checks.
+      const plain = frame.replace(
+        // eslint-disable-next-line no-control-regex
+        /\x1b\[[\d;]*[a-zA-Z]/g,
+        '',
+      );
+      expect(plain).toContain('1.2M');
+      expect(plain).toContain('$4.25');
+    });
+  });
 });

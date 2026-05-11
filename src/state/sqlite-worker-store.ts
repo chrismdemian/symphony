@@ -1,5 +1,5 @@
 import type { Database, Statement } from 'better-sqlite3';
-import type { WorkerStatus } from '../workers/types.js';
+import type { TokenUsage, WorkerStatus } from '../workers/types.js';
 import type { AutonomyTier, WorkerRole } from '../orchestrator/types.js';
 import { CorruptRecordError } from './errors.js';
 
@@ -31,6 +31,13 @@ export interface PersistedWorkerRecord {
   readonly exitCode?: number | null;
   readonly exitSignal?: NodeJS.Signals | null;
   readonly costUsd?: number;
+  /**
+   * Phase 3N.1 — cumulative token usage from the worker's most recent
+   * `result` event. Mirrors `costUsd` semantics (last-wins, undefined
+   * until the first `result`, explicitly cleared on resume). Absent when
+   * no token data has been observed.
+   */
+  readonly sessionUsage?: TokenUsage;
 }
 
 export interface WorkerStoreListFilter {
@@ -69,6 +76,12 @@ export interface WorkerStoreUpdatePatch {
   readonly exitCode?: number | null;
   readonly exitSignal?: NodeJS.Signals | null;
   readonly costUsd?: number | null;
+  /**
+   * Phase 3N.1 — composite token-usage patch. One logical concern, four
+   * columns. `null` clears all four (resume edge — mirrors `costUsd`).
+   * `T | null` semantics like the rest of the patch.
+   */
+  readonly sessionUsage?: TokenUsage | null;
 }
 
 interface WorkerRow {
@@ -90,6 +103,10 @@ interface WorkerRow {
   exit_code: number | null;
   exit_signal: string | null;
   cost_usd: number | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  cache_write_tokens: number | null;
 }
 
 export interface SqliteWorkerStoreOptions {
@@ -134,11 +151,13 @@ export class SqliteWorkerStore implements WorkerStore {
         `INSERT INTO workers
            (id, project_id, task_id, session_id, worktree_path, status, role,
             feature_intent, task_description, model, autonomy_tier, depends_on,
-            created_at, completed_at, last_event_at, exit_code, exit_signal, cost_usd)
+            created_at, completed_at, last_event_at, exit_code, exit_signal, cost_usd,
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
          VALUES
            (@id, @project_id, @task_id, @session_id, @worktree_path, @status, @role,
             @feature_intent, @task_description, @model, @autonomy_tier, @depends_on,
-            @created_at, @completed_at, @last_event_at, @exit_code, @exit_signal, @cost_usd)`,
+            @created_at, @completed_at, @last_event_at, @exit_code, @exit_signal, @cost_usd,
+            @input_tokens, @output_tokens, @cache_read_tokens, @cache_write_tokens)`,
       ),
       selectById: db.prepare(`SELECT * FROM workers WHERE id = ?`),
       listAll: db.prepare(`SELECT * FROM workers ORDER BY created_at ASC`),
@@ -150,7 +169,11 @@ export class SqliteWorkerStore implements WorkerStore {
            last_event_at = @last_event_at,
            exit_code = @exit_code,
            exit_signal = @exit_signal,
-           cost_usd = @cost_usd
+           cost_usd = @cost_usd,
+           input_tokens = @input_tokens,
+           output_tokens = @output_tokens,
+           cache_read_tokens = @cache_read_tokens,
+           cache_write_tokens = @cache_write_tokens
          WHERE id = @id`,
       ),
       delete: db.prepare(`DELETE FROM workers WHERE id = ?`),
@@ -178,6 +201,10 @@ export class SqliteWorkerStore implements WorkerStore {
       exit_code: record.exitCode ?? null,
       exit_signal: record.exitSignal ?? null,
       cost_usd: record.costUsd ?? null,
+      input_tokens: record.sessionUsage?.inputTokens ?? null,
+      output_tokens: record.sessionUsage?.outputTokens ?? null,
+      cache_read_tokens: record.sessionUsage?.cacheReadTokens ?? null,
+      cache_write_tokens: record.sessionUsage?.cacheWriteTokens ?? null,
     });
   }
 
@@ -186,6 +213,12 @@ export class SqliteWorkerStore implements WorkerStore {
     if (!existing) return; // mirrors WorkerRegistry's no-op on unknown id
     // `!== undefined` semantics throughout so callers can explicitly
     // clear nullable columns by passing `null` (M1 fix from 2B.1b review).
+    // Phase 3N.1: `sessionUsage` is a composite patch — `null` clears all
+    // four columns, an object writes all four, omission preserves all
+    // four. Mid-state (clearing only one of the four) is not exposed —
+    // CLI's roll-up is a single object, never split.
+    const usage = patch.sessionUsage;
+    const usagePassed = usage !== undefined;
     this.stmts.update.run({
       id,
       status: patch.status ?? existing.status,
@@ -195,6 +228,18 @@ export class SqliteWorkerStore implements WorkerStore {
       exit_code: patch.exitCode !== undefined ? patch.exitCode : existing.exit_code,
       exit_signal: patch.exitSignal !== undefined ? patch.exitSignal : existing.exit_signal,
       cost_usd: patch.costUsd !== undefined ? patch.costUsd : existing.cost_usd,
+      input_tokens: usagePassed
+        ? (usage === null ? null : usage.inputTokens)
+        : existing.input_tokens,
+      output_tokens: usagePassed
+        ? (usage === null ? null : usage.outputTokens)
+        : existing.output_tokens,
+      cache_read_tokens: usagePassed
+        ? (usage === null ? null : usage.cacheReadTokens)
+        : existing.cache_read_tokens,
+      cache_write_tokens: usagePassed
+        ? (usage === null ? null : usage.cacheWriteTokens)
+        : existing.cache_write_tokens,
     });
   }
 
@@ -253,6 +298,17 @@ function parseDependsOn(row: WorkerRow): string[] {
 }
 
 function rowToRecord(row: WorkerRow): PersistedWorkerRecord {
+  // Phase 3N.1: surface `sessionUsage` only when AT LEAST ONE of the four
+  // token columns has a value. Workers that never emitted a `result`
+  // event leave all four NULL, so the field stays absent. A partial set
+  // (some columns NULL, some not) shouldn't happen in practice but we
+  // coerce NULL → 0 inside the composite for that pathological case
+  // rather than dropping data.
+  const hasUsage =
+    row.input_tokens !== null ||
+    row.output_tokens !== null ||
+    row.cache_read_tokens !== null ||
+    row.cache_write_tokens !== null;
   const record: PersistedWorkerRecord = {
     id: row.id,
     projectId: row.project_id,
@@ -272,6 +328,16 @@ function rowToRecord(row: WorkerRow): PersistedWorkerRecord {
     ...(row.exit_code !== null ? { exitCode: row.exit_code } : {}),
     ...(row.exit_signal !== null ? { exitSignal: row.exit_signal as NodeJS.Signals } : {}),
     ...(row.cost_usd !== null ? { costUsd: row.cost_usd } : {}),
+    ...(hasUsage
+      ? {
+          sessionUsage: {
+            inputTokens: row.input_tokens ?? 0,
+            outputTokens: row.output_tokens ?? 0,
+            cacheReadTokens: row.cache_read_tokens ?? 0,
+            cacheWriteTokens: row.cache_write_tokens ?? 0,
+          },
+        }
+      : {}),
   };
   return record;
 }

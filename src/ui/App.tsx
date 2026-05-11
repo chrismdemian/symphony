@@ -10,6 +10,7 @@ import { Layout } from './layout/Layout.js';
 import { useProjects } from './data/useProjects.js';
 import { useWorkers } from './data/useWorkers.js';
 import { useQueue } from './data/useQueue.js';
+import { useSessionTotals } from './data/useSessionTotals.js';
 import { useMode } from './data/useMode.js';
 import { useQuestions } from './data/useQuestions.js';
 import { WorkerSelectionProvider } from './data/WorkerSelection.js';
@@ -98,6 +99,7 @@ function AppShell(props: AppProps): React.JSX.Element {
   const { projects } = useProjects(props.rpc);
   const workersResult = useWorkers(props.rpc);
   const queueResult = useQueue(props.rpc);
+  const sessionTotalsResult = useSessionTotals(props.rpc);
   const { mode } = useMode(props.rpc);
   const questionsResult = useQuestions(props.rpc);
   const { sessionId, pushSystem } = useMaestroData();
@@ -337,6 +339,9 @@ function AppShell(props: AppProps): React.JSX.Element {
           openKeybindReset: () => focus.pushPopup('keybind-list'),
           // Phase 3M — `<leader>a` chord + palette entry.
           toggleAwayMode,
+          // Phase 3N.3 — palette entry "show session stats". Slash
+          // command `/stats` is wired in ChatPanel.
+          openStats: () => focus.pushPopup('stats'),
         },
         {
           questionsCount: questionsResult.count,
@@ -385,6 +390,7 @@ function AppShell(props: AppProps): React.JSX.Element {
               queueResult={queueResult}
               questionsResult={questionsResult}
               awayMode={awayMode}
+              sessionTotals={sessionTotalsResult.totals}
             />
           </Box>
         </InstrumentNameProvider>

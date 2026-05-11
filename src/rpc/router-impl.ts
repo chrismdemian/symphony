@@ -21,6 +21,10 @@ import type { ToolMode, AutonomyTier } from '../orchestrator/types.js';
 import { createRPCController, createRPCRouter } from './router.js';
 import { applyPatchToDisk, loadConfig } from '../utils/config.js';
 import type { DispatcherHandle } from '../notifications/types.js';
+import {
+  computeSessionTotals,
+  type SessionTotals,
+} from '../orchestrator/session-totals.js';
 import type {
   PendingSpawnSnapshot,
   WorkerLifecycleHandle,
@@ -84,6 +88,14 @@ export interface RouterDeps {
    * legacy test rigs that don't construct a context can leave it out.
    */
   readonly setDispatchAwayMode?: (awayMode: boolean) => void;
+  /**
+   * Phase 3N.2 — ISO timestamp stamped at orchestrator boot. Used by the
+   * `stats.session` aggregator to filter out crash-recovered workers
+   * from a prior session (their `createdAt` predates `bootIso`). When
+   * undefined, the aggregator counts every live registry entry —
+   * sufficient for test rigs that don't simulate recovery.
+   */
+  readonly orchestratorBootIso?: string;
 }
 
 // ── Argument shapes (validated at the boundary) ──────────────────────
@@ -222,6 +234,43 @@ export interface QueueReorderResult {
 // Re-export so client SDKs can type the wire shape without reaching
 // into orchestrator/worker-lifecycle.js.
 export type { PendingSpawnSnapshot };
+
+// ── Stats argument shapes (Phase 3N.3) ───────────────────────────────
+
+export interface StatsByProjectRow {
+  /** `null` for workers spawned against an unregistered absolute path. */
+  readonly projectId: string | null;
+  /** Resolved name when projectId resolves; sentinel `(unregistered)` otherwise. */
+  readonly projectName: string;
+  readonly workerCount: number;
+  readonly totalTokens: number;
+  readonly totalCostUsd: number;
+  readonly cacheReadTokens: number;
+  readonly cacheWriteTokens: number;
+}
+
+export interface StatsByWorkerArgs {
+  /** Filter to a single project. When omitted, returns across all projects. */
+  readonly projectId?: string;
+  /** Default 50, max 200. */
+  readonly limit?: number;
+}
+
+export interface StatsByWorkerRow {
+  readonly workerId: string;
+  readonly projectId: string | null;
+  readonly projectName: string;
+  readonly featureIntent: string;
+  readonly role: string;
+  readonly status: string;
+  readonly createdAt: string;
+  readonly completedAt: string | null;
+  readonly costUsd: number | null;
+  readonly inputTokens: number | null;
+  readonly outputTokens: number | null;
+  readonly cacheReadTokens: number | null;
+  readonly cacheWriteTokens: number | null;
+}
 
 // ── Router builder ────────────────────────────────────────────────────
 
@@ -611,6 +660,134 @@ export function createSymphonyRouter(deps: RouterDeps) {
     },
   });
 
+  /**
+   * Phase 3N.2 — token + cost telemetry surface. `session()` returns
+   * cumulative totals across this orchestrator boot's live workers
+   * (crash-recovered terminal stubs from a prior session are filtered
+   * out via the `bootIso` comparison). The Phase 3N.3 `/stats` popup
+   * will extend this namespace with `byProject` / `byWorker` procedures
+   * that join the SQL `workers` table for historical breakdowns.
+   *
+   * Snapshot-based: the TUI polls at 1s like `useQueue` / `useWorkers`.
+   * No subscription today — the read is O(workers in registry) over
+   * in-memory snapshots, well inside a render budget for any realistic
+   * worker count.
+   */
+  const stats = createRPCController({
+    session(): SessionTotals {
+      const snapshots = workerRegistry.snapshots();
+      return computeSessionTotals(snapshots, deps.orchestratorBootIso);
+    },
+    /**
+     * Phase 3N.3 — per-project rollup over all known workers (live +
+     * persisted/historical). Sums cost + tokens grouped by project_id.
+     * Workers spawned against unregistered absolute paths bucket
+     * under `projectId: null` with project name `(unregistered)`.
+     *
+     * Sorted by total cost DESC so the heaviest projects float to the
+     * top of the `/stats` popup. Rows with zero cost AND zero tokens
+     * are filtered out — they belong to project buckets the user
+     * cares about only if SOMETHING has been billed.
+     */
+    byProject(): readonly StatsByProjectRow[] {
+      const merged = mergeLiveAndPersisted(workerRegistry, {
+        projectStore,
+      });
+      const byId = new Map<string | null, StatsByProjectRow>();
+      const projectsList = projectStore.list();
+      const idToName = new Map<string, string>();
+      for (const p of projectsList) idToName.set(p.id, p.name);
+      for (const snap of merged) {
+        const projectId =
+          (snap.projectPath === '(unregistered)' ? null : findProjectIdForPath(projectsList, snap.projectPath)) ?? null;
+        const key = projectId;
+        const existing = byId.get(key);
+        const projectName = projectId !== null
+          ? (idToName.get(projectId) ?? '(unregistered)')
+          : '(unregistered)';
+        const next: StatsByProjectRow = existing ?? {
+          projectId,
+          projectName,
+          workerCount: 0,
+          totalTokens: 0,
+          totalCostUsd: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+        };
+        const usage = snap.sessionUsage;
+        const tokens = usage !== undefined ? usage.inputTokens + usage.outputTokens : 0;
+        const updated: StatsByProjectRow = {
+          ...next,
+          workerCount: next.workerCount + 1,
+          totalTokens: next.totalTokens + tokens,
+          totalCostUsd:
+            next.totalCostUsd + (typeof snap.costUsd === 'number' ? snap.costUsd : 0),
+          cacheReadTokens:
+            next.cacheReadTokens + (usage !== undefined ? usage.cacheReadTokens : 0),
+          cacheWriteTokens:
+            next.cacheWriteTokens + (usage !== undefined ? usage.cacheWriteTokens : 0),
+        };
+        byId.set(key, updated);
+      }
+      const rows = Array.from(byId.values());
+      // Filter zero-cost-zero-tokens buckets — workers that haven't
+      // billed anything aren't useful in the breakdown view.
+      const nonzero = rows.filter((r) => r.totalCostUsd > 0 || r.totalTokens > 0);
+      // Sort by cost descending, ties broken by tokens descending.
+      nonzero.sort(
+        (a, b) => b.totalCostUsd - a.totalCostUsd || b.totalTokens - a.totalTokens,
+      );
+      return nonzero;
+    },
+    /**
+     * Phase 3N.3 — recent workers list for the `/stats` "Workers"
+     * section. Returns up to `limit` (default 50, max 200) most-recent
+     * workers across live + persisted, sorted by createdAt DESC.
+     * Optionally filterable by project. Each row is the per-worker
+     * detail: cost, the four token columns, status, project name.
+     */
+    byWorker(args?: StatsByWorkerArgs): readonly StatsByWorkerRow[] {
+      const limit = args?.limit ?? 50;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 200) {
+        throw badArgs('limit must be an integer between 1 and 200');
+      }
+      const projectsList = projectStore.list();
+      const idToName = new Map<string, string>();
+      for (const p of projectsList) idToName.set(p.id, p.name);
+      const merged = mergeLiveAndPersisted(workerRegistry, {
+        projectStore,
+      });
+      const filter = args?.projectId;
+      const rows: StatsByWorkerRow[] = [];
+      for (const snap of merged) {
+        const projectId = findProjectIdForPath(projectsList, snap.projectPath);
+        if (filter !== undefined && projectId !== filter) continue;
+        const projectName =
+          projectId !== null ? (idToName.get(projectId) ?? '(unregistered)') : '(unregistered)';
+        rows.push({
+          workerId: snap.id,
+          projectId,
+          projectName,
+          featureIntent: snap.featureIntent,
+          role: snap.role,
+          status: snap.status,
+          createdAt: snap.createdAt,
+          completedAt: snap.completedAt ?? null,
+          costUsd: snap.costUsd ?? null,
+          inputTokens: snap.sessionUsage?.inputTokens ?? null,
+          outputTokens: snap.sessionUsage?.outputTokens ?? null,
+          cacheReadTokens: snap.sessionUsage?.cacheReadTokens ?? null,
+          cacheWriteTokens: snap.sessionUsage?.cacheWriteTokens ?? null,
+        });
+      }
+      // Sort by createdAt DESC (most recent first). Z-suffixed ISO is
+      // lex-monotonic; same precedent as Phase 3F.3 answered-questions
+      // history.
+      rows.sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+      return rows.slice(0, limit);
+    },
+  });
+
   return createRPCRouter({
     projects,
     tasks,
@@ -621,6 +798,7 @@ export function createSymphonyRouter(deps: RouterDeps) {
     notifications,
     queue,
     runtime,
+    stats,
   });
 }
 
@@ -681,6 +859,27 @@ function requireBoundedString(
   if (Buffer.byteLength(value, 'utf8') > maxBytes) {
     throw badArgs(`${name} exceeds ${maxBytes}-byte cap`);
   }
+}
+
+/**
+ * Phase 3N.3 — reverse-lookup project path → id. `mergeLiveAndPersisted`
+ * synthesizes snapshots with the `projectPath` field; for the stats
+ * aggregations we need to bucket by id. `ProjectRegistry.register`
+ * stores `path.resolve(record.path)`, so we MUST resolve the worker's
+ * path before comparing — otherwise Win32 mismatch on the leading
+ * drive letter / forward-vs-back slash falls into `(unregistered)`.
+ * Returns null for the unresolved sentinel and any non-matching path.
+ */
+function findProjectIdForPath(
+  projects: readonly ProjectSnapshot[],
+  projectPath: string,
+): string | null {
+  if (projectPath === '(unregistered)') return null;
+  const resolved = path.resolve(projectPath);
+  for (const p of projects) {
+    if (p.path === resolved) return p.id;
+  }
+  return null;
 }
 
 function coerceTaskFilter(args: TasksListArgs | undefined): TaskListFilter {

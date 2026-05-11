@@ -103,6 +103,11 @@ export interface GlobalCommandHandlers {
    * Optional during 3M transition; falls back to a toast when omitted.
    */
   toggleAwayMode?(): Promise<void> | void;
+  /**
+   * Phase 3N.3 — `/stats` slash + `app.openStats` palette entry push
+   * the stats popup. Optional during 3N transition.
+   */
+  openStats?(): void;
 }
 
 export interface GlobalCommandState {
@@ -288,6 +293,18 @@ export function buildGlobalCommands(
       scope: 'global',
       displayOnScreen: false,
       onSelect: handlers.openKeybindReset ?? (() => undefined),
+    },
+    // Phase 3N.3 — palette-only entry into the stats popup. No hotkey
+    // (kind: 'none') — `/stats` slash is the keystroke surface. Listed
+    // in the palette so users browsing for "tokens"/"cost"/"stats"
+    // find the popup without memorizing the slash.
+    {
+      id: 'app.stats',
+      title: 'show session stats',
+      key: { kind: 'none' },
+      scope: 'global',
+      displayOnScreen: false,
+      onSelect: handlers.openStats ?? (() => undefined),
     },
   ];
 }

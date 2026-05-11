@@ -281,6 +281,13 @@ function attachEventTap(
           if (event.costUsd !== undefined) {
             registry.updateCostUsd(recordId, event.costUsd);
           }
+          // Phase 3N.1 — same shape as cost. `sessionUsage` is the CLI's
+          // authoritative cumulative usage roll-up (parser walks
+          // `result.usage` directly; see `stream-parser.ts:233`). Workers
+          // that finish with no token data leave the field absent.
+          if (event.sessionUsage !== undefined) {
+            registry.updateSessionUsage(recordId, event.sessionUsage);
+          }
         }
         // Read through the ref so `setOnEvent` late-binding from the
         // orchestrator wires the broker for taps that started before it.
@@ -910,6 +917,7 @@ function rehydrateRecord(
     ...(persisted.completedAt !== undefined ? { completedAt: persisted.completedAt } : {}),
     ...(persisted.lastEventAt !== undefined ? { lastEventAt: persisted.lastEventAt } : {}),
     ...(persisted.costUsd !== undefined ? { costUsd: persisted.costUsd } : {}),
+    ...(persisted.sessionUsage !== undefined ? { sessionUsage: persisted.sessionUsage } : {}),
     ...(persisted.exitCode !== undefined && persisted.exitCode !== null
       ? {
           exitInfo: {
