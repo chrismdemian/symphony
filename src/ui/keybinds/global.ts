@@ -91,6 +91,18 @@ export interface GlobalCommandHandlers {
    * picker. Optional during 3H transition.
    */
   openKeybindReset?(): void;
+  /**
+   * Phase 3M — `<leader>a` chord toggles `config.awayMode`. Async because
+   * the handler:
+   *   1. Calls `runtime.setAwayMode` RPC (server dispatch context flips
+   *      BEFORE the disk write so the capability shim sees the new value
+   *      first; see audit M2 on commit 1).
+   *   2. Persists via `setConfig`.
+   *   3. On the true→false edge, flushes the digest + pushes a system
+   *      row.
+   * Optional during 3M transition; falls back to a toast when omitted.
+   */
+  toggleAwayMode?(): Promise<void> | void;
 }
 
 export interface GlobalCommandState {
@@ -215,6 +227,19 @@ export function buildGlobalCommands(
       onSelect: () =>
         handlers.toggleThemeFallback?.() ??
         handlers.showLeaderToast?.('Theme toggle — handler not wired.'),
+    },
+    // Phase 3M — `<leader>a` (Ctrl+X a) flips Away Mode. Same chord
+    // shape as the other leaders so the WhichKey hint surfaces it
+    // alongside `m` / `p` / `t` when Ctrl+X is armed.
+    {
+      id: 'leader.awayToggle',
+      title: 'toggle away mode',
+      key: { kind: 'leader', lead: { kind: 'ctrl', char: 'x' }, second: { kind: 'char', char: 'a' } },
+      scope: 'global',
+      displayOnScreen: false,
+      onSelect: () =>
+        handlers.toggleAwayMode?.() ??
+        handlers.showLeaderToast?.('Away mode toggle — handler not wired.'),
     },
     // Phase 3H.1 — settings popup. Hotkey is Ctrl+, (the editor-standard
     // settings shortcut). Listed in the bottom keybind bar so it's

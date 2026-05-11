@@ -148,7 +148,7 @@ function makeFakeRpc(
         reorder: vi.fn(async () => ({ moved: true })),
       },
       notifications: {
-        flushAwayDigest: vi.fn(async () => undefined),
+        flushAwayDigest: vi.fn(async () => ({ digest: null })),
       },
     },
     subscribe: vi.fn(async () => ({ topic: 'noop', unsubscribe: async () => {} })),

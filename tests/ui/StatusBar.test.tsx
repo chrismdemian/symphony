@@ -217,4 +217,98 @@ describe('<StatusBar>', () => {
     // theme['warning'] = goldLight #E5C07B → truecolor escape:
     expect(frame).toContain('\x1b[38;2;229;192;123m');
   });
+
+  describe('Phase 3M — Away Mode segment', () => {
+    it('omits the Away Mode segment when awayMode is false', () => {
+      const { lastFrame } = renderStatusBar({
+        version: '0.0.0',
+        mode: 'plan',
+        projects: [],
+        workers: [],
+        sessionId: null,
+      });
+      expect(lastFrame()).not.toContain('Away Mode');
+    });
+
+    it('renders the Away Mode segment with done/pending/questions counts', () => {
+      const { lastFrame } = renderStatusBar({
+        version: '0.0.0',
+        mode: 'act',
+        projects: [],
+        workers: [
+          baseWorker('completed'),
+          baseWorker('completed'),
+          baseWorker('running'),
+          baseWorker('failed'),
+        ],
+        sessionId: null,
+        questionsCount: 3,
+        awayMode: true,
+        pendingQueueCount: 2,
+      });
+      // ink-testing-library wraps wide rows across lines and the
+      // continuations interleave (Symphony's "y" lands next to "queued").
+      // Assert on pieces visible on the un-wrapped first line; the
+      // word "queued" is verified separately to tolerate the wrap.
+      const normalized = lastFrame().replace(/\s+/g, ' ');
+      expect(normalized).toContain('Away Mode');
+      // Done counts only `completed` status (PLAN.md §3M:1320 intent —
+      // successes vs other terminal states routed separately).
+      expect(normalized).toContain('2 done');
+      expect(normalized).toContain('2 pending');
+      expect(normalized).toContain('3 questions');
+      expect(normalized).toContain('queued');
+    });
+
+    it('uses singular "question" when count is 1', () => {
+      const { lastFrame } = renderStatusBar({
+        version: '0.0.0',
+        mode: 'act',
+        projects: [],
+        workers: [],
+        sessionId: null,
+        questionsCount: 1,
+        awayMode: true,
+        pendingQueueCount: 0,
+      });
+      const normalized = lastFrame().replace(/\s+/g, ' ');
+      // Match "1 question" but NOT "1 questions" — the pluralization
+      // boundary is the test target; the trailing word "queued" wraps
+      // and is verified loosely.
+      expect(normalized).toMatch(/\b1 question\b/);
+      expect(normalized).not.toMatch(/\b1 questions\b/);
+      expect(normalized).toContain('queued');
+    });
+
+    it('paints Away Mode segment with the muted-gray truecolor escape', () => {
+      const result = render(
+        <ThemeProvider>
+          <StatusBar
+            version="0.0.0"
+            mode="act"
+            projects={[]}
+            workers={[]}
+            sessionId={null}
+            awayMode={true}
+            pendingQueueCount={0}
+            questionsCount={0}
+          />
+        </ThemeProvider>,
+      );
+      const frame = result.lastFrame() ?? '';
+      // theme['textMuted'] = #888888 → truecolor escape. PLAN.md §3M
+      // calls for the muted-gray text token to signal away state.
+      expect(frame).toContain('\x1b[38;2;136;136;136m');
+      // The Away label is within a muted-gray run (no accent break).
+      // eslint-disable-next-line no-control-regex
+      expect(frame).toMatch(/\x1b\[38;2;136;136;136m[^\x1b]*Away Mode/);
+    });
+
+    // Note: a "Away segment renders after Project, before Session"
+    // positional assertion belongs in the visual harness — ink-testing-
+    // library's default terminal width wraps the full-segment bar in
+    // ways that interleave continuations and make `indexOf` ordering
+    // unreliable. The 3m visual frames (commit 3) render at 120 cols
+    // and exercise the order directly.
+  });
 });

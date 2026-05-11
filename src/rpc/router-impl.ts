@@ -77,6 +77,13 @@ export interface RouterDeps {
     WorkerLifecycleHandle,
     'listPendingGlobal' | 'cancelQueued' | 'reorderQueued'
   >;
+  /**
+   * Phase 3M — optional. When omitted, the `runtime.setAwayMode` RPC
+   * procedure resolves to a no-op (still validates args). The CLI server
+   * wires a closure that mutates the in-process dispatch-context cursor;
+   * legacy test rigs that don't construct a context can leave it out.
+   */
+  readonly setDispatchAwayMode?: (awayMode: boolean) => void;
 }
 
 // ── Argument shapes (validated at the boundary) ──────────────────────
@@ -179,6 +186,16 @@ export interface ModeSetModelResult {
    * silently destroy the user's hand-edited content.
    */
   readonly warnings: readonly string[];
+}
+
+// ── Runtime argument shapes (Phase 3M) ───────────────────────────────
+
+export interface RuntimeSetAwayModeArgs {
+  readonly awayMode: boolean;
+}
+
+export interface RuntimeSetAwayModeResult {
+  readonly awayMode: boolean;
 }
 
 // ── Queue argument shapes (Phase 3L) ─────────────────────────────────
@@ -530,9 +547,32 @@ export function createSymphonyRouter(deps: RouterDeps) {
    * no-op so client code doesn't need to branch.
    */
   const notifications = createRPCController({
-    async flushAwayDigest(): Promise<void> {
-      if (deps.notificationDispatcher === undefined) return;
-      await deps.notificationDispatcher.flushAwayDigest();
+    async flushAwayDigest(): Promise<{ digest: string | null }> {
+      if (deps.notificationDispatcher === undefined) return { digest: null };
+      return deps.notificationDispatcher.flushAwayDigest();
+    },
+  });
+
+  /**
+   * Phase 3M — runtime context surface. Today only `setAwayMode` lives
+   * here, but future runtime flags that the TUI needs to push into the
+   * server's dispatch context (`automationContext`, per-session tier
+   * overrides, etc.) should land here too rather than scattering across
+   * other namespaces.
+   *
+   * `setAwayMode` is best-effort: when `deps.setDispatchAwayMode` is
+   * absent (legacy test rigs that don't construct a context cursor),
+   * the procedure still validates args and echoes back the value so
+   * client code can be uniform across rig types. The CLI server always
+   * wires the real setter.
+   */
+  const runtime = createRPCController({
+    async setAwayMode(args: RuntimeSetAwayModeArgs): Promise<RuntimeSetAwayModeResult> {
+      if (typeof args?.awayMode !== 'boolean') {
+        throw badArgs('awayMode must be a boolean');
+      }
+      deps.setDispatchAwayMode?.(args.awayMode);
+      return { awayMode: args.awayMode };
     },
   });
 
@@ -580,6 +620,7 @@ export function createSymphonyRouter(deps: RouterDeps) {
     mode,
     notifications,
     queue,
+    runtime,
   });
 }
 

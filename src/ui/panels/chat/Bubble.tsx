@@ -123,6 +123,14 @@ function SystemBubble({ turn }: SystemBubbleProps): React.JSX.Element {
   const headline = turn.summary.headline;
   const metrics = turn.summary.metrics;
   const details = turn.summary.details;
+  // Phase 3M — suppress the `(project) · duration` tail ONLY when BOTH
+  // are missing. Away-mode digest rows pass projectName='' AND
+  // durationMs=null and would otherwise render `Symphony () ·
+  // (unknown)`. Worker-completion rows (3K) always have a project so
+  // the existing `(MathScrabble) · (unknown)` shape stays put.
+  const hasProject = turn.summary.projectName.length > 0;
+  const hasDuration = turn.summary.durationMs !== null;
+  const showTail = hasProject || hasDuration;
   return (
     <Box flexDirection="column" marginTop={1}>
       <Box flexDirection="row">
@@ -132,12 +140,14 @@ function SystemBubble({ turn }: SystemBubbleProps): React.JSX.Element {
         <Text color={headerColor} bold>
           {workerName}
         </Text>
-        <Text color={theme['textMuted']}>
-          {' ('}
-          {turn.summary.projectName}
-          {') · '}
-          {durationLabel}
-        </Text>
+        {showTail && (
+          <Text color={theme['textMuted']}>
+            {' ('}
+            {turn.summary.projectName}
+            {') · '}
+            {durationLabel}
+          </Text>
+        )}
       </Box>
       {/*
         * Visual review (3K) flagged a wrap-indent regression: a row

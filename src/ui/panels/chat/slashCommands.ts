@@ -58,6 +58,13 @@ export interface SlashHandlers {
    * (Audit 3H.1 M2 — silent-no-op was the previous failure mode.)
    */
   readonly openSettings?: () => void;
+  /**
+   * Phase 3M — `/away` toggles `config.awayMode`. Optional so tests
+   * that don't care about away mode still type-check. When omitted,
+   * `/away` is NOT registered (becomes "Unknown command: away" —
+   * matches the 3H.1 M2 pattern).
+   */
+  readonly toggleAway?: () => void;
 }
 
 export interface SlashTable {
@@ -71,6 +78,10 @@ export function buildSlashTable(handlers: SlashHandlers): SlashTable {
   if (handlers.openSettings !== undefined) {
     const open = handlers.openSettings;
     table['config'] = () => open();
+  }
+  if (handlers.toggleAway !== undefined) {
+    const toggle = handlers.toggleAway;
+    table['away'] = () => toggle();
   }
   return table;
 }

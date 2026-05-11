@@ -56,8 +56,15 @@ export function ChatPanel(): React.JSX.Element {
         // Phase 3H.1 — `/config` opens the settings popup. Mirrors
         // Ctrl+, in the global keybind table.
         openSettings: () => focus.pushPopup('settings'),
+        // Phase 3M — `/away` toggles config.awayMode. Same handler as
+        // `<leader>a` (registered in App.tsx via GlobalCommandHandlers).
+        // Only registered when the action is wired so tests building
+        // AppActions without it keep behavioral parity with pre-3M.
+        ...(actions.toggleAwayMode !== undefined
+          ? { toggleAway: () => void actions.toggleAwayMode?.() }
+          : {}),
       }),
-    [actions.onRequestExit, focus.pushPopup],
+    [actions.onRequestExit, actions.toggleAwayMode, focus.pushPopup],
   );
 
   const handleSubmit = (text: string): void => {

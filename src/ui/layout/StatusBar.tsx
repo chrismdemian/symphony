@@ -31,12 +31,38 @@ export interface StatusBarProps {
   readonly questionsCount?: number;
   /** Phase 3E — count of unanswered BLOCKING questions (subset of total). */
   readonly blockingCount?: number;
+  /**
+   * Phase 3M — when true, an "Away Mode — N done, N pending, N questions
+   * queued" segment renders between `Project` and `Session`. The locked
+   * muted-gray text token signals the away state (PLAN.md §3M:1320).
+   */
+  readonly awayMode?: boolean;
+  /**
+   * Phase 3M — pending queue count for the Away Mode segment. Sourced
+   * from `useQueue` at the App level; defaults to 0 (no segment row when
+   * queueResult was omitted).
+   */
+  readonly pendingQueueCount?: number;
 }
 
 function activeCount(workers: readonly WorkerRecordSnapshot[]): number {
   let n = 0;
   for (const w of workers) {
     if (!TERMINAL_STATUSES.has(w.status)) n++;
+  }
+  return n;
+}
+
+/**
+ * Phase 3M — count "done" workers (completed terminal state only — not
+ * failed/killed/timeout/crashed). PLAN.md §3M:1320's "N done" copy
+ * implies successful completions; the other terminal states are
+ * surfaced through their own channels (notifications, system rows).
+ */
+function doneCount(workers: readonly WorkerRecordSnapshot[]): number {
+  let n = 0;
+  for (const w of workers) {
+    if (w.status === 'completed') n++;
   }
   return n;
 }
@@ -75,6 +101,9 @@ export function StatusBar(props: StatusBarProps): React.JSX.Element {
   const active = activeCount(props.workers);
   const questionsCount = props.questionsCount ?? 0;
   const blockingCount = props.blockingCount ?? 0;
+  const awayMode = props.awayMode === true;
+  const done = doneCount(props.workers);
+  const pending = props.pendingQueueCount ?? 0;
   return (
     <Box flexDirection="row" paddingX={1}>
       <Text color={theme['accent']} bold>
@@ -95,6 +124,23 @@ export function StatusBar(props: StatusBarProps): React.JSX.Element {
       <Text color={theme['border']}>{SEPARATOR}</Text>
       <Text color={theme['textMuted']}>Project: </Text>
       <Text color={theme['text']}>{formatProject(props.projects)}</Text>
+      {awayMode && (
+        <>
+          <Text color={theme['border']}>{SEPARATOR}</Text>
+          {/*
+           * Phase 3M — Away Mode segment. Muted-gray throughout per
+           * PLAN.md §3M:1320 ("no emoji glyph; the bar's status segment
+           * uses the locked muted-gray text token to signal away
+           * state"). The whole label including counts stays one
+           * uniform tone — no accent color on numbers — because the
+           * away state itself is the signal, not the magnitudes.
+           */}
+          <Text color={theme['textMuted']}>
+            Away Mode — {done} done, {pending} pending, {questionsCount}{' '}
+            {questionsCount === 1 ? 'question' : 'questions'} queued
+          </Text>
+        </>
+      )}
       {props.sessionId !== null && (
         <>
           <Text color={theme['border']}>{SEPARATOR}</Text>

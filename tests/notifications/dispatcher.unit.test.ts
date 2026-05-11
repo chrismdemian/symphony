@@ -411,8 +411,25 @@ describe('dispatcher — awayMode', () => {
   });
 
   it('flushAwayDigest is a no-op on empty buffer', async () => {
-    await h.dispatcher.flushAwayDigest();
+    const result = await h.dispatcher.flushAwayDigest();
     expect(h.spawnToast).not.toHaveBeenCalled();
+    expect(result).toEqual({ digest: null });
+  });
+
+  it('flushAwayDigest returns the formatted body (Phase 3M — TUI system-row source)', async () => {
+    h.dispatcher.onWorkerExit(makeRecord({ status: 'failed' }), 2);
+    h.dispatcher.onWorkerExit(makeRecord({ status: 'completed' }), 1);
+    h.dispatcher.onWorkerExit(makeRecord({ status: 'completed' }), 0);
+    h.dispatcher.onQuestion(makeQuestion());
+    await h.flushPending();
+    const result = await h.dispatcher.flushAwayDigest();
+    expect(result).toEqual({ digest: '2 completed, 1 failed, 1 question' });
+  });
+
+  it('flushAwayDigest returns digest: null on post-shutdown call', async () => {
+    await h.dispatcher.shutdown();
+    const result = await h.dispatcher.flushAwayDigest();
+    expect(result).toEqual({ digest: null });
   });
 
   it('flushAwayDigest resets tally — a second flush is a no-op', async () => {

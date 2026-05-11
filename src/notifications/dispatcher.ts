@@ -47,7 +47,12 @@
 import type { WorkerRecord } from '../orchestrator/worker-registry.js';
 import type { QuestionRecord } from '../state/question-registry.js';
 import type { WorkerStatus } from '../workers/types.js';
-import type { DispatcherDeps, DispatcherHandle, ToastInput } from './types.js';
+import type {
+  DispatcherDeps,
+  DispatcherHandle,
+  FlushAwayDigestResult,
+  ToastInput,
+} from './types.js';
 
 const BODY_MAX_CHARS = 120;
 
@@ -261,22 +266,29 @@ export function createNotificationDispatcher(deps: DispatcherDeps): DispatcherHa
       });
     },
 
-    async flushAwayDigest(): Promise<void> {
-      if (disposed) return;
+    async flushAwayDigest(): Promise<FlushAwayDigestResult> {
+      if (disposed) return { digest: null };
       // Snapshot + reset BEFORE awaiting the spawn so concurrent
       // `onWorkerExit` calls during the spawn don't race with the
       // counter reset.
-      if (!tallyHasEntries(tally)) return;
+      if (!tallyHasEntries(tally)) return { digest: null };
       const snapshot = { ...tally };
       tally = emptyTally();
+      const body = formatTallyBody(snapshot);
       try {
         await deps.spawnToast({
           ...digestToast(snapshot),
-          body: truncateBody(formatTallyBody(snapshot)),
+          body: truncateBody(body),
         });
       } catch (err) {
         onError(err instanceof Error ? err : new Error(String(err)));
       }
+      // Phase 3M — return the formatted body so the TUI can render an
+      // in-chat "While you were away: …" system row. The toast above
+      // serves the OS-level notification (often unseen if the user is
+      // away from the terminal); the in-chat row is the on-return
+      // summary they actually see.
+      return { digest: body };
     },
 
     async shutdown(): Promise<void> {

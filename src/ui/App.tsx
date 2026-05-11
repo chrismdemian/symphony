@@ -52,10 +52,6 @@ export interface AppProps {
 }
 
 export function App(props: AppProps): React.JSX.Element {
-  const actions = useMemo(
-    () => ({ onRequestExit: props.onRequestExit }),
-    [props.onRequestExit],
-  );
   return (
     <ThemeProvider>
       <ToastProvider>
@@ -69,13 +65,11 @@ export function App(props: AppProps): React.JSX.Element {
          */}
         <ToastBoundConfigProvider>
           <FocusProvider>
-            <AppActionsProvider value={actions}>
-              <WorkerSelectionProvider>
-                <MaestroEventsProvider source={props.maestro}>
-                  <AppShell {...props} />
-                </MaestroEventsProvider>
-              </WorkerSelectionProvider>
-            </AppActionsProvider>
+            <WorkerSelectionProvider>
+              <MaestroEventsProvider source={props.maestro}>
+                <AppShell {...props} />
+              </MaestroEventsProvider>
+            </WorkerSelectionProvider>
           </FocusProvider>
         </ToastBoundConfigProvider>
       </ToastProvider>
@@ -137,32 +131,82 @@ function AppShell(props: AppProps): React.JSX.Element {
     setThemeJson(pickThemeJson(autoFallback));
   }, [autoFallback, setThemeJson]);
 
-  // Phase 3H.3 — awayMode flush detection. The dispatcher (server-side)
-  // accumulates notifications while `config.awayMode === true`. When the
-  // user toggles it back to false (currently via SettingsPanel; future
-  // 3M will add a dedicated keybind), this effect's edge detector calls
-  // the RPC `flushAwayDigest` so the orchestrator emits one batched
-  // toast covering the buffered events.
+  // Phase 3H.3 + Phase 3M — awayMode edge handling.
+  //
+  // On EVERY change (both directions), push the new value to the
+  // server's dispatch context via `runtime.setAwayMode` so the
+  // capability shim (`capabilities.ts`) sees it on the next tool call.
+  // The 3H.3 dispatcher reads config fresh per event, so its buffering
+  // policy was already reactive; this seam closes the gap for the
+  // host-browser-control rejection path.
+  //
+  // On the true→false edge specifically, ALSO flush the digest and
+  // render the result as a chat system row. The PLAN.md §3M return-from-
+  // away spec calls for "While you were away: N completed, N failed, N
+  // questions" — flushAwayDigest now returns the formatted body so the
+  // TUI can render the row without re-deriving the tally client-side.
+  //
+  // Race-window note (audit M2, commit 1): the in-TUI toggle path
+  // (`toggleAwayMode` below) calls `runtime.setAwayMode` BEFORE writing
+  // disk, closing the window during which the dispatcher (disk-fresh)
+  // and capability shim (memory-stale) could disagree. External edit
+  // paths (`symphony config --edit`, SettingsPanel Space-toggle) still
+  // hit this effect for the RPC sync after the disk write lands, so the
+  // worst case is a microsecond-scale stale window — acceptable for the
+  // MVP. Remote-client work (Phase 5/8) needs additional ordering care.
   //
   // `prevAwayModeRef` is initialized to the current value so the first
   // effect run (on mount) is a no-op even if awayMode is somehow true
-  // at boot. Only an actual `true → false` transition triggers a flush.
-  // Mirrors the firedRef pattern from 3H.1's ConfigProvider warnings
-  // useEffect.
+  // at boot. Mirrors the firedRef pattern from 3H.1's ConfigProvider
+  // warnings useEffect.
   const awayMode = config.awayMode;
   const prevAwayModeRef = React.useRef(awayMode);
   const rpc = props.rpc;
   useEffect(() => {
     const prev = prevAwayModeRef.current;
+    if (prev === awayMode) return;
     prevAwayModeRef.current = awayMode;
+    // Always sync the server's dispatch context. Idempotent
+    // server-side; no-op when `toggleAwayMode` already pushed the value
+    // for the same flip.
+    void rpc.call.runtime.setAwayMode({ awayMode }).catch(() => {
+      // Best-effort; capability-shim consequence is documented in the
+      // race-window note above.
+    });
     if (prev === true && awayMode === false) {
-      void rpc.call.notifications.flushAwayDigest().catch(() => {
-        // Notification flush is best-effort; an RPC failure here is not
-        // user-actionable and dispatcher errors are already swallowed
-        // server-side.
-      });
+      void rpc.call.notifications
+        .flushAwayDigest()
+        .then((result) => {
+          if (result.digest !== null) {
+            // Synthesize a "while you were away" system row. Uses the
+            // existing SystemSummary shape; workerName='Symphony' since
+            // this is the orchestrator's own announcement, projectName
+            // is intentionally empty (Away Mode is global, not
+            // project-scoped), and durationMs is null. SystemBubble
+            // skips the parens/duration tail when both are empty
+            // (Phase 3M Bubble change).
+            pushSystem({
+              workerId: `away-digest-${Date.now()}`,
+              workerName: 'Symphony',
+              projectName: '',
+              // 'completed' renders with the gold ✓ glyph
+              // (statusGlyph map in Bubble.tsx). Away digests aren't a
+              // worker completion per se — but visually 'completed'
+              // is the right success-toned token.
+              statusKind: 'completed',
+              durationMs: null,
+              headline: `While you were away: ${result.digest}`,
+              fallback: false,
+            });
+          }
+        })
+        .catch(() => {
+          // Flush failure is best-effort; dispatcher errors are
+          // swallowed server-side, and the user can re-toggle away mode
+          // to retry.
+        });
     }
-  }, [awayMode, rpc]);
+  }, [awayMode, rpc, pushSystem]);
 
   // Phase 3H.1 — `--initial-popup`/`symphony config` entry point.
   // Fires exactly once after mount. The ref-guard handles the StrictMode
@@ -223,6 +267,42 @@ function AppShell(props: AppProps): React.JSX.Element {
     }
   }, [setConfig, showToast]);
 
+  // Phase 3M — `/away` slash command + `<leader>a` chord both call
+  // this. Resolves the next value via `setConfig`'s function-patch so
+  // a rapid double-press can't close-capture the same `config.awayMode`
+  // snapshot (audit M1/M2 from commit 2 — same pattern as
+  // `cycleModelMode` above).
+  //
+  // The RPC sync to the server's dispatch context lives entirely in the
+  // awayMode useEffect below; it observes the state change after commit
+  // and pushes `runtime.setAwayMode` regardless of who triggered the
+  // toggle (this handler, SettingsPanel Space, or external `symphony
+  // config --edit`). Commit 1's audit M2 (microsecond in-process race
+  // between disk-fresh dispatcher and memory-stale capability shim) is
+  // accepted for the MVP — see the useEffect's race-window comment.
+  // The digest flush + system row also fire from the useEffect's
+  // true→false branch so all toggle paths converge.
+  const toggleAwayMode = useCallback(async () => {
+    try {
+      const next = await setConfig((current) => ({ awayMode: !current.awayMode }));
+      showToast(`Away mode: ${next.awayMode ? 'on' : 'off'}.`, {
+        tone: 'info',
+        ttlMs: 3_000,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Away mode toggle failed: ${msg}`, { tone: 'error' });
+    }
+  }, [setConfig, showToast]);
+
+  const appActions = useMemo(
+    () => ({
+      onRequestExit: props.onRequestExit,
+      toggleAwayMode,
+    }),
+    [props.onRequestExit, toggleAwayMode],
+  );
+
   const commands = useMemo(
     () =>
       buildGlobalCommands(
@@ -255,6 +335,8 @@ function AppShell(props: AppProps): React.JSX.Element {
           // surface; the actual reset action is `r` on a list row.
           openKeybindEditor: () => focus.pushPopup('keybind-list'),
           openKeybindReset: () => focus.pushPopup('keybind-list'),
+          // Phase 3M — `<leader>a` chord + palette entry.
+          toggleAwayMode,
         },
         {
           questionsCount: questionsResult.count,
@@ -271,6 +353,7 @@ function AppShell(props: AppProps): React.JSX.Element {
       showToast,
       cycleModelMode,
       toggleThemeFallback,
+      toggleAwayMode,
     ],
   );
 
@@ -287,22 +370,25 @@ function AppShell(props: AppProps): React.JSX.Element {
   );
 
   return (
-    <KeybindProvider initialCommands={overriddenCommands} leaderTimeoutMs={config.leaderTimeoutMs}>
-      <InstrumentNameProvider value={resolveInstrumentName}>
-        <Box flexDirection="column" width="100%" height="100%">
-          <Layout
-            version={props.version}
-            mode={mode}
-            projects={projects}
-            workers={workersResult.workers}
-            sessionId={sessionId}
-            rpc={props.rpc}
-            workersResult={workersResult}
-            queueResult={queueResult}
-            questionsResult={questionsResult}
-          />
-        </Box>
-      </InstrumentNameProvider>
-    </KeybindProvider>
+    <AppActionsProvider value={appActions}>
+      <KeybindProvider initialCommands={overriddenCommands} leaderTimeoutMs={config.leaderTimeoutMs}>
+        <InstrumentNameProvider value={resolveInstrumentName}>
+          <Box flexDirection="column" width="100%" height="100%">
+            <Layout
+              version={props.version}
+              mode={mode}
+              projects={projects}
+              workers={workersResult.workers}
+              sessionId={sessionId}
+              rpc={props.rpc}
+              workersResult={workersResult}
+              queueResult={queueResult}
+              questionsResult={questionsResult}
+              awayMode={awayMode}
+            />
+          </Box>
+        </InstrumentNameProvider>
+      </KeybindProvider>
+    </AppActionsProvider>
   );
 }
