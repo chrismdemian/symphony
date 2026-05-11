@@ -63,6 +63,9 @@ export function ChatPanel(): React.JSX.Element {
         ...(actions.toggleAwayMode !== undefined
           ? { toggleAway: () => void actions.toggleAwayMode?.() }
           : {}),
+        // Phase 3N.3 — `/stats` opens the session-stats popup. Mirrors
+        // `app.stats` palette entry.
+        openStats: () => focus.pushPopup('stats'),
       }),
     [actions.onRequestExit, actions.toggleAwayMode, focus.pushPopup],
   );

@@ -339,6 +339,9 @@ function AppShell(props: AppProps): React.JSX.Element {
           openKeybindReset: () => focus.pushPopup('keybind-list'),
           // Phase 3M — `<leader>a` chord + palette entry.
           toggleAwayMode,
+          // Phase 3N.3 — palette entry "show session stats". Slash
+          // command `/stats` is wired in ChatPanel.
+          openStats: () => focus.pushPopup('stats'),
         },
         {
           questionsCount: questionsResult.count,

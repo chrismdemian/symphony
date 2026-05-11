@@ -65,6 +65,11 @@ export interface SlashHandlers {
    * matches the 3H.1 M2 pattern).
    */
   readonly toggleAway?: () => void;
+  /**
+   * Phase 3N.3 — `/stats` opens the session-stats popup. Optional during
+   * 3N transition; mirrors the openSettings / toggleAway pattern.
+   */
+  readonly openStats?: () => void;
 }
 
 export interface SlashTable {
@@ -82,6 +87,10 @@ export function buildSlashTable(handlers: SlashHandlers): SlashTable {
   if (handlers.toggleAway !== undefined) {
     const toggle = handlers.toggleAway;
     table['away'] = () => toggle();
+  }
+  if (handlers.openStats !== undefined) {
+    const open = handlers.openStats;
+    table['stats'] = () => open();
   }
   return table;
 }
