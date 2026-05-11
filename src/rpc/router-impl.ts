@@ -547,9 +547,9 @@ export function createSymphonyRouter(deps: RouterDeps) {
    * no-op so client code doesn't need to branch.
    */
   const notifications = createRPCController({
-    async flushAwayDigest(): Promise<void> {
-      if (deps.notificationDispatcher === undefined) return;
-      await deps.notificationDispatcher.flushAwayDigest();
+    async flushAwayDigest(): Promise<{ digest: string | null }> {
+      if (deps.notificationDispatcher === undefined) return { digest: null };
+      return deps.notificationDispatcher.flushAwayDigest();
     },
   });
 

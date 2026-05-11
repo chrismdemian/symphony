@@ -204,4 +204,35 @@ describe('buildGlobalCommands', () => {
     t!.onSelect();
     expect(toast).toHaveBeenCalledWith(expect.stringContaining('Theme toggle'));
   });
+
+  // ── Phase 3M ───────────────────────────────────────────────────────────
+  it('emits leader.awayToggle bound to Ctrl+X a (3M)', () => {
+    const cmds = buildGlobalCommands(handlers);
+    const a = cmds.find((cmd) => cmd.id === 'leader.awayToggle');
+    expect(a).toBeDefined();
+    expect(a?.scope).toBe('global');
+    expect(a?.key).toEqual({
+      kind: 'leader',
+      lead: { kind: 'ctrl', char: 'x' },
+      second: { kind: 'char', char: 'a' },
+    });
+    expect(a?.displayOnScreen).toBe(false);
+    expect(a?.title).toBe('toggle away mode');
+  });
+
+  it('invokes toggleAwayMode for `<leader>a` when wired (3M)', () => {
+    const toggle = vi.fn();
+    const cmds = buildGlobalCommands({ ...handlers, toggleAwayMode: toggle });
+    const a = cmds.find((cmd) => cmd.id === 'leader.awayToggle');
+    a!.onSelect();
+    expect(toggle).toHaveBeenCalledOnce();
+  });
+
+  it('falls back to showLeaderToast for `<leader>a` when handler unwired (3M)', () => {
+    const toast = vi.fn();
+    const cmds = buildGlobalCommands({ ...handlers, showLeaderToast: toast });
+    const a = cmds.find((cmd) => cmd.id === 'leader.awayToggle');
+    a!.onSelect();
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining('Away mode toggle'));
+  });
 });

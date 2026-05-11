@@ -16,6 +16,12 @@ import React, { createContext, useContext, type ReactNode } from 'react';
 
 export interface AppActions {
   readonly onRequestExit: () => void;
+  /**
+   * Phase 3M — `/away` slash command + `<leader>a` chord both call this.
+   * Optional during 3M transition (pre-3M tests construct AppActions
+   * without it); ChatPanel only registers the slash entry when defined.
+   */
+  readonly toggleAwayMode?: () => void | Promise<void>;
 }
 
 const AppActionsContext = createContext<AppActions | null>(null);

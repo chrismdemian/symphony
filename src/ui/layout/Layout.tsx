@@ -61,6 +61,8 @@ export interface LayoutProps {
   readonly queueResult?: UseQueueResult;
   /** Phase 3E — question queue (polled at App level). */
   readonly questionsResult?: UseQuestionsResult;
+  /** Phase 3M — Away Mode flag for StatusBar segment + capability surfacing. */
+  readonly awayMode?: boolean;
 }
 
 function getPopupOnTopKey(stack: readonly FocusContext[]): string | null {
@@ -93,6 +95,8 @@ export function Layout(props: LayoutProps): React.JSX.Element {
         sessionId={props.sessionId}
         questionsCount={props.questionsResult?.count ?? 0}
         blockingCount={props.questionsResult?.blockingCount ?? 0}
+        awayMode={props.awayMode ?? false}
+        pendingQueueCount={props.queueResult?.pending.length ?? 0}
       />
       {/*
        * Phase 3F.3 — popup-mount strategy. We considered an

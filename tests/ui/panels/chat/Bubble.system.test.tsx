@@ -95,6 +95,31 @@ describe('SystemBubble — header line', () => {
     const { lastFrame } = renderBubble(makeSystemTurn({ durationMs: null }));
     expect(lastFrame()).toContain('(unknown)');
   });
+
+  it('Phase 3M — suppresses the entire (project) · duration tail when BOTH empty', () => {
+    // Away-mode digest rows: workerName=Symphony, projectName='',
+    // durationMs=null. The header must NOT render `() · (unknown)`.
+    const { lastFrame } = renderBubble(
+      makeSystemTurn({
+        workerName: 'Symphony',
+        projectName: '',
+        durationMs: null,
+      }),
+    );
+    const frame = lastFrame();
+    expect(frame).toContain('Symphony');
+    expect(frame).not.toContain('()');
+    expect(frame).not.toContain('(unknown)');
+  });
+
+  it('Phase 3M — keeps tail when project present but duration missing (3K case unchanged)', () => {
+    const { lastFrame } = renderBubble(
+      makeSystemTurn({ projectName: 'MathScrabble', durationMs: null }),
+    );
+    const frame = lastFrame();
+    expect(frame).toContain('(MathScrabble)');
+    expect(frame).toContain('(unknown)');
+  });
 });
 
 describe('SystemBubble — body lines', () => {

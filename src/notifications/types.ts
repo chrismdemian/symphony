@@ -84,6 +84,16 @@ export interface DispatcherDeps {
   onError?(err: Error): void;
 }
 
+/**
+ * Phase 3M — what `flushAwayDigest` returns. `digest` is the formatted
+ * human-readable body (e.g. `"3 completed, 1 failed, 2 questions"`) when
+ * the buffer had entries; `null` when the buffer was empty (so the TUI
+ * can skip pushing an "empty" system row on benign re-flushes).
+ */
+export interface FlushAwayDigestResult {
+  readonly digest: string | null;
+}
+
 export interface DispatcherHandle {
   /**
    * Called by the worker lifecycle's `wireExit` AFTER `markCompleted`
@@ -96,9 +106,11 @@ export interface DispatcherHandle {
   /**
    * Drain the awayMode buffer + reset the all-done tally, and emit a
    * single digest if anything is pending. Idempotent: a flush on an
-   * empty buffer is a no-op.
+   * empty buffer is a no-op. The returned `digest` is the formatted
+   * body (Phase 3M's TUI uses it for the "while you were away" system
+   * row); `null` when nothing was buffered.
    */
-  flushAwayDigest(): Promise<void>;
+  flushAwayDigest(): Promise<FlushAwayDigestResult>;
   /** Final flush; called from server shutdown before lifecycle teardown. */
   shutdown(): Promise<void>;
 }

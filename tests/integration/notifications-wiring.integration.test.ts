@@ -40,6 +40,7 @@ function makeStubDispatcher(): {
     }),
     flushAwayDigest: vi.fn(async () => {
       toasts.push({ title: 'flushed', body: '' });
+      return { digest: null };
     }),
     shutdown: vi.fn(async () => {
       // no-op
