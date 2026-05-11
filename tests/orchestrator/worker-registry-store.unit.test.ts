@@ -10,7 +10,7 @@ import type {
   WorkerStore,
   WorkerStoreUpdatePatch,
 } from '../../src/state/sqlite-worker-store.js';
-import type { StreamEvent, Worker, WorkerExitInfo } from '../../src/workers/types.js';
+import type { StreamEvent, TokenUsage, Worker, WorkerExitInfo } from '../../src/workers/types.js';
 
 function makeFakeWorker(id = 'wk-test'): Worker {
   return {
@@ -103,8 +103,16 @@ function makeSpyStore(): {
         if (patch.exitSignal === null) delete (merged as { exitSignal?: NodeJS.Signals }).exitSignal;
         else merged.exitSignal = patch.exitSignal;
       }
-      if (patch.costUsd !== undefined && patch.costUsd !== null) {
-        merged.costUsd = patch.costUsd;
+      if (patch.costUsd !== undefined) {
+        if (patch.costUsd === null) delete (merged as { costUsd?: number }).costUsd;
+        else merged.costUsd = patch.costUsd;
+      }
+      if (patch.sessionUsage !== undefined) {
+        if (patch.sessionUsage === null) {
+          delete (merged as { sessionUsage?: TokenUsage }).sessionUsage;
+        } else {
+          merged.sessionUsage = patch.sessionUsage;
+        }
       }
       rows.set(id, merged);
     },
@@ -187,6 +195,142 @@ describe('WorkerRegistry — write-through to WorkerStore', () => {
       exitCode: null,
       exitSignal: null,
       costUsd: null,
+    });
+  });
+
+  it('updateSessionUsage captures cumulative tokens in memory (Phase 3N.1)', () => {
+    const { store } = makeSpyStore();
+    const reg = new WorkerRegistry({ store });
+    reg.register(makeRecord({ id: 'wk-1' }));
+    const usage: TokenUsage = {
+      inputTokens: 100,
+      outputTokens: 250,
+      cacheReadTokens: 50,
+      cacheWriteTokens: 10,
+    };
+    reg.updateSessionUsage('wk-1', usage);
+    expect(reg.get('wk-1')?.sessionUsage).toEqual(usage);
+  });
+
+  it('updateSessionUsage rejects negatives + non-finite without throwing (3N.1)', () => {
+    const reg = new WorkerRegistry();
+    reg.register(makeRecord({ id: 'wk-1' }));
+    // Negative on any field → reject the whole payload (consistency).
+    reg.updateSessionUsage('wk-1', {
+      inputTokens: -1,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+    expect(reg.get('wk-1')?.sessionUsage).toBeUndefined();
+    // Non-finite (Infinity / NaN) → reject.
+    reg.updateSessionUsage('wk-1', {
+      inputTokens: Number.POSITIVE_INFINITY,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+    expect(reg.get('wk-1')?.sessionUsage).toBeUndefined();
+    // Valid → accepted.
+    reg.updateSessionUsage('wk-1', {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+    expect(reg.get('wk-1')?.sessionUsage).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+  });
+
+  it('markCompleted persists sessionUsage alongside costUsd (3N.1)', () => {
+    const { store, calls } = makeSpyStore();
+    const reg = new WorkerRegistry({ store });
+    reg.register(makeRecord({ id: 'wk-1' }));
+    reg.updateCostUsd('wk-1', 0.31);
+    reg.updateSessionUsage('wk-1', {
+      inputTokens: 12_000,
+      outputTokens: 3_400,
+      cacheReadTokens: 8_900,
+      cacheWriteTokens: 1_100,
+    });
+    reg.markCompleted(
+      'wk-1',
+      { status: 'completed', exitCode: 0, signal: null, durationMs: 1234 },
+      () => 1_000_000_000,
+    );
+    const update = calls
+      .filter((c) => c.op === 'update' && c.id === 'wk-1')
+      .at(-1);
+    expect(update?.payload).toMatchObject({
+      status: 'completed',
+      costUsd: 0.31,
+      sessionUsage: {
+        inputTokens: 12_000,
+        outputTokens: 3_400,
+        cacheReadTokens: 8_900,
+        cacheWriteTokens: 1_100,
+      },
+    });
+  });
+
+  it('markCompleted writes sessionUsage:null when never observed (3N.1)', () => {
+    const { store, calls } = makeSpyStore();
+    const reg = new WorkerRegistry({ store });
+    reg.register(makeRecord({ id: 'wk-early-crash' }));
+    // No updateSessionUsage call — worker died before any `result` event.
+    reg.markCompleted(
+      'wk-early-crash',
+      { status: 'crashed', exitCode: null, signal: 'SIGKILL', durationMs: 50 },
+      () => 1_000_000_000,
+    );
+    const update = calls
+      .filter((c) => c.op === 'update' && c.id === 'wk-early-crash')
+      .at(-1);
+    // Explicit null so a stale row from a prior session can't carry over
+    // — mirrors costUsd's null-clear semantics.
+    expect((update?.payload as { sessionUsage?: unknown }).sessionUsage).toBeNull();
+    expect((update?.payload as { costUsd?: unknown }).costUsd).toBeNull();
+  });
+
+  it('replace clears prior sessionUsage in memory and SQL (3N.1, mirrors costUsd)', () => {
+    const { store, calls, rows } = makeSpyStore();
+    const reg = new WorkerRegistry({ store });
+    reg.register(makeRecord({ id: 'wk-1' }));
+    reg.updateSessionUsage('wk-1', {
+      inputTokens: 1,
+      outputTokens: 2,
+      cacheReadTokens: 3,
+      cacheWriteTokens: 4,
+    });
+    reg.markCompleted(
+      'wk-1',
+      { status: 'completed', exitCode: 0, signal: null, durationMs: 1 },
+      () => 1_000_000_000,
+    );
+    expect(rows.get('wk-1')?.sessionUsage).toEqual({
+      inputTokens: 1,
+      outputTokens: 2,
+      cacheReadTokens: 3,
+      cacheWriteTokens: 4,
+    });
+    reg.replace('wk-1', {
+      worker: makeFakeWorker('wk-1'),
+      buffer: new CircularBuffer<StreamEvent>(10),
+      detach: () => {},
+      sessionId: 'sess-resumed',
+    });
+    expect(reg.get('wk-1')?.sessionUsage).toBeUndefined();
+    expect(rows.get('wk-1')?.sessionUsage).toBeUndefined();
+    const replaceCall = calls
+      .filter((c) => c.op === 'update' && c.id === 'wk-1')
+      .at(-1);
+    expect(replaceCall?.payload).toMatchObject({
+      status: 'spawning',
+      sessionUsage: null,
     });
   });
 
