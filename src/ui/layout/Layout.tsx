@@ -22,6 +22,7 @@ import type { TuiRpc } from '../runtime/rpc.js';
 import type { UseWorkersResult } from '../data/useWorkers.js';
 import type { UseQueueResult } from '../data/useQueue.js';
 import type { UseQuestionsResult } from '../data/useQuestions.js';
+import type { SessionTotals } from '../../orchestrator/session-totals.js';
 
 /**
  * Top-level layout: status bar (top) → main split (chat | workers+output)
@@ -63,6 +64,8 @@ export interface LayoutProps {
   readonly questionsResult?: UseQuestionsResult;
   /** Phase 3M — Away Mode flag for StatusBar segment + capability surfacing. */
   readonly awayMode?: boolean;
+  /** Phase 3N.2 — session token + cost totals for StatusBar segment. */
+  readonly sessionTotals?: SessionTotals;
 }
 
 function getPopupOnTopKey(stack: readonly FocusContext[]): string | null {
@@ -97,6 +100,7 @@ export function Layout(props: LayoutProps): React.JSX.Element {
         blockingCount={props.questionsResult?.blockingCount ?? 0}
         awayMode={props.awayMode ?? false}
         pendingQueueCount={props.queueResult?.pending.length ?? 0}
+        {...(props.sessionTotals !== undefined ? { sessionTotals: props.sessionTotals } : {})}
       />
       {/*
        * Phase 3F.3 — popup-mount strategy. We considered an

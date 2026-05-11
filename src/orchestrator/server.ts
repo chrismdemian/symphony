@@ -551,6 +551,11 @@ export async function startOrchestratorServer(
       setDispatchAwayMode: (value) => {
         context = { ...context, awayMode: value };
       },
+      // Phase 3N.2 — stamp orchestrator boot so the stats aggregator
+      // can filter crash-recovered workers (their createdAt predates
+      // this) out of the "this session" tally. Stamped once per
+      // `startOrchestratorServer` invocation, never mutated thereafter.
+      orchestratorBootIso: new Date().toISOString(),
     });
     const handle = await startRpcServer({
       router: router as unknown as Parameters<typeof startRpcServer>[0]['router'],

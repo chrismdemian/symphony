@@ -21,6 +21,10 @@ import type { ToolMode, AutonomyTier } from '../orchestrator/types.js';
 import { createRPCController, createRPCRouter } from './router.js';
 import { applyPatchToDisk, loadConfig } from '../utils/config.js';
 import type { DispatcherHandle } from '../notifications/types.js';
+import {
+  computeSessionTotals,
+  type SessionTotals,
+} from '../orchestrator/session-totals.js';
 import type {
   PendingSpawnSnapshot,
   WorkerLifecycleHandle,
@@ -84,6 +88,14 @@ export interface RouterDeps {
    * legacy test rigs that don't construct a context can leave it out.
    */
   readonly setDispatchAwayMode?: (awayMode: boolean) => void;
+  /**
+   * Phase 3N.2 — ISO timestamp stamped at orchestrator boot. Used by the
+   * `stats.session` aggregator to filter out crash-recovered workers
+   * from a prior session (their `createdAt` predates `bootIso`). When
+   * undefined, the aggregator counts every live registry entry —
+   * sufficient for test rigs that don't simulate recovery.
+   */
+  readonly orchestratorBootIso?: string;
 }
 
 // ── Argument shapes (validated at the boundary) ──────────────────────
@@ -611,6 +623,26 @@ export function createSymphonyRouter(deps: RouterDeps) {
     },
   });
 
+  /**
+   * Phase 3N.2 — token + cost telemetry surface. `session()` returns
+   * cumulative totals across this orchestrator boot's live workers
+   * (crash-recovered terminal stubs from a prior session are filtered
+   * out via the `bootIso` comparison). The Phase 3N.3 `/stats` popup
+   * will extend this namespace with `byProject` / `byWorker` procedures
+   * that join the SQL `workers` table for historical breakdowns.
+   *
+   * Snapshot-based: the TUI polls at 1s like `useQueue` / `useWorkers`.
+   * No subscription today — the read is O(workers in registry) over
+   * in-memory snapshots, well inside a render budget for any realistic
+   * worker count.
+   */
+  const stats = createRPCController({
+    session(): SessionTotals {
+      const snapshots = workerRegistry.snapshots();
+      return computeSessionTotals(snapshots, deps.orchestratorBootIso);
+    },
+  });
+
   return createRPCRouter({
     projects,
     tasks,
@@ -621,6 +653,7 @@ export function createSymphonyRouter(deps: RouterDeps) {
     notifications,
     queue,
     runtime,
+    stats,
   });
 }
 
