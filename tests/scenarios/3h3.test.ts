@@ -125,7 +125,11 @@ interface FakeRpcHandle {
 
 function makeFakeRpc(projects: ProjectSnapshot[]): FakeRpcHandle {
   const closeMock = vi.fn(async () => undefined);
-  const flushAwayDigestMock = vi.fn(async () => undefined);
+  // Phase 3M — flushAwayDigest return shape changed from void to
+  // { digest: string | null }. The 3H.3 test only asserts the call
+  // count (not the result), but the App.tsx useEffect now reads
+  // result.digest, so undefined would throw. Return a benign null.
+  const flushAwayDigestMock = vi.fn(async () => ({ digest: null }));
   const rpc = {
     call: {
       projects: {
@@ -164,6 +168,14 @@ function makeFakeRpc(projects: ProjectSnapshot[]): FakeRpcHandle {
       },
       notifications: {
         flushAwayDigest: flushAwayDigestMock,
+      },
+      // Phase 3M — App.tsx's awayMode useEffect fires `runtime.setAwayMode`
+      // on every change. Without the namespace, the call would throw and
+      // crash the React tree. Resolve to a benign echo.
+      runtime: {
+        setAwayMode: vi.fn(async (args: { awayMode: boolean }) => ({
+          awayMode: args.awayMode,
+        })),
       },
     },
     subscribe: vi.fn(async () => ({
