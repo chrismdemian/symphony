@@ -362,15 +362,25 @@ export async function startOrchestratorServer(
   // shouldn't tank orchestrator boot for a config-read concern.
   let globalMaxWorkers: number;
   let globalModelMode: 'opus' | 'mixed';
+  let bootAwayMode: boolean;
   try {
     const bootGlobalConfig = await loadConfig();
     globalMaxWorkers = bootGlobalConfig.config.maxConcurrentWorkers;
     globalModelMode = bootGlobalConfig.config.modelMode;
+    bootAwayMode = bootGlobalConfig.config.awayMode;
   } catch {
     const fallback = (await import('../utils/config-schema.js')).defaultConfig();
     globalMaxWorkers = fallback.maxConcurrentWorkers;
     globalModelMode = fallback.modelMode;
+    bootAwayMode = fallback.awayMode;
   }
+  // Phase 3M — stamp the dispatch context with the persisted awayMode value
+  // so the capability shim's host-browser-control guard (`capabilities.ts`)
+  // takes effect on the first tool call after boot, even before the TUI
+  // mounts and pushes a `runtime.setAwayMode` over RPC. Without this, a
+  // user who quit while away would silently lose the protection on the
+  // next session until they re-toggled.
+  context = { ...context, awayMode: bootAwayMode };
   // Phase 3H.2 — model mode → default-model resolver. opus → every
   // spawn that doesn't pass an explicit `model:` runs on Opus 4.7.
   // mixed → no default; Maestro's explicit per-task `model` arg wins
@@ -534,6 +544,13 @@ export async function startOrchestratorServer(
       modeController: mode,
       notificationDispatcher,
       workerLifecycle,
+      // Phase 3M — bridge from the TUI's `awayMode` config flips into
+      // the live dispatch context. The capability shim reads
+      // `ctx.awayMode` per tool call; without this seam the field would
+      // stay at the boot-time value for the life of the process.
+      setDispatchAwayMode: (value) => {
+        context = { ...context, awayMode: value };
+      },
     });
     const handle = await startRpcServer({
       router: router as unknown as Parameters<typeof startRpcServer>[0]['router'],

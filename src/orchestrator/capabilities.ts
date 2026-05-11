@@ -14,7 +14,12 @@ export class CapabilityEvaluator {
         return { allow: false, reason: 'host-browser-control requires tier 3 (confirm)' };
       }
       if (ctx.awayMode) {
-        return { allow: false, reason: 'host-browser-control disabled in away mode' };
+        // Phase 3M — copy aligned with PLAN.md §3M spec line 1326.
+        return {
+          allow: false,
+          reason:
+            'tool unavailable: away mode active; capability requires:host-browser-control demands user presence',
+        };
       }
       if (ctx.automationContext) {
         return { allow: false, reason: 'host-browser-control cannot run from automation' };
