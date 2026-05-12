@@ -95,6 +95,14 @@ export interface QuestionRegistryOptions {
    * swallowed so a misbehaving consumer can't poison `enqueue` itself.
    */
   readonly onQuestionEnqueued?: (record: QuestionRecord) => void;
+  /**
+   * Phase 3O.1 — fired post-update for every successful answer. The
+   * AutoMergeDispatcher subscribes to route y/n responses to its
+   * `pendingAsks` registry. Mirrors `onQuestionEnqueued`: errors thrown
+   * by the callback are swallowed so a misbehaving consumer can't poison
+   * `answer` itself.
+   */
+  readonly onQuestionAnswered?: (record: QuestionRecord) => void;
 }
 
 function defaultIdGenerator(): string {
@@ -106,11 +114,13 @@ export class QuestionRegistry implements QuestionStore {
   private readonly now: () => number;
   private readonly genId: () => string;
   private readonly onEnqueued?: (record: QuestionRecord) => void;
+  private readonly onAnswered?: (record: QuestionRecord) => void;
 
   constructor(opts: QuestionRegistryOptions = {}) {
     this.now = opts.now ?? Date.now;
     this.genId = opts.idGenerator ?? defaultIdGenerator;
     this.onEnqueued = opts.onQuestionEnqueued;
+    this.onAnswered = opts.onQuestionAnswered;
   }
 
   list(filter: QuestionListFilter = {}): QuestionRecord[] {
@@ -164,6 +174,13 @@ export class QuestionRegistry implements QuestionStore {
     record.answer = answer;
     record.answered = true;
     record.answeredAt = iso;
+    if (this.onAnswered !== undefined) {
+      try {
+        this.onAnswered(record);
+      } catch {
+        // Phase 3O.1 — consumer errors must not poison answer.
+      }
+    }
     return record;
   }
 
