@@ -177,11 +177,11 @@ describe('<SettingsPanel> (3H.1 read-only popup)', () => {
   it('Enter on the keybindOverrides row surfaces the 3H.4 deferral toast', async () => {
     const { stdin, lastFrame } = render(<Harness />);
     await settle();
-    // Navigate down to keybindOverrides (last row). 3H.3 added the
-    // awayMode row, bumping the value-row count to 10. From the default
-    // selection (modelMode at index 0) we need 9 ↓ presses to land on
-    // keybindOverrides at index 9.
-    for (let i = 0; i < 9; i += 1) stdin.write('\x1b[B');
+    // Navigate down to keybindOverrides (last row). 3O.1 added the
+    // autoMerge row, bumping the value-row count to 11. From the default
+    // selection (modelMode at index 0) we need 10 ↓ presses to land on
+    // keybindOverrides at index 10.
+    for (let i = 0; i < 10; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();

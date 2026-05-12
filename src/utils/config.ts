@@ -190,6 +190,10 @@ function applyConfigEdits(existing: string, next: SymphonyConfig): string {
     ['schemaVersion', next.schemaVersion],
     ['modelMode', next.modelMode],
     ['maxConcurrentWorkers', next.maxConcurrentWorkers],
+    // Phase 3O.1 — auto-merge policy. Keep in lockstep with `mergePatch`,
+    // `SymphonyConfigPatch`, and `applyPatchInMemory` (config-context.tsx).
+    // Skipping any of the four sites silently drops the field on rewrites.
+    ['autoMerge', next.autoMerge],
     ['notifications', next.notifications],
     // Phase 3H.3 — top-level awayMode flag. New fields added to the
     // schema MUST also appear in this list, otherwise existing-file
@@ -287,6 +291,12 @@ function describeError(cause: unknown): string {
 export interface SymphonyConfigPatch {
   readonly modelMode?: SymphonyConfig['modelMode'];
   readonly maxConcurrentWorkers?: SymphonyConfig['maxConcurrentWorkers'];
+  /**
+   * Phase 3O.1 — auto-merge policy. Mirrors `awayMode`'s top-level pattern:
+   * the AutoMergeDispatcher reads `loadConfig()` fresh per finalize event,
+   * so no runtime-propagation seam is needed (unlike awayMode).
+   */
+  readonly autoMerge?: SymphonyConfig['autoMerge'];
   readonly notifications?: Partial<SymphonyConfig['notifications']>;
   /**
    * Phase 3H.3 — top-level `awayMode` flag. Top-level (rather than
@@ -365,6 +375,7 @@ function mergePatch(current: SymphonyConfig, patch: SymphonyConfigPatch): Sympho
   if (patch.maxConcurrentWorkers !== undefined) next.maxConcurrentWorkers = patch.maxConcurrentWorkers;
   if (patch.leaderTimeoutMs !== undefined) next.leaderTimeoutMs = patch.leaderTimeoutMs;
   if (patch.awayMode !== undefined) next.awayMode = patch.awayMode;
+  if (patch.autoMerge !== undefined) next.autoMerge = patch.autoMerge;
   if (patch.notifications !== undefined) {
     next.notifications = { ...current.notifications, ...patch.notifications };
   }

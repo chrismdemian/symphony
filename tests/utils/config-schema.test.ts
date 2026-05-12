@@ -11,6 +11,7 @@ describe('config-schema', () => {
     expect(cfg.schemaVersion).toBe(CURRENT_SCHEMA_VERSION);
     expect(cfg.modelMode).toBe('mixed');
     expect(cfg.maxConcurrentWorkers).toBe(4);
+    expect(cfg.autoMerge).toBe('ask');
     expect(cfg.notifications.enabled).toBe(false);
     expect(cfg.awayMode).toBe(false);
     expect(cfg.theme.name).toBe('symphony');
@@ -142,5 +143,17 @@ describe('config-schema', () => {
     const result = parseConfig({ awayMode: 'yes' });
     expect(result.config.awayMode).toBe(false);
     expect(result.warnings.some((w) => w.includes('awayMode'))).toBe(true);
+  });
+
+  it('parseConfig accepts each autoMerge enum value (3O.1)', () => {
+    expect(parseConfig({ autoMerge: 'ask' }).config.autoMerge).toBe('ask');
+    expect(parseConfig({ autoMerge: 'auto' }).config.autoMerge).toBe('auto');
+    expect(parseConfig({ autoMerge: 'never' }).config.autoMerge).toBe('never');
+  });
+
+  it('parseConfig salvages an unknown autoMerge value (3O.1)', () => {
+    const result = parseConfig({ autoMerge: 'maybe' });
+    expect(result.config.autoMerge).toBe('ask');
+    expect(result.warnings.some((w) => w.includes('autoMerge'))).toBe(true);
   });
 });

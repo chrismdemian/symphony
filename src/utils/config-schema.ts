@@ -83,6 +83,17 @@ export const SymphonyConfigSchema = z.object({
   schemaVersion: z.literal(SCHEMA_VERSION).default(SCHEMA_VERSION),
   modelMode: z.enum(['opus', 'mixed']).default('mixed'),
   maxConcurrentWorkers: z.number().int().min(1).max(32).default(4),
+  /**
+   * Phase 3O.1 — auto-merge policy. After `finalize` succeeds on a worker
+   * branch without an explicit `merge_to`, the AutoMergeDispatcher routes:
+   *   - `'ask'` (default): enqueue a `y/n` question + emit an `asked`
+   *     system row. User answer drives merge-or-skip.
+   *   - `'auto'`: merge + cleanup worktree + emit `merged` system row.
+   *   - `'never'`: emit a `ready` system row; leave branch for manual review.
+   * Read fresh from disk per finalize event (mirror notifications-dispatcher
+   * `loadConfig` pattern) — no live runtime propagation needed.
+   */
+  autoMerge: z.enum(['ask', 'auto', 'never']).default('ask'),
   notifications: z
     .object({
       enabled: z.boolean().default(false),

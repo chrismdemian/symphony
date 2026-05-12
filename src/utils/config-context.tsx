@@ -240,6 +240,8 @@ function applyPatchInMemory(
   // Skipping any of the four sites silently drops the field on
   // subsequent writes (audit Critical-1).
   if (patch.awayMode !== undefined) next.awayMode = patch.awayMode;
+  // Phase 3O.1 — auto-merge policy. Same 4-site invariant as awayMode.
+  if (patch.autoMerge !== undefined) next.autoMerge = patch.autoMerge;
   if (patch.notifications !== undefined) {
     next.notifications = { ...current.notifications, ...patch.notifications };
   }
