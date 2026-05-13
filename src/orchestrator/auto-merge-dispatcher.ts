@@ -116,16 +116,11 @@ export function createAutoMergeDispatcher(
     }
   }
 
-  function buildAskedHeadline(
-    projectName: string,
-    branch: string,
-    mergeTo: string,
-  ): string {
+  function buildAskedHeadline(branch: string, mergeTo: string): string {
     return `Worker on '${branch}' is ready. Merge into ${mergeTo}? (open question popup with Ctrl+Q · reply y / n)`;
   }
 
   function buildMergedHeadline(
-    projectName: string,
     branch: string,
     mergeTo: string,
     mergeSha: string,
@@ -209,7 +204,6 @@ export function createAutoMergeDispatcher(
       projectName: ctx.projectName,
       mergeTo: ctx.mergeTo,
       headline: buildMergedHeadline(
-        ctx.projectName,
         ctx.branch,
         ctx.mergeTo,
         merged.mergeSha,
@@ -303,7 +297,7 @@ export function createAutoMergeDispatcher(
         branch: ctx.branch,
         projectName,
         mergeTo,
-        headline: buildAskedHeadline(projectName, ctx.branch, mergeTo),
+        headline: buildAskedHeadline(ctx.branch, mergeTo),
         ts: isoNow(),
       });
     } catch (err) {
@@ -372,6 +366,16 @@ export function createAutoMergeDispatcher(
       // truly empty so the merge + cleanup observably settles before
       // shutdown resolves. Maximum 8 iterations as a safety cap — a
       // pathological infinite-add would otherwise hang the close path.
+      //
+      // Shutdown semantics (3O.1 audit M2): this is a GRACEFUL drain.
+      // Once `tryHandleFinalize` has been accepted into `inflight`
+      // (entry-only disposed check), we commit to completing the work —
+      // even if disposal flipped during the loadConfig await. The
+      // alternative (mid-chain disposed checks) silently drops events
+      // when tests call shutdown() right after onFinalize(), because
+      // disposal lands before the first checkpoint resolves. For HARD
+      // shutdowns (SIGKILL), the OS terminates the orchestrator process
+      // and any in-flight git children are killed by the kernel.
       for (let i = 0; i < 8 && inflight.size > 0; i += 1) {
         await Promise.allSettled(Array.from(inflight));
       }

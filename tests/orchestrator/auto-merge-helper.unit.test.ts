@@ -97,6 +97,19 @@ describe('resolveDefaultMergeTo (3O.1)', () => {
     expect(await resolveDefaultMergeTo(bare)).toBe('master');
     await fs.rm(bare, { recursive: true, force: true }).catch(() => {});
   });
+
+  it('rejects unsafe origin/HEAD value and falls back to local branch (3O.1 audit M5)', async () => {
+    // Manually set origin/HEAD to a CLI-option-shaped value. Symphony
+    // should NOT return `--upload-pack=evil` as a branch name.
+    await execFileAsync(
+      'git',
+      ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/--upload-pack=evil'],
+      { cwd: dir },
+    );
+    // Local `main` exists; resolver should fall through to it after
+    // rejecting the unsafe origin/HEAD value.
+    expect(await resolveDefaultMergeTo(dir)).toBe('main');
+  });
 });
 
 function makeFakeGitOps(merge: AutoMergeGitOps['mergeBranch']): AutoMergeGitOps {

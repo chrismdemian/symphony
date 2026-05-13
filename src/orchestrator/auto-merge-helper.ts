@@ -56,14 +56,37 @@ export function parseYesNo(raw: string): 'yes' | 'no' | null {
  * The signal is threaded so a dispatcher shutdown mid-resolution
  * cancels cleanly. Each git call swallows its own errors and falls
  * through to the next candidate — never throws.
+ *
+ * Defense-in-depth: validates the resolved branch name is git-safe
+ * (alphanumeric / `_` / `-` / `/` / `.` only, no leading `-`, no `..`)
+ * before returning. A malicious or quirky remote could set
+ * `origin/HEAD` to something resembling a CLI flag (e.g.,
+ * `refs/remotes/origin/--upload-pack=evil`); without validation, the
+ * returned `'--upload-pack=evil'` would flow into `git checkout` as
+ * an argv option (3O.1 audit M5).
  */
+const SAFE_BRANCH_NAME = /^[A-Za-z0-9_./-]+$/;
+
+function isSafeBranchName(name: string): boolean {
+  if (name.length === 0) return false;
+  if (name.startsWith('-') || name.startsWith('.')) return false;
+  if (name.includes('..')) return false;
+  return SAFE_BRANCH_NAME.test(name);
+}
+
 export async function resolveDefaultMergeTo(
   repoPath: string,
   signal?: AbortSignal,
 ): Promise<string> {
+  // 5-second timeout safety net (3O.1 audit M1): origin/HEAD resolution
+  // against a slow/flaky remote shouldn't hang the dispatcher. The
+  // user's signal still wins if it fires first.
+  const timeout = AbortSignal.timeout(5_000);
+  const effectiveSignal: AbortSignal | undefined =
+    signal !== undefined ? AbortSignal.any([signal, timeout]) : timeout;
   const execOpts = {
     cwd: repoPath,
-    ...(signal !== undefined ? { signal } : {}),
+    signal: effectiveSignal,
   };
 
   try {
@@ -75,10 +98,12 @@ export async function resolveDefaultMergeTo(
     const trimmed = stdout.trim();
     const prefix = 'refs/remotes/origin/';
     if (trimmed.startsWith(prefix) && trimmed.length > prefix.length) {
-      return trimmed.slice(prefix.length);
+      const candidate = trimmed.slice(prefix.length);
+      if (isSafeBranchName(candidate)) return candidate;
+      // Unsafe branch name from origin/HEAD — fall through to local checks.
     }
   } catch {
-    // No origin/HEAD set — try local fallbacks.
+    // No origin/HEAD set, timeout, or signal abort — try local fallbacks.
   }
 
   for (const candidate of ['main', 'master']) {

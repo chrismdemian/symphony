@@ -416,6 +416,14 @@ export function makeFinalizeTool(
       // push all OK). The dispatcher decides whether to gate / merge /
       // skip based on autoMerge config + `mergeToSpecified`. Errors are
       // swallowed so the structured return shape stays clean.
+      //
+      // The `await` here only waits for the dispatcher's synchronous
+      // accept-into-inflight (the dispatcher returns immediately after
+      // queuing the work; the actual merge/event fan-out happens
+      // asynchronously). Maestro's structured tool response is therefore
+      // NOT blocked on the merge — the chat may surface an `asked` or
+      // `merged` system row AFTER Maestro has moved to its next action.
+      // Ordering invariant documented for 3O.1 (audit M3).
       if (result.ok && deps.onFinalize !== undefined) {
         try {
           await deps.onFinalize(result, {
