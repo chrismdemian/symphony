@@ -365,10 +365,16 @@ export function createAutoMergeDispatcher(
       if (disposed) return;
       disposed = true;
       pendingAsks.clear();
-      // Drain in-flight merges. allSettled because a doMerge throw is
-      // already caught upstream (trackMerge wraps in `.catch`) — this
-      // is belt-and-suspenders for the void-promise the chain returns.
-      await Promise.allSettled(Array.from(inflight));
+      // Drain in-flight work. `tryHandleFinalize` runs as one inflight
+      // promise; when it reaches `trackMerge`, that adds ANOTHER promise
+      // to the set. A single `Promise.allSettled(Array.from(inflight))`
+      // takes a snapshot and misses the newly-added merge. Loop until
+      // truly empty so the merge + cleanup observably settles before
+      // shutdown resolves. Maximum 8 iterations as a safety cap — a
+      // pathological infinite-add would otherwise hang the close path.
+      for (let i = 0; i < 8 && inflight.size > 0; i += 1) {
+        await Promise.allSettled(Array.from(inflight));
+      }
     },
   };
 }

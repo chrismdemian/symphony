@@ -5,6 +5,7 @@ import { Dispatcher, type DispatcherSendOptions } from './dispatcher.js';
 import { UnauthorizedError, validateAuthHeader, validateQueryToken } from './auth.js';
 import type { WorkerEventBroker } from './event-broker.js';
 import type { CompletionsBroker } from '../orchestrator/completion-summarizer-types.js';
+import type { AutoMergeBroker } from '../orchestrator/auto-merge-types.js';
 import { MAX_FRAME_BYTES } from './protocol.js';
 
 /**
@@ -50,6 +51,11 @@ export interface RpcServerOptions {
    * behavior for unit tests).
    */
   readonly completionsBroker?: CompletionsBroker;
+  /**
+   * Phase 3O.1 — global auto-merge broker. When supplied, per-connection
+   * dispatchers accept `subscribe('auto-merge.events')`.
+   */
+  readonly autoMergeBroker?: AutoMergeBroker;
 }
 
 export interface RpcServerHandle {
@@ -138,6 +144,9 @@ export async function startRpcServer(opts: RpcServerOptions): Promise<RpcServerH
       ...(opts.workerExists !== undefined ? { workerExists: opts.workerExists } : {}),
       ...(opts.completionsBroker !== undefined
         ? { completionsBroker: opts.completionsBroker }
+        : {}),
+      ...(opts.autoMergeBroker !== undefined
+        ? { autoMergeBroker: opts.autoMergeBroker }
         : {}),
     });
     ws.on('message', (data) => {
