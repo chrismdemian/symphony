@@ -20,6 +20,7 @@ import {
   type MaestroController,
 } from './data/MaestroEventsProvider.js';
 import { useCompletionEvents } from './data/useCompletionEvents.js';
+import { useAutoMergeEvents } from './data/useAutoMergeEvents.js';
 import { useInstrumentNames } from './data/useInstrumentNames.js';
 import { InstrumentNameProvider } from './data/InstrumentNameContext.js';
 import { AppActionsProvider } from './runtime/AppActions.js';
@@ -117,6 +118,14 @@ function AppShell(props: AppProps): React.JSX.Element {
     [instruments],
   );
   useCompletionEvents({
+    rpc: props.rpc,
+    pushSystem,
+  });
+  // Phase 3O.1 — surface auto-merge gate events alongside worker
+  // completions. Same `pushSystem` route; events are formatted into
+  // SystemSummary shape by the hook (statusKind mapping carries the
+  // glyph + color, headline carries the message).
+  useAutoMergeEvents({
     rpc: props.rpc,
     pushSystem,
   });

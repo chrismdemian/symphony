@@ -69,6 +69,13 @@ import type {
   CompletionSummarizerHandle,
   OneShotInvoker,
 } from './completion-summarizer-types.js';
+import { createAutoMergeBroker } from './auto-merge-broker.js';
+import { createAutoMergeDispatcher } from './auto-merge-dispatcher.js';
+import * as gitOps from './git-ops.js';
+import type {
+  AutoMergeBroker,
+  AutoMergeDispatcherHandle,
+} from './auto-merge-types.js';
 
 export interface OrchestratorServerOptions {
   transport?: Transport;
@@ -145,6 +152,14 @@ export interface OrchestratorServerOptions {
    * `oneShotRunner` used by `audit_changes` + `finalize`.
    */
   completionSummarizer?: CompletionSummarizerHandle;
+  /**
+   * Phase 3O.1 — override the auto-merge broker. Test seam.
+   */
+  autoMergeBroker?: AutoMergeBroker;
+  /**
+   * Phase 3O.1 — override the auto-merge dispatcher. Test seam.
+   */
+  autoMergeDispatcher?: AutoMergeDispatcherHandle;
 }
 
 export interface RpcOptions {
@@ -180,6 +195,10 @@ export interface OrchestratorServerHandle {
   completionsBroker: CompletionsBroker;
   /** Phase 3K — exposed for tests that need to wait on shutdown drain. */
   completionSummarizer: CompletionSummarizerHandle;
+  /** Phase 3O.1 — exposed for tests that subscribe to auto-merge events. */
+  autoMergeBroker: AutoMergeBroker;
+  /** Phase 3O.1 — exposed for tests that need to wait on shutdown drain. */
+  autoMergeDispatcher: AutoMergeDispatcherHandle;
   defaultProjectPath: string;
   resolveProjectPath: (project?: string) => string;
   setContext: (partial: Partial<DispatchContext>) => void;
@@ -299,14 +318,24 @@ export async function startOrchestratorServer(
       getProjectName: (record) => projectNameForRecord(record),
     });
 
+  // Phase 3O.1 — holder pattern resolves the chicken-and-egg between
+  // questionStore (needs `onQuestionAnswered: (r) => dispatcher.onQuestionAnswered(r)`
+  // at construction) and autoMergeDispatcher (needs questionStore as a
+  // dep). The holder is filled in immediately after the dispatcher is
+  // created; by the time any answer fires, the reference is live.
+  const autoMergeDispatcherRef: { current?: AutoMergeDispatcherHandle } = {};
   const questionStore: QuestionStore =
     options.questionStore ??
     (options.database
       ? new SqliteQuestionStore(options.database.db, {
           onQuestionEnqueued: (record) => notificationDispatcher.onQuestion(record),
+          onQuestionAnswered: (record) =>
+            autoMergeDispatcherRef.current?.onQuestionAnswered(record),
         })
       : new QuestionRegistry({
           onQuestionEnqueued: (record) => notificationDispatcher.onQuestion(record),
+          onQuestionAnswered: (record) =>
+            autoMergeDispatcherRef.current?.onQuestionAnswered(record),
         }));
   const waveStore: WaveStore =
     options.waveStore ??
@@ -330,6 +359,37 @@ export async function startOrchestratorServer(
   const workerStore: WorkerStore | undefined =
     options.workerStore ??
     (options.database ? new SqliteWorkerStore(options.database.db) : undefined);
+
+  // Phase 3O.1 — auto-merge broker + dispatcher. Construct AFTER
+  // worktreeManager (the dispatcher needs `.remove`) and AFTER
+  // questionStore (the dispatcher needs `.enqueue`). Fills in the
+  // `autoMergeDispatcherRef` holder so the questionStore's
+  // `onQuestionAnswered` closure resolves to a live dispatcher by the
+  // time any answer fires. Test overrides via
+  // `options.autoMergeBroker` / `options.autoMergeDispatcher`.
+  const autoMergeBroker: AutoMergeBroker =
+    options.autoMergeBroker ?? createAutoMergeBroker();
+  const autoMergeDispatcher: AutoMergeDispatcherHandle =
+    options.autoMergeDispatcher ??
+    createAutoMergeDispatcher({
+      loadConfig,
+      questionStore,
+      broker: autoMergeBroker,
+      gitOps,
+      worktreeManager,
+      getProjectName: (projectPath) => {
+        // Resolve via projectStore.list() to find a registered project
+        // by absolute path; fall back to the basename. Mirrors the
+        // shape of the notification dispatcher's resolver but keyed by
+        // path rather than id.
+        const resolved = path.resolve(projectPath);
+        for (const p of projectStore.list()) {
+          if (path.resolve(p.path) === resolved) return p.name;
+        }
+        return path.basename(resolved) || 'project';
+      },
+    });
+  autoMergeDispatcherRef.current = autoMergeDispatcher;
 
   // Phase 2B.1 m6: prune `default-N` orphan rows that have no live
   // task / worker references BEFORE we synthesize a new default. Stale
@@ -522,6 +582,12 @@ export async function startOrchestratorServer(
       registry: workerRegistry,
       projectStore,
       oneShotRunner,
+      // Phase 3O.1 — hand the dispatcher into finalize. Fires AFTER
+      // `finalizeRunner` returns successfully (and only when Maestro did
+      // NOT pass `merge_to`). The dispatcher's onFinalize is detached
+      // from the caller's promise — finalize's structured return is
+      // unaffected by dispatcher-side throws.
+      onFinalize: (result, ctx) => autoMergeDispatcher.onFinalize(result, ctx),
     }),
   );
 
@@ -569,6 +635,8 @@ export async function startOrchestratorServer(
       workerExists: (workerId: string) => workerRegistry.get(workerId) !== undefined,
       // Phase 3K — accept `subscribe('completions.events')` from the TUI.
       completionsBroker,
+      // Phase 3O.1 — accept `subscribe('auto-merge.events')` from the TUI.
+      autoMergeBroker,
       ...(rpcConfig.host !== undefined ? { host: rpcConfig.host } : {}),
       ...(rpcConfig.port !== undefined ? { port: rpcConfig.port } : {}),
     });
@@ -607,10 +675,18 @@ export async function startOrchestratorServer(
       await rpcHandle.close().catch(() => {});
       eventBroker.clear();
       completionsBroker.clear();
+      autoMergeBroker.clear();
       if (rpcHandle.tokenFilePath !== undefined) {
         await deleteRpcDescriptor(rpcHandle.tokenFilePath).catch(() => {});
       }
     }
+    // Phase 3O.1 — drain auto-merge in-flights FIRST (before the
+    // summarizer). Both finalize-tap dispatchers chain off the same
+    // lifecycle window; auto-merge can spawn a (slow) git merge process,
+    // so draining it before the SIGTERM kill window prevents orphan
+    // git children. The summarizer is faster (single one-shot Claude
+    // call) so it can drain second.
+    await autoMergeDispatcher.shutdown().catch(() => {});
     // Phase 3K — drain summarizer in-flights BEFORE the lifecycle's
     // SIGTERM kill window. Workers that fail-class-exit during the kill
     // would otherwise re-enter `onWorkerExit` post-disposed and (with
@@ -645,6 +721,8 @@ export async function startOrchestratorServer(
     notificationDispatcher,
     completionsBroker,
     completionSummarizer,
+    autoMergeBroker,
+    autoMergeDispatcher,
     defaultProjectPath,
     resolveProjectPath,
     setContext: (partial) => {

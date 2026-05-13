@@ -118,7 +118,8 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     await settle();
     expect(captureRef.current?.config.theme.autoFallback16Color).toBe(true);
 
-    // Navigate: modelMode → maxConcurrentWorkers → theme.name → theme.autoFallback16Color
+    // Navigate: modelMode → maxConcurrentWorkers → autoMerge (3O.1) → theme.name → theme.autoFallback16Color
+    stdin.write('\x1b[B'); // ↓
     stdin.write('\x1b[B'); // ↓
     stdin.write('\x1b[B'); // ↓
     stdin.write('\x1b[B'); // ↓
@@ -134,8 +135,8 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     await settle();
     expect(captureRef.current?.config.notifications.enabled).toBe(false);
 
-    // Navigate down to notifications.enabled (5th value row).
-    for (let i = 0; i < 4; i += 1) stdin.write('\x1b[B');
+    // Navigate down to notifications.enabled (6th value row — 3O.1 autoMerge shifted +1).
+    for (let i = 0; i < 5; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write(' ');
     await settle();
@@ -266,8 +267,8 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     const { stdin } = render(<Harness captureRef={captureRef} />);
     await settle();
 
-    // Navigate to leaderTimeoutMs (8th value row — 3H.3 awayMode shifted +1).
-    for (let i = 0; i < 7; i += 1) stdin.write('\x1b[B');
+    // Navigate to leaderTimeoutMs (9th value row — 3O.1 autoMerge shifted +1 from 3H.3).
+    for (let i = 0; i < 8; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();
@@ -296,8 +297,8 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     const { stdin } = render(<Harness captureRef={captureRef} />);
     await settle();
 
-    // Navigate to defaultProjectPath (7th value row — 3H.3 awayMode shifted +1).
-    for (let i = 0; i < 6; i += 1) stdin.write('\x1b[B');
+    // Navigate to defaultProjectPath (8th value row — 3O.1 autoMerge shifted +1 from 3H.3).
+    for (let i = 0; i < 7; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();
@@ -317,8 +318,8 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     const { stdin, lastFrame } = render(<Harness captureRef={captureRef} />);
     await settle();
 
-    // 3H.3 awayMode shifted defaultProjectPath +1 in value-row order.
-    for (let i = 0; i < 6; i += 1) stdin.write('\x1b[B');
+    // 3O.1 autoMerge shifted defaultProjectPath +1 (was +1 from 3H.3 awayMode).
+    for (let i = 0; i < 7; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();
@@ -339,8 +340,8 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     const { stdin, lastFrame } = render(<Harness captureRef={captureRef} />);
     await settle();
 
-    // 3H.3 awayMode shifted defaultProjectPath +1 in value-row order.
-    for (let i = 0; i < 6; i += 1) stdin.write('\x1b[B');
+    // 3O.1 autoMerge shifted defaultProjectPath +1 (was +1 from 3H.3 awayMode).
+    for (let i = 0; i < 7; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();
@@ -361,8 +362,8 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     const { stdin } = render(<Harness config={initialConfig} captureRef={captureRef} />);
     await settle();
 
-    // 3H.3 awayMode shifted defaultProjectPath +1 in value-row order.
-    for (let i = 0; i < 6; i += 1) stdin.write('\x1b[B');
+    // 3O.1 autoMerge shifted defaultProjectPath +1 (was +1 from 3H.3 awayMode).
+    for (let i = 0; i < 7; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();

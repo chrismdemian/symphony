@@ -36,6 +36,11 @@ export interface SqliteQuestionStoreOptions {
    * SQLite write path.
    */
   readonly onQuestionEnqueued?: (record: QuestionRecord) => void;
+  /**
+   * Phase 3O.1 — fired post-update for every successful answer. Mirrors
+   * `QuestionRegistryOptions.onQuestionAnswered`. Errors swallowed.
+   */
+  readonly onQuestionAnswered?: (record: QuestionRecord) => void;
 }
 
 function defaultIdGenerator(): string {
@@ -53,11 +58,13 @@ export class SqliteQuestionStore implements QuestionStore {
   private readonly now: () => number;
   private readonly genId: () => string;
   private readonly onEnqueued?: (record: QuestionRecord) => void;
+  private readonly onAnswered?: (record: QuestionRecord) => void;
 
   constructor(private readonly db: Database, opts: SqliteQuestionStoreOptions = {}) {
     this.now = opts.now ?? Date.now;
     this.genId = opts.idGenerator ?? defaultIdGenerator;
     this.onEnqueued = opts.onQuestionEnqueued;
+    this.onAnswered = opts.onQuestionAnswered;
     this.stmts = {
       insert: db.prepare(
         `INSERT INTO questions
@@ -130,6 +137,13 @@ export class SqliteQuestionStore implements QuestionStore {
     this.stmts.updateAnswer.run({ id, answer, answered_at: iso });
     const record = this.get(id);
     if (!record) throw new Error('SqliteQuestionStore.answer: post-update row vanished');
+    if (this.onAnswered !== undefined) {
+      try {
+        this.onAnswered(record);
+      } catch {
+        // Phase 3O.1 — consumer errors must not poison answer.
+      }
+    }
     return record;
   }
 

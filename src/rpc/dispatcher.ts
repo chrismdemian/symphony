@@ -12,6 +12,7 @@ import { ProtocolError, decodeFrame, encodeFrame, err, ok } from './protocol.js'
 import { resolveProcedure } from './router.js';
 import type { WorkerEventBroker } from './event-broker.js';
 import type { CompletionsBroker } from '../orchestrator/completion-summarizer-types.js';
+import type { AutoMergeBroker } from '../orchestrator/auto-merge-types.js';
 
 /**
  * Per-connection dispatcher — Phase 2B.2.
@@ -79,6 +80,14 @@ export interface DispatcherOptions {
    * behavior for tests that don't need the channel).
    */
   readonly completionsBroker?: CompletionsBroker;
+  /**
+   * Phase 3O.1 — optional auto-merge broker. When supplied,
+   * `subscribe('auto-merge.events')` is accepted; subscribers receive
+   * every `AutoMergeEvent` published server-side (asked / merged /
+   * declined / failed / ready). When omitted, subscribes to that topic
+   * resolve `not_found`.
+   */
+  readonly autoMergeBroker?: AutoMergeBroker;
 }
 
 interface SubscriptionEntry {
@@ -88,11 +97,13 @@ interface SubscriptionEntry {
 
 const WORKERS_EVENTS_TOPIC = 'workers.events' as const;
 const COMPLETIONS_EVENTS_TOPIC = 'completions.events' as const;
+const AUTO_MERGE_EVENTS_TOPIC = 'auto-merge.events' as const;
 
 export class Dispatcher {
   private readonly router: RouterMap;
   private readonly broker: WorkerEventBroker;
   private readonly completionsBroker: CompletionsBroker | undefined;
+  private readonly autoMergeBroker: AutoMergeBroker | undefined;
   private readonly send: DispatcherSend;
   private readonly signal: AbortSignal;
   private readonly closeOnProtocolError: DispatcherProtocolViolationCloser;
@@ -104,6 +115,7 @@ export class Dispatcher {
     this.router = opts.router;
     this.broker = opts.broker;
     this.completionsBroker = opts.completionsBroker;
+    this.autoMergeBroker = opts.autoMergeBroker;
     this.send = opts.send;
     this.signal = opts.signal;
     this.closeOnProtocolError = opts.closeOnProtocolError ?? (() => {});
@@ -206,6 +218,10 @@ export class Dispatcher {
       this.handleCompletionsSubscribe(frame);
       return;
     }
+    if (frame.topic === AUTO_MERGE_EVENTS_TOPIC) {
+      this.handleAutoMergeSubscribe(frame);
+      return;
+    }
     if (frame.topic !== WORKERS_EVENTS_TOPIC) {
       this.sendResult(
         frame.id,
@@ -283,6 +299,35 @@ export class Dispatcher {
     });
     this.subscriptions.set(frame.id, { topic: COMPLETIONS_EVENTS_TOPIC, unsubscribe });
     this.sendResult(frame.id, ok({ topic: COMPLETIONS_EVENTS_TOPIC }));
+  }
+
+  private handleAutoMergeSubscribe(frame: SubscribeFrame): void {
+    // Phase 3O.1 — global auto-merge event feed. No args required (the
+    // channel is global, no per-worker keying). Mirrors the completions
+    // subscribe shape exactly. Defensive duplicate-id check mirrors the
+    // parent handleSubscribe.
+    if (this.subscriptions.has(frame.id)) {
+      this.sendResult(frame.id, err('bad_args', `subscription id '${frame.id}' already in use`));
+      return;
+    }
+    if (this.autoMergeBroker === undefined) {
+      this.sendResult(
+        frame.id,
+        err('not_found', `subscription topic '${AUTO_MERGE_EVENTS_TOPIC}' is not configured`),
+      );
+      return;
+    }
+    const unsubscribe = this.autoMergeBroker.subscribe((event) => {
+      const out: EventFrame = {
+        kind: 'event',
+        topic: AUTO_MERGE_EVENTS_TOPIC,
+        payload: event,
+      };
+      // Same drop-on-backpressure policy as completions.events.
+      this.send(encodeFrame(out), { dropOnBackpressure: true });
+    });
+    this.subscriptions.set(frame.id, { topic: AUTO_MERGE_EVENTS_TOPIC, unsubscribe });
+    this.sendResult(frame.id, ok({ topic: AUTO_MERGE_EVENTS_TOPIC }));
   }
 
   private handleUnsubscribe(frame: UnsubscribeFrame): void {

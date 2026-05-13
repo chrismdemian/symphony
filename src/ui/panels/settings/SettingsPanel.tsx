@@ -188,6 +188,17 @@ export function SettingsPanel(): React.JSX.Element {
         void applyPatch((current) => ({
           modelMode: current.modelMode === 'opus' ? 'mixed' : 'opus',
         }));
+        return;
+      }
+      if (label === 'autoMerge') {
+        // Phase 3O.1 — three-way cycle: ask → auto → never → ask.
+        void applyPatch((current) => {
+          const order: SymphonyConfig['autoMerge'][] = ['ask', 'auto', 'never'];
+          const idx = order.indexOf(current.autoMerge);
+          const next = order[(idx + 1) % order.length] ?? 'ask';
+          return { autoMerge: next };
+        });
+        return;
       }
     },
     [applyPatch],
@@ -622,6 +633,14 @@ function buildRows(
       source: fromFileSource,
       editKind: 'int',
       description: 'Cap enforced in Commit 4 of 3H.2 (queue gate). Range 1–32.',
+    },
+    {
+      kind: 'value',
+      label: 'autoMerge',
+      value: config.autoMerge,
+      source: fromFileSource,
+      editKind: 'enum',
+      description: 'After finalize succeeds: ask = chat prompt · auto = merge + cleanup · never = leave branch',
     },
     { kind: 'header', label: 'Appearance' },
     {

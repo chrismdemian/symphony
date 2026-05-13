@@ -84,12 +84,44 @@ const shape = {
     .describe('Model for the inline audit step. Defaults to project defaultModel.'),
 };
 
+/**
+ * Phase 3O.1 — post-finalize callback fired AFTER a successful run when
+ * Maestro did NOT pass `merge_to` (i.e., the merge step was NOT performed
+ * by finalize). The AutoMergeDispatcher subscribes here to drive its
+ * three-mode gate (`ask` / `auto` / `never`). When Maestro DID pass
+ * `merge_to`, the callback fires with `mergeToSpecified: true` and the
+ * dispatcher short-circuits — the user has already confirmed the merge
+ * at tier-3-prompt time.
+ *
+ * Callback errors are swallowed so the finalize tool's structured return
+ * to Maestro is unaffected; the dispatcher logs its own errors via the
+ * `onError` injection at construction.
+ */
+export interface FinalizeCallbackContext {
+  readonly workerId: string;
+  readonly branch: string;
+  readonly projectPath: string;
+  readonly worktreePath: string;
+  readonly mergeToSpecified: boolean;
+}
+
+export type OnFinalizeCallback = (
+  result: FinalizeRunResult,
+  ctx: FinalizeCallbackContext,
+) => void | Promise<void>;
+
 export interface FinalizeDeps {
   readonly registry: WorkerRegistry;
   readonly projectStore: ProjectStore;
   readonly oneShotRunner?: OneShotRunner;
   /** Test seam — override the step runner. */
   readonly finalizeRunner?: typeof runFinalize;
+  /**
+   * Phase 3O.1 — fired post-`finalizeRunner` ONLY when `result.ok === true`.
+   * The AutoMergeDispatcher wires here in `server.ts`. Optional; existing
+   * test callers that don't pass it see zero behavior change.
+   */
+  readonly onFinalize?: OnFinalizeCallback;
 }
 
 export function makeFinalizeTool(
@@ -377,6 +409,33 @@ export function makeFinalizeTool(
           content: [{ type: 'text', text: `finalize raised: ${msg}` }],
           isError: true,
         };
+      }
+
+      // Phase 3O.1 — fire the post-finalize callback before returning to
+      // Maestro. Only on full success (audit/lint/test/build/verify/commit/
+      // push all OK). The dispatcher decides whether to gate / merge /
+      // skip based on autoMerge config + `mergeToSpecified`. Errors are
+      // swallowed so the structured return shape stays clean.
+      //
+      // The `await` here only waits for the dispatcher's synchronous
+      // accept-into-inflight (the dispatcher returns immediately after
+      // queuing the work; the actual merge/event fan-out happens
+      // asynchronously). Maestro's structured tool response is therefore
+      // NOT blocked on the merge — the chat may surface an `asked` or
+      // `merged` system row AFTER Maestro has moved to its next action.
+      // Ordering invariant documented for 3O.1 (audit M3).
+      if (result.ok && deps.onFinalize !== undefined) {
+        try {
+          await deps.onFinalize(result, {
+            workerId: worker_id,
+            branch,
+            projectPath: project.path,
+            worktreePath: record.worktreePath,
+            mergeToSpecified: merge_to !== undefined,
+          });
+        } catch {
+          // Dispatcher-side errors logged via its own onError injection.
+        }
       }
 
       const text = formatFinalizeText({
