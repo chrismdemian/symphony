@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { ProjectStore } from '../projects/types.js';
+import { isTaskReady } from '../orchestrator/task-deps.js';
 import {
   canTransition,
   InvalidTaskTransitionError,
@@ -25,6 +26,21 @@ export interface TaskRegistryOptions {
    * `UnknownProjectIdError` instead of accepting any string. Phase 2B.1 m4.
    */
   readonly projectStore?: ProjectStore;
+  /**
+   * Phase 3P — fired AFTER `update()` writes a status transition.
+   * Receives a frozen `TaskSnapshot` (readonly fields, defensive copy)
+   * — NOT the live mutable record — so the dispatcher and any other
+   * downstream consumer see the exact state at fire time even if
+   * the record is mutated again before async work resumes. Mirrors
+   * the immutability contract of `AutoMergeEvent` (3O.1).
+   *
+   * ONLY fired when `patch.status` causes an actual status change;
+   * idempotent same-status updates (`canTransition(x, x) === true`) do
+   * not fire. Non-status patches (notes, workerId, result) do not
+   * fire either. Errors thrown by the callback are swallowed (mirrors
+   * `WorkerLifecycleOptions.onWorkerStatusChange`).
+   */
+  readonly onTaskStatusChange?: (snapshot: TaskSnapshot) => void;
 }
 
 function defaultIdGenerator(): string {
@@ -41,23 +57,29 @@ export class TaskRegistry implements TaskStore {
   private readonly now: () => number;
   private readonly genId: () => string;
   private readonly projectStore: ProjectStore | undefined;
+  private readonly onTaskStatusChange: ((snapshot: TaskSnapshot) => void) | undefined;
 
   constructor(opts: TaskRegistryOptions = {}) {
     this.now = opts.now ?? Date.now;
     this.genId = opts.idGenerator ?? defaultIdGenerator;
     this.projectStore = opts.projectStore;
+    this.onTaskStatusChange = opts.onTaskStatusChange;
   }
 
   list(filter: TaskListFilter = {}): TaskRecord[] {
-    const records = Array.from(this.records.values());
+    const allRecords = Array.from(this.records.values());
     const statusSet = Array.isArray(filter.status)
       ? new Set(filter.status as readonly TaskStatus[])
       : typeof filter.status === 'string'
         ? new Set<TaskStatus>([filter.status])
         : null;
-    return records.filter((r) => {
+    return allRecords.filter((r) => {
       if (filter.projectId !== undefined && r.projectId !== filter.projectId) return false;
       if (statusSet !== null && !statusSet.has(r.status)) return false;
+      // Phase 3P: readiness is evaluated against the FULL record set
+      // so a cross-project dep gates correctly even when projectId
+      // filter would hide the dep itself.
+      if (filter.readyOnly === true && !isTaskReady(r, allRecords)) return false;
       return true;
     });
   }
@@ -108,6 +130,7 @@ export class TaskRegistry implements TaskStore {
     const record = this.records.get(id);
     if (!record) throw new UnknownTaskError(id);
     const iso = new Date(this.now()).toISOString();
+    const priorStatus = record.status;
 
     if (patch.status !== undefined) {
       if (!canTransition(record.status, patch.status)) {
@@ -136,6 +159,22 @@ export class TaskRegistry implements TaskStore {
       record.result = patch.result;
     }
     record.updatedAt = iso;
+    // Phase 3P — fire ONLY on real status transitions. Same-status
+    // idempotent updates (canTransition(x, x) === true) do not fire;
+    // notes/workerId/result updates do not fire. Errors swallowed.
+    // Pass a frozen snapshot so consumers see fire-time state even
+    // if the record is mutated again before async work resumes.
+    if (
+      this.onTaskStatusChange !== undefined &&
+      patch.status !== undefined &&
+      patch.status !== priorStatus
+    ) {
+      try {
+        this.onTaskStatusChange(toTaskSnapshot(record));
+      } catch {
+        // downstream consumer must not poison the update path
+      }
+    }
     return record;
   }
 

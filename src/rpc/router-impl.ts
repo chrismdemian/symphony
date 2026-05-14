@@ -116,6 +116,12 @@ export interface ProjectsRegisterArgs {
 export interface TasksListArgs {
   readonly projectId?: string;
   readonly status?: TaskListFilter['status'];
+  /**
+   * Phase 3P — restrict to ready tasks (status='pending' AND every
+   * dep completed). Evaluated against the full task set so cross-project
+   * deps gate correctly. See `TaskListFilter.readyOnly` for semantics.
+   */
+  readonly readyOnly?: boolean;
 }
 
 export interface TasksUpdateArgs {
@@ -887,6 +893,7 @@ function coerceTaskFilter(args: TasksListArgs | undefined): TaskListFilter {
   const filter: TaskListFilter = {
     ...(args.projectId !== undefined ? { projectId: args.projectId } : {}),
     ...(args.status !== undefined ? { status: args.status } : {}),
+    ...(args.readyOnly !== undefined ? { readyOnly: args.readyOnly } : {}),
   };
   return filter;
 }

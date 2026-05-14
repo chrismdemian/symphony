@@ -23,6 +23,12 @@ const shape = {
     .max(DEFAULT_CAP)
     .optional()
     .describe(`Max records returned (1..${DEFAULT_CAP}, default ${DEFAULT_CAP}).`),
+  ready_only: z
+    .boolean()
+    .optional()
+    .describe(
+      "Phase 3P — only return tasks with status='pending' AND every dep in 'completed' status (cross-project deps resolved against the full task set). Combine with `project` to find ready tasks for one project.",
+    ),
 };
 
 export interface ListTasksDeps {
@@ -38,7 +44,7 @@ export function makeListTasksTool(deps: ListTasksDeps): ToolRegistration<typeof 
     scope: 'both',
     capabilities: [],
     inputSchema: shape,
-    handler: ({ project, status, limit }) => {
+    handler: ({ project, status, limit, ready_only }) => {
       let projectId: string | undefined;
       if (project !== undefined) {
         const proj = deps.projectStore.get(project);
@@ -53,6 +59,7 @@ export function makeListTasksTool(deps: ListTasksDeps): ToolRegistration<typeof 
       const filter: TaskListFilter = {
         ...(projectId !== undefined ? { projectId } : {}),
         ...(status !== undefined ? { status } : {}),
+        ...(ready_only !== undefined ? { readyOnly: ready_only } : {}),
       };
       const cap = limit ?? DEFAULT_CAP;
       const all = deps.taskStore.snapshots(filter);

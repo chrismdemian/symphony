@@ -71,6 +71,15 @@ export interface TaskPatch {
 export interface TaskListFilter {
   readonly projectId?: string;
   readonly status?: TaskStatus | readonly TaskStatus[];
+  /**
+   * Phase 3P — when `true`, restrict to tasks with `status === 'pending'`
+   * AND every entry in `dependsOn` resolving to a task whose status is
+   * `'completed'`. Stacks with `status`/`projectId` filters; readiness
+   * is evaluated against the FULL task set (so a cross-project dep
+   * still gates correctly even if the projectId filter would have
+   * hidden the dep itself).
+   */
+  readonly readyOnly?: boolean;
 }
 
 export interface TaskStore {

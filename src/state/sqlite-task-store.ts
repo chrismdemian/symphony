@@ -16,6 +16,7 @@ import {
 } from './types.js';
 import { toTaskSnapshot } from './task-registry.js';
 import { CorruptRecordError } from './errors.js';
+import { isTaskReady } from '../orchestrator/task-deps.js';
 
 interface TaskRow {
   id: string;
@@ -43,6 +44,17 @@ export interface SqliteTaskStoreOptions {
    * mode) or report via a logger.
    */
   readonly onCorruptRow?: (err: CorruptRecordError) => void;
+  /**
+   * Phase 3P — fired AFTER `update()` writes a status transition.
+   * Receives a frozen `TaskSnapshot` to mirror
+   * `TaskRegistryOptions.onTaskStatusChange`. Errors thrown by the
+   * callback are swallowed so a misbehaving consumer (dispatcher,
+   * broker) cannot poison the update path.
+   *
+   * ONLY fires on actual status transitions; idempotent same-status
+   * updates and non-status patches (notes/workerId/result) do not.
+   */
+  readonly onTaskStatusChange?: (snapshot: TaskSnapshot) => void;
 }
 
 function defaultIdGenerator(): string {
@@ -71,6 +83,7 @@ export class SqliteTaskStore implements TaskStore {
   private readonly now: () => number;
   private readonly genId: () => string;
   private readonly onCorruptRow: (err: CorruptRecordError) => void;
+  private readonly onTaskStatusChange: ((snapshot: TaskSnapshot) => void) | undefined;
 
   constructor(private readonly db: Database, opts: SqliteTaskStoreOptions = {}) {
     this.now = opts.now ?? Date.now;
@@ -82,6 +95,7 @@ export class SqliteTaskStore implements TaskStore {
         // when that lands). Strict mode: pass `(err) => { throw err; }`.
         void err;
       });
+    this.onTaskStatusChange = opts.onTaskStatusChange;
     this.stmts = {
       insert: db.prepare(
         `INSERT INTO tasks
@@ -120,14 +134,33 @@ export class SqliteTaskStore implements TaskStore {
       : typeof filter.status === 'string'
         ? new Set<TaskStatus>([filter.status])
         : null;
+    // Phase 3P: when `readyOnly` is set, decode EVERY non-corrupt row
+    // into a record up-front so `isTaskReady` can resolve cross-project
+    // deps. Without the full set, a dep that lives in another project
+    // is invisible and the gate misfires.
+    const allDecoded: TaskRecord[] = [];
+    if (filter.readyOnly === true) {
+      for (const row of rows) {
+        try {
+          allDecoded.push(rowToRecord(row));
+        } catch (err) {
+          if (err instanceof CorruptRecordError) {
+            this.onCorruptRow(err);
+            continue;
+          }
+          throw err;
+        }
+      }
+    }
     const out: TaskRecord[] = [];
     for (const row of rows) {
       if (filter.projectId !== undefined && row.project_id !== filter.projectId) continue;
       if (statusSet !== null && !statusSet.has(row.status)) continue;
       // Phase 2B.1 audit M5: one corrupt JSON row must not kill the batch.
       // Skip + report; callers see a consistent list minus the bad rows.
+      let record: TaskRecord;
       try {
-        out.push(rowToRecord(row));
+        record = rowToRecord(row);
       } catch (err) {
         if (err instanceof CorruptRecordError) {
           this.onCorruptRow(err);
@@ -135,6 +168,8 @@ export class SqliteTaskStore implements TaskStore {
         }
         throw err;
       }
+      if (filter.readyOnly === true && !isTaskReady(record, allDecoded)) continue;
+      out.push(record);
     }
     return out;
   }
@@ -182,6 +217,7 @@ export class SqliteTaskStore implements TaskStore {
     const existing = this.stmts.selectById.get(id) as TaskRow | undefined;
     if (!existing) throw new UnknownTaskError(id);
     const iso = new Date(this.now()).toISOString();
+    const priorStatus = existing.status;
 
     let nextStatus: TaskStatus = existing.status;
     let completedAt: string | null = existing.completed_at;
@@ -221,6 +257,19 @@ export class SqliteTaskStore implements TaskStore {
     });
     const record = this.get(id);
     if (!record) throw new Error('SqliteTaskStore.update: post-update row vanished');
+    // Phase 3P — fire on real status transitions only. Errors swallowed.
+    // Pass a frozen snapshot (mirror TaskRegistry contract).
+    if (
+      this.onTaskStatusChange !== undefined &&
+      patch.status !== undefined &&
+      patch.status !== priorStatus
+    ) {
+      try {
+        this.onTaskStatusChange(toTaskSnapshot({ ...record, notes: record.notes.slice() }));
+      } catch {
+        // downstream consumer must not poison the update path
+      }
+    }
     return record;
   }
 

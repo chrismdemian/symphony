@@ -234,7 +234,7 @@ describe('list_tasks', () => {
       projectStore: seedProjects(),
     });
     const res = await tool.handler(
-      { project: undefined, status: undefined, limit: undefined },
+      { project: undefined, status: undefined, limit: undefined, ready_only: undefined },
       ctx(),
     );
     expect(asText(res)).toBe('No tasks match.');
@@ -248,7 +248,7 @@ describe('list_tasks', () => {
     taskStore.create({ projectId: 'backend', description: 'fix query' });
     const tool = makeListTasksTool({ taskStore, projectStore });
     const res = await tool.handler(
-      { project: 'frontend', status: undefined, limit: undefined },
+      { project: 'frontend', status: undefined, limit: undefined, ready_only: undefined },
       ctx(),
     );
     const sc = res.structuredContent as { tasks: Array<{ projectId: string }> };
@@ -264,7 +264,7 @@ describe('list_tasks', () => {
     taskStore.create({ projectId: 'frontend', description: 'b' });
     const tool = makeListTasksTool({ taskStore, projectStore });
     const res = await tool.handler(
-      { project: undefined, status: 'pending', limit: undefined },
+      { project: undefined, status: 'pending', limit: undefined, ready_only: undefined },
       ctx(),
     );
     const sc = res.structuredContent as { tasks: unknown[] };
@@ -281,7 +281,7 @@ describe('list_tasks', () => {
     taskStore.update(b.id, { status: 'cancelled' });
     const tool = makeListTasksTool({ taskStore, projectStore });
     const res = await tool.handler(
-      { project: undefined, status: ['completed', 'cancelled'], limit: undefined },
+      { project: undefined, status: ['completed', 'cancelled'], limit: undefined, ready_only: undefined },
       ctx(),
     );
     expect((res.structuredContent as { tasks: unknown[] }).tasks.length).toBe(2);
@@ -293,7 +293,7 @@ describe('list_tasks', () => {
       projectStore: seedProjects(),
     });
     const res = await tool.handler(
-      { project: 'ghost', status: undefined, limit: undefined },
+      { project: 'ghost', status: undefined, limit: undefined, ready_only: undefined },
       ctx(),
     );
     expect(res.isError).toBe(true);
@@ -307,13 +307,54 @@ describe('list_tasks', () => {
     }
     const tool = makeListTasksTool({ taskStore, projectStore });
     const res = await tool.handler(
-      { project: undefined, status: undefined, limit: 2 },
+      { project: undefined, status: undefined, limit: 2, ready_only: undefined },
       ctx(),
     );
     const sc = res.structuredContent as { tasks: unknown[]; total: number; truncated: boolean };
     expect(sc.tasks.length).toBe(2);
     expect(sc.total).toBe(3);
     expect(sc.truncated).toBe(true);
+  });
+
+  // Phase 3P
+  it('ready_only=true returns only pending tasks whose deps are all completed', async () => {
+    const taskStore = new TaskRegistry();
+    const projectStore = seedProjects();
+    const a = taskStore.create({ projectId: 'frontend', description: 'A' });
+    const b = taskStore.create({ projectId: 'frontend', description: 'B', dependsOn: [a.id] });
+    const tool = makeListTasksTool({ taskStore, projectStore });
+    // A pending → B not ready, A ready.
+    let res = await tool.handler(
+      { project: undefined, status: undefined, limit: undefined, ready_only: true },
+      ctx(),
+    );
+    let sc = res.structuredContent as { tasks: Array<{ id: string }> };
+    expect(sc.tasks.map((t) => t.id)).toEqual([a.id]);
+    // Complete A → B ready.
+    taskStore.update(a.id, { status: 'in_progress' });
+    taskStore.update(a.id, { status: 'completed' });
+    res = await tool.handler(
+      { project: undefined, status: undefined, limit: undefined, ready_only: true },
+      ctx(),
+    );
+    sc = res.structuredContent as { tasks: Array<{ id: string }> };
+    expect(sc.tasks.map((t) => t.id)).toEqual([b.id]);
+  });
+
+  it('ready_only=true combined with project filter resolves cross-project deps', async () => {
+    const taskStore = new TaskRegistry();
+    const projectStore = seedProjects();
+    const a = taskStore.create({ projectId: 'frontend', description: 'A' });
+    const b = taskStore.create({ projectId: 'backend', description: 'B', dependsOn: [a.id] });
+    taskStore.update(a.id, { status: 'in_progress' });
+    taskStore.update(a.id, { status: 'completed' });
+    const tool = makeListTasksTool({ taskStore, projectStore });
+    const res = await tool.handler(
+      { project: 'backend', status: undefined, limit: undefined, ready_only: true },
+      ctx(),
+    );
+    const sc = res.structuredContent as { tasks: Array<{ id: string }> };
+    expect(sc.tasks.map((t) => t.id)).toEqual([b.id]);
   });
 });
 
