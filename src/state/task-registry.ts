@@ -67,7 +67,13 @@ export class TaskRegistry implements TaskStore {
   }
 
   list(filter: TaskListFilter = {}): TaskRecord[] {
-    const allRecords = Array.from(this.records.values());
+    // Phase 3P audit M2 — return defensive shallow copies so callers
+    // (esp. TaskReadyDispatcher) hold a snapshot of the post-update
+    // state at list time, immune to subsequent in-place mutations of
+    // the live records. SqliteTaskStore.list() naturally returns fresh
+    // records (each row re-decoded from SQL); this brings the in-memory
+    // path to parity.
+    const allRecords = Array.from(this.records.values()).map((r) => cloneRecord(r));
     const statusSet = Array.isArray(filter.status)
       ? new Set(filter.status as readonly TaskStatus[])
       : typeof filter.status === 'string'
@@ -178,6 +184,29 @@ export class TaskRegistry implements TaskStore {
     return record;
   }
 
+  /**
+   * Phase 3P audit M1 — atomic claim. See `TaskStore.claim` for contract.
+   * In-memory single-turn JS execution makes the check-then-set
+   * naturally atomic. Fires `onTaskStatusChange` on success.
+   */
+  claim(taskId: string, workerId: string): TaskRecord | null {
+    const record = this.records.get(taskId);
+    if (record === undefined) return null;
+    if (record.status !== 'pending') return null;
+    const iso = new Date(this.now()).toISOString();
+    record.status = 'in_progress';
+    record.workerId = workerId;
+    record.updatedAt = iso;
+    if (this.onTaskStatusChange !== undefined) {
+      try {
+        this.onTaskStatusChange(toTaskSnapshot(record));
+      } catch {
+        // downstream consumer must not poison the claim path
+      }
+    }
+    return record;
+  }
+
   snapshot(id: string): TaskSnapshot | undefined {
     const r = this.records.get(id);
     return r ? toTaskSnapshot(r) : undefined;
@@ -198,6 +227,29 @@ export class TaskRegistry implements TaskStore {
     }
     throw new Error('TaskRegistry.create: id generator produced 8 collisions in a row');
   }
+}
+
+/**
+ * Phase 3P audit M2 — shallow clone for `list()` defensive copy. The
+ * `notes` array is sliced to prevent later push() leaks; `dependsOn`
+ * is `readonly string[]` so a slice would be redundant but we copy
+ * anyway to make the freeze contract explicit.
+ */
+function cloneRecord(r: TaskRecord): TaskRecord {
+  return {
+    id: r.id,
+    projectId: r.projectId,
+    description: r.description,
+    status: r.status,
+    priority: r.priority,
+    dependsOn: r.dependsOn.slice(),
+    notes: r.notes.slice(),
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+    ...(r.workerId !== undefined ? { workerId: r.workerId } : {}),
+    ...(r.result !== undefined ? { result: r.result } : {}),
+    ...(r.completedAt !== undefined ? { completedAt: r.completedAt } : {}),
+  };
 }
 
 export function toTaskSnapshot(r: TaskRecord): TaskSnapshot {

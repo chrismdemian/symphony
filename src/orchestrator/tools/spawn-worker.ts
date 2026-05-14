@@ -74,10 +74,26 @@ export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typ
       const projectId = resolveProjectId(deps.projectStore, project, projectPath);
 
       // Phase 3P — when task_id is provided AND we have a taskStore,
-      // validate the task is ready before spawning. Pre-spawn check
-      // matters: spawning creates a worktree (expensive), then if we
-      // discovered the task wasn't ready we'd have to clean up. Gate
-      // first.
+      // CLAIM the task BEFORE spawning. The atomic claim primitive
+      // (audit M1) guarantees two concurrent spawn_worker(task_id=X)
+      // callers can't both spawn parallel worktrees against the same
+      // task: only the first wins the pending→in_progress transition.
+      // The ready-gate (unmetDepsOf) runs before the claim so we can
+      // surface the typed TaskNotReadyError shape distinct from the
+      // generic "already claimed" rejection.
+      //
+      // Order:
+      //   1. Resolve task; reject unknown
+      //   2. Validate ready (unmetDepsOf returns []); reject with typed
+      //      error otherwise — gives Maestro a structured payload
+      //   3. CLAIM (atomic pending → in_progress + stamp workerId=record.id)
+      //      We DON'T know the worker id yet, so use a temp placeholder
+      //      and rewrite after spawn. Two callers race here; one wins.
+      //   4. Spawn. On failure, REVERT the claim by re-issuing
+      //      update_task(status='pending', workerId='') — best effort;
+      //      a failed revert leaves the row in_progress with the temp
+      //      worker id, surfaced in the error text.
+      let claimedTempWorkerId: string | undefined;
       if (task_id !== undefined && deps.taskStore !== undefined) {
         const task = deps.taskStore.get(task_id);
         if (task === undefined) {
@@ -113,6 +129,20 @@ export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typ
             } as unknown as Record<string, unknown>,
           };
         }
+        // Atomic claim — workerId placeholder rewritten post-spawn.
+        claimedTempWorkerId = `pending-claim-${task_id}`;
+        const claimed = deps.taskStore.claim(task_id, claimedTempWorkerId);
+        if (claimed === null) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text: `Task '${task_id}' was claimed by another spawn_worker call between the readiness check and the claim. Refresh and try the next ready task.`,
+              },
+            ],
+            isError: true,
+          };
+        }
       }
 
       const input: SpawnWorkerInput = {
@@ -126,26 +156,42 @@ export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typ
         ...(autonomy_tier !== undefined ? { autonomyTier: autonomy_tier } : {}),
         ...(task_id !== undefined ? { taskId: task_id } : {}),
       };
-      const record = await deps.lifecycle.spawn(input);
+      let record;
+      try {
+        record = await deps.lifecycle.spawn(input);
+      } catch (err) {
+        // Spawn failed AFTER the claim. Revert so the task is reclaimable.
+        if (task_id !== undefined && deps.taskStore !== undefined) {
+          try {
+            // status remains in_progress (claimed) until we explicitly
+            // flip back. The state machine allows in_progress →
+            // cancelled but NOT in_progress → pending; transition the
+            // claim into cancelled so a follow-up create_task can
+            // reschedule. (PLAN.md: task state machine.)
+            deps.taskStore.update(task_id, {
+              status: 'cancelled',
+              result: `spawn_worker failed; claim reverted: ${err instanceof Error ? err.message : String(err)}`,
+            });
+          } catch {
+            // best effort — the claim stays in_progress with the
+            // placeholder workerId; user can update_task manually.
+          }
+        }
+        throw err;
+      }
 
-      // Phase 3P — auto-link succeeded; flip task to in_progress and
-      // stamp workerId. Per Chris's PLAN choice (auto-link). One
-      // update covers both fields. Errors here are surfaced but the
-      // worker is already alive — the chat row makes the mismatch
-      // visible.
+      // Rewrite the placeholder workerId with the real one (the claim
+      // already flipped status; this update only stamps the real id).
       if (task_id !== undefined && deps.taskStore !== undefined) {
         try {
-          deps.taskStore.update(task_id, {
-            status: 'in_progress',
-            workerId: record.id,
-          });
+          deps.taskStore.update(task_id, { workerId: record.id });
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           return {
             content: [
               {
                 type: 'text',
-                text: `Spawned worker ${record.id} but failed to auto-link task '${task_id}': ${msg}. Worker is live; flip task state manually with update_task.`,
+                text: `Spawned worker ${record.id} but failed to stamp final workerId on task '${task_id}': ${msg}. Worker is live; task currently shows the placeholder id '${claimedTempWorkerId}'. Update manually with update_task.`,
               },
             ],
             isError: true,

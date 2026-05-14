@@ -244,6 +244,61 @@ describe('spawn_worker — task_id auto-link gate', () => {
     expect(lc.spawnCalls[0]).toMatchObject({ taskId: 'tk-anything' });
   });
 
+  it('rejects when another spawn already claimed the task (audit M1)', async () => {
+    // Simulate the race: spawn_worker call #1 has already claimed the
+    // task before call #2 reaches its claim step.
+    const registry = new WorkerRegistry();
+    const taskStore = new TaskRegistry({ now: () => Date.parse(ISO) });
+    const a = taskStore.create({ projectId: 'p1', description: 'A' });
+    // Pre-claim via the store (representing call #1's atomic claim).
+    taskStore.claim(a.id, 'wk-already-claimed');
+    const lc = fakeLifecycle(async () => makeRecord(registry, 'wk-2'));
+    const tool = makeSpawnWorkerTool({
+      registry,
+      lifecycle: lc,
+      resolveProjectPath: () => '/proj',
+      taskStore,
+    });
+    const res = await invoke(tool, {
+      task_description: 'do A',
+      role: 'implementer',
+      task_id: a.id,
+    });
+    expect(res.isError).toBe(true);
+    // The race-detection error mentions the task status (in_progress).
+    const text = res.content.map((c) => c.text).join('');
+    expect(text).toMatch(/in_progress|claimed/i);
+    // Lifecycle was NOT called (rejection happens BEFORE spawn).
+    expect(lc.spawnCalls).toHaveLength(0);
+  });
+
+  it('reverts the claim to cancelled when spawn fails after claim (audit M1)', async () => {
+    const registry = new WorkerRegistry();
+    const taskStore = new TaskRegistry({ now: () => Date.parse(ISO) });
+    const a = taskStore.create({ projectId: 'p1', description: 'A' });
+    // Lifecycle.spawn rejects.
+    const lc = fakeLifecycle(async () => {
+      throw new Error('worktree creation blew up');
+    });
+    const tool = makeSpawnWorkerTool({
+      registry,
+      lifecycle: lc,
+      resolveProjectPath: () => '/proj',
+      taskStore,
+    });
+    await expect(
+      invoke(tool, {
+        task_description: 'do A',
+        role: 'implementer',
+        task_id: a.id,
+      }),
+    ).rejects.toThrow(/worktree creation blew up/);
+    // Claim was reverted to cancelled so the task is no longer in_progress.
+    // (Per task state machine: in_progress → pending is invalid, so the
+    // revert flips to cancelled. A follow-up create_task reschedules.)
+    expect(taskStore.get(a.id)?.status).toBe('cancelled');
+  });
+
   it('spawns with no task_id and skips the gate entirely', async () => {
     const registry = new WorkerRegistry();
     const taskStore = new TaskRegistry();

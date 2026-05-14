@@ -150,3 +150,61 @@ describe('SqliteTaskStore — onTaskStatusChange', () => {
     expect(cb).not.toHaveBeenCalled();
   });
 });
+
+describe('SqliteTaskStore — claim (3P audit M1)', () => {
+  let svc: ReturnType<typeof SymphonyDatabase.open>;
+  let projects: SqliteProjectStore;
+
+  beforeEach(() => {
+    svc = SymphonyDatabase.open({ filePath: ':memory:' });
+    projects = new SqliteProjectStore(svc.db);
+    projects.register({ id: 'p1', name: 'p1', path: '/tmp/p1', createdAt: '' });
+  });
+
+  afterEach(() => {
+    svc.close();
+  });
+
+  it('claims a pending task atomically (SQL UPDATE WHERE status=pending)', () => {
+    const store = new SqliteTaskStore(svc.db);
+    const a = store.create({ projectId: 'p1', description: 'A' });
+    const claimed = store.claim(a.id, 'wk-1');
+    expect(claimed).not.toBeNull();
+    expect(claimed?.status).toBe('in_progress');
+    expect(claimed?.workerId).toBe('wk-1');
+    // SQL reflects the claim.
+    expect(store.get(a.id)?.status).toBe('in_progress');
+    expect(store.get(a.id)?.workerId).toBe('wk-1');
+  });
+
+  it('returns null on second claim of an already-claimed task', () => {
+    const store = new SqliteTaskStore(svc.db);
+    const a = store.create({ projectId: 'p1', description: 'A' });
+    expect(store.claim(a.id, 'wk-1')).not.toBeNull();
+    expect(store.claim(a.id, 'wk-2')).toBeNull();
+    expect(store.get(a.id)?.workerId).toBe('wk-1');
+  });
+
+  it('returns null for unknown id', () => {
+    const store = new SqliteTaskStore(svc.db);
+    expect(store.claim('tk-ghost', 'wk-1')).toBeNull();
+  });
+
+  it('returns null for non-pending status', () => {
+    const store = new SqliteTaskStore(svc.db);
+    const a = store.create({ projectId: 'p1', description: 'A' });
+    store.update(a.id, { status: 'cancelled' });
+    expect(store.claim(a.id, 'wk-1')).toBeNull();
+  });
+
+  it('fires onTaskStatusChange once on successful claim, zero on rejected', () => {
+    const cb = vi.fn();
+    const store = new SqliteTaskStore(svc.db, { onTaskStatusChange: cb });
+    const a = store.create({ projectId: 'p1', description: 'A' });
+    store.claim(a.id, 'wk-1');
+    expect(cb).toHaveBeenCalledOnce();
+    cb.mockReset();
+    store.claim(a.id, 'wk-2'); // rejected
+    expect(cb).not.toHaveBeenCalled();
+  });
+});

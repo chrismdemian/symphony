@@ -90,6 +90,28 @@ export interface TaskStore {
   snapshot(id: string): TaskSnapshot | undefined;
   snapshots(filter?: TaskListFilter): TaskSnapshot[];
   size(): number;
+  /**
+   * Phase 3P audit M1 — atomic "claim this pending task for a worker"
+   * primitive. Returns the updated record on success, or `null` when:
+   *   - the task does not exist
+   *   - the task is not `status === 'pending'` (someone else already
+   *     claimed it, OR it's terminal/cancelled)
+   *
+   * Does NOT validate dependency readiness — that's the caller's
+   * responsibility before calling `claim`. The atomicity guarantee is
+   * solely on the `pending → in_progress` transition + workerId stamp,
+   * which protects against concurrent `spawn_worker(task_id=X)` racing
+   * to spawn parallel worktrees against the same task (see audit M1).
+   *
+   * Fires `onTaskStatusChange` exactly once on success (same as a
+   * regular `update({status: 'in_progress'})`). Does NOT fire on the
+   * null-return path (no transition happened).
+   *
+   * SQL impl uses `UPDATE ... WHERE id=? AND status='pending' RETURNING *`
+   * for true atomicity; in-memory impl runs in one JS turn so the
+   * check-then-set is naturally atomic.
+   */
+  claim(taskId: string, workerId: string): TaskRecord | null;
 }
 
 /** State machine — `Set` per origin status of valid target statuses. */

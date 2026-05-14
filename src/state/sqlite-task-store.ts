@@ -79,6 +79,11 @@ export class SqliteTaskStore implements TaskStore {
     listAll: Statement;
     updateStatusAndNotes: Statement;
     nextSeq: Statement;
+    /**
+     * Phase 3P audit M1 — atomic claim. `WHERE status='pending'` is the
+     * guard: two concurrent callers race here, only the first wins.
+     */
+    claim: Statement;
   };
   private readonly now: () => number;
   private readonly genId: () => string;
@@ -124,6 +129,13 @@ export class SqliteTaskStore implements TaskStore {
       nextSeq: db.prepare(
         `SELECT COALESCE(MAX(insertion_seq), 0) + 1 AS next FROM tasks`,
       ),
+      claim: db.prepare(
+        `UPDATE tasks SET
+           status = 'in_progress',
+           worker_id = @worker_id,
+           updated_at = @updated_at
+         WHERE id = @id AND status = 'pending'`,
+      ),
     };
   }
 
@@ -134,33 +146,20 @@ export class SqliteTaskStore implements TaskStore {
       : typeof filter.status === 'string'
         ? new Set<TaskStatus>([filter.status])
         : null;
-    // Phase 3P: when `readyOnly` is set, decode EVERY non-corrupt row
-    // into a record up-front so `isTaskReady` can resolve cross-project
-    // deps. Without the full set, a dep that lives in another project
-    // is invisible and the gate misfires.
-    const allDecoded: TaskRecord[] = [];
-    if (filter.readyOnly === true) {
-      for (const row of rows) {
-        try {
-          allDecoded.push(rowToRecord(row));
-        } catch (err) {
-          if (err instanceof CorruptRecordError) {
-            this.onCorruptRow(err);
-            continue;
-          }
-          throw err;
-        }
-      }
-    }
-    const out: TaskRecord[] = [];
+    // Phase 3P audit M3 — decode EVERY non-corrupt row up-front (always,
+    // not just when readyOnly is set), index by id, then iterate the
+    // pre-decoded set for the filtered output. This eliminates the
+    // double-decode + double-onCorruptRow report on the readyOnly path
+    // (the prior implementation decoded every row twice when readyOnly
+    // was true). The cost (one extra Map lookup per kept row) is
+    // negligible vs the JSON parse it replaces.
+    const allById = new Map<string, TaskRecord>();
+    const decodeOrder: string[] = [];
     for (const row of rows) {
-      if (filter.projectId !== undefined && row.project_id !== filter.projectId) continue;
-      if (statusSet !== null && !statusSet.has(row.status)) continue;
-      // Phase 2B.1 audit M5: one corrupt JSON row must not kill the batch.
-      // Skip + report; callers see a consistent list minus the bad rows.
-      let record: TaskRecord;
       try {
-        record = rowToRecord(row);
+        const record = rowToRecord(row);
+        allById.set(row.id, record);
+        decodeOrder.push(row.id);
       } catch (err) {
         if (err instanceof CorruptRecordError) {
           this.onCorruptRow(err);
@@ -168,6 +167,16 @@ export class SqliteTaskStore implements TaskStore {
         }
         throw err;
       }
+    }
+    const allDecoded =
+      filter.readyOnly === true
+        ? decodeOrder.map((id) => allById.get(id)!)
+        : [];
+    const out: TaskRecord[] = [];
+    for (const id of decodeOrder) {
+      const record = allById.get(id)!;
+      if (filter.projectId !== undefined && record.projectId !== filter.projectId) continue;
+      if (statusSet !== null && !statusSet.has(record.status)) continue;
       if (filter.readyOnly === true && !isTaskReady(record, allDecoded)) continue;
       out.push(record);
     }
@@ -268,6 +277,38 @@ export class SqliteTaskStore implements TaskStore {
         this.onTaskStatusChange(toTaskSnapshot({ ...record, notes: record.notes.slice() }));
       } catch {
         // downstream consumer must not poison the update path
+      }
+    }
+    return record;
+  }
+
+  /**
+   * Phase 3P audit M1 — atomic claim. The SQL `UPDATE ... WHERE id=?
+   * AND status='pending'` guarantees only the FIRST concurrent caller
+   * wins; subsequent attempts see `changes === 0` and return null.
+   * Two concurrent `spawn_worker(task_id=X)` callers can't both claim
+   * the same task.
+   */
+  claim(taskId: string, workerId: string): TaskRecord | null {
+    const iso = new Date(this.now()).toISOString();
+    const result = this.stmts.claim.run({
+      id: taskId,
+      worker_id: workerId,
+      updated_at: iso,
+    });
+    if (result.changes === 0) return null;
+    const record = this.get(taskId);
+    if (record === undefined) {
+      // Defensive: row vanished between UPDATE and SELECT (shouldn't
+      // happen under SQLite's WAL — concurrent reads see post-commit
+      // state). Treat as a failed claim.
+      return null;
+    }
+    if (this.onTaskStatusChange !== undefined) {
+      try {
+        this.onTaskStatusChange(toTaskSnapshot({ ...record, notes: record.notes.slice() }));
+      } catch {
+        // downstream consumer must not poison the claim path
       }
     }
     return record;

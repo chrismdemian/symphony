@@ -147,3 +147,84 @@ describe('TaskRegistry — onTaskStatusChange', () => {
     expect(cb).not.toHaveBeenCalled();
   });
 });
+
+describe('TaskRegistry — claim (3P audit M1)', () => {
+  it('claims a pending task → returns the updated record', () => {
+    const r = new TaskRegistry({ now: () => Date.parse(ISO) });
+    const a = r.create({ projectId: 'p1', description: 'A' });
+    const claimed = r.claim(a.id, 'wk-1');
+    expect(claimed).not.toBeNull();
+    expect(claimed?.status).toBe('in_progress');
+    expect(claimed?.workerId).toBe('wk-1');
+  });
+
+  it('returns null on second concurrent claim of the same task', () => {
+    const r = new TaskRegistry({ now: () => Date.parse(ISO) });
+    const a = r.create({ projectId: 'p1', description: 'A' });
+    const first = r.claim(a.id, 'wk-1');
+    expect(first).not.toBeNull();
+    const second = r.claim(a.id, 'wk-2');
+    expect(second).toBeNull();
+    // The first claimer's workerId is preserved.
+    expect(r.get(a.id)?.workerId).toBe('wk-1');
+  });
+
+  it('returns null for unknown task id', () => {
+    const r = new TaskRegistry();
+    expect(r.claim('tk-ghost', 'wk-1')).toBeNull();
+  });
+
+  it('returns null when task is not pending (in_progress / completed / failed / cancelled)', () => {
+    const r = new TaskRegistry({ now: () => Date.parse(ISO) });
+    const a = r.create({ projectId: 'p1', description: 'A' });
+    r.update(a.id, { status: 'in_progress' });
+    expect(r.claim(a.id, 'wk-1')).toBeNull();
+    r.update(a.id, { status: 'completed' });
+    expect(r.claim(a.id, 'wk-2')).toBeNull();
+  });
+
+  it('fires onTaskStatusChange exactly once on successful claim', () => {
+    const cb = vi.fn();
+    const r = new TaskRegistry({ now: () => Date.parse(ISO), onTaskStatusChange: cb });
+    const a = r.create({ projectId: 'p1', description: 'A' });
+    r.claim(a.id, 'wk-1');
+    expect(cb).toHaveBeenCalledOnce();
+    expect(cb.mock.calls[0]?.[0]).toMatchObject({ id: a.id, status: 'in_progress' });
+  });
+
+  it('does NOT fire onTaskStatusChange when the claim is rejected', () => {
+    const cb = vi.fn();
+    const r = new TaskRegistry({ now: () => Date.parse(ISO), onTaskStatusChange: cb });
+    const a = r.create({ projectId: 'p1', description: 'A' });
+    r.claim(a.id, 'wk-1');
+    cb.mockReset();
+    r.claim(a.id, 'wk-2'); // rejected
+    expect(cb).not.toHaveBeenCalled();
+  });
+});
+
+describe('TaskRegistry — list() defensive copies (3P audit M2)', () => {
+  it('returns records that are isolated from subsequent in-place mutations', () => {
+    const r = new TaskRegistry({ now: () => Date.parse(ISO) });
+    const a = r.create({ projectId: 'p1', description: 'A' });
+    const snapshot = r.list();
+    const recordCopy = snapshot.find((t) => t.id === a.id)!;
+    expect(recordCopy.status).toBe('pending');
+    // Mutate via update — the held copy should NOT change.
+    r.update(a.id, { status: 'in_progress' });
+    expect(recordCopy.status).toBe('pending');
+    // Fresh list shows the mutation.
+    expect(r.list().find((t) => t.id === a.id)?.status).toBe('in_progress');
+  });
+
+  it('isolates notes array mutations too', () => {
+    const r = new TaskRegistry({ now: () => Date.parse(ISO) });
+    const a = r.create({ projectId: 'p1', description: 'A' });
+    r.update(a.id, { notes: 'first note' });
+    const held = r.list().find((t) => t.id === a.id)!;
+    expect(held.notes).toHaveLength(1);
+    r.update(a.id, { notes: 'second note' });
+    expect(held.notes).toHaveLength(1); // copy is frozen at list-time
+    expect(r.list().find((t) => t.id === a.id)?.notes).toHaveLength(2);
+  });
+});
