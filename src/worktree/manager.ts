@@ -32,6 +32,18 @@ const execFileAsync = promisify(execFile);
 
 const DEFAULT_BRANCH_PREFIX = 'symphony';
 
+/**
+ * Phase 3Q — outcome of `WorktreeManager.removeAllForProject`. `removed`
+ * lists worktrees that `git worktree remove` succeeded on; `skipped`
+ * carries per-tree errors (e.g. a worker still locking the directory on
+ * Win32) so the caller can surface them to the user without aborting
+ * the whole sweep.
+ */
+export interface RemoveAllForProjectResult {
+  readonly removed: readonly string[];
+  readonly skipped: ReadonlyArray<{ readonly path: string; readonly reason: string }>;
+}
+
 export interface WorktreeManagerEvents {
   /** Fired inside the project lock at the start of `createUnlocked`. */
   onCreateStart?: (info: { workerId: string; projectPath: string }) => void;
@@ -307,6 +319,69 @@ export class WorktreeManager {
       if (status.hasChanges) return false;
       await this.removeUnlocked(worktreePath, projectPath, options);
       return true;
+    });
+  }
+
+  /**
+   * Phase 3Q — remove every Symphony-managed worktree under
+   * `<projectPath>/.symphony/worktrees/`. Used by `symphony reset` to
+   * wipe per-project state in one pass.
+   *
+   * Holds the per-project lock for the WHOLE pass (matches the
+   * `removeIfClean` precedent) so a concurrent `create` can't materialize
+   * a new worktree mid-sweep.
+   *
+   * Path safety mirrors 1C: the porcelain walk filters to paths under
+   * `managedRoot` BEFORE calling `removeUnlocked`. `removeUnlocked` then
+   * runs `assertWorktreeRemovable` as defense-in-depth (rejects anything
+   * not classified as a linked worktree by `git worktree list --porcelain`).
+   *
+   * Per-tree errors are captured in `skipped[]`; the loop keeps going so
+   * one bad worktree doesn't strand the rest. `removed[]` are the paths
+   * that actually got `git worktree remove`d.
+   */
+  async removeAllForProject(
+    projectPath: string,
+    options: RemoveWorktreeOptions = {},
+  ): Promise<RemoveAllForProjectResult> {
+    return this.locks.withLock(projectPath, async () => {
+      const { stdout } = await execFileAsync('git', ['worktree', 'list', '--porcelain'], {
+        cwd: projectPath,
+      });
+      const managedRoot = path.resolve(path.join(projectPath, '.symphony', 'worktrees'));
+      const targets: string[] = [];
+      for (const block of stdout.split(/\r?\n\r?\n/)) {
+        const lines = block.split(/\r?\n/).filter((l) => l.length > 0);
+        let wtPath: string | undefined;
+        for (const line of lines) {
+          if (line.startsWith('worktree ')) {
+            wtPath = line.substring('worktree '.length);
+            break;
+          }
+        }
+        if (wtPath === undefined) continue;
+        const resolved = path.resolve(wtPath);
+        // Only paths strictly UNDER managedRoot. The managedRoot itself
+        // is not a worktree (it's just a directory), and the bare project
+        // root would resolve outside this prefix.
+        if (resolved.startsWith(managedRoot + path.sep)) {
+          targets.push(resolved);
+        }
+      }
+      const removed: string[] = [];
+      const skipped: Array<{ path: string; reason: string }> = [];
+      for (const target of targets) {
+        try {
+          await this.removeUnlocked(target, projectPath, options);
+          removed.push(target);
+        } catch (err) {
+          skipped.push({
+            path: target,
+            reason: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      return { removed, skipped };
     });
   }
 
