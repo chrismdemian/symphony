@@ -6,7 +6,7 @@ import { projectRegistryFromMap } from '../projects/registry.js';
 import type { ProjectConfigInput, ProjectRecord, ProjectStore } from '../projects/types.js';
 import { QuestionRegistry, type QuestionStore } from '../state/question-registry.js';
 import { TaskRegistry } from '../state/task-registry.js';
-import type { TaskStore } from '../state/types.js';
+import type { TaskSnapshot, TaskStore } from '../state/types.js';
 import type { SymphonyDatabase } from '../state/db.js';
 import { SqliteProjectStore } from '../state/sqlite-project-store.js';
 import { SqliteTaskStore } from '../state/sqlite-task-store.js';
@@ -71,11 +71,17 @@ import type {
 } from './completion-summarizer-types.js';
 import { createAutoMergeBroker } from './auto-merge-broker.js';
 import { createAutoMergeDispatcher } from './auto-merge-dispatcher.js';
+import { createTaskReadyBroker } from './task-ready-broker.js';
+import { createTaskReadyDispatcher } from './task-ready-dispatcher.js';
 import * as gitOps from './git-ops.js';
 import type {
   AutoMergeBroker,
   AutoMergeDispatcherHandle,
 } from './auto-merge-types.js';
+import type {
+  TaskReadyBroker,
+  TaskReadyDispatcherHandle,
+} from './task-ready-types.js';
 
 export interface OrchestratorServerOptions {
   transport?: Transport;
@@ -160,6 +166,14 @@ export interface OrchestratorServerOptions {
    * Phase 3O.1 — override the auto-merge dispatcher. Test seam.
    */
   autoMergeDispatcher?: AutoMergeDispatcherHandle;
+  /**
+   * Phase 3P — override the task-ready broker. Test seam.
+   */
+  taskReadyBroker?: TaskReadyBroker;
+  /**
+   * Phase 3P — override the task-ready dispatcher. Test seam.
+   */
+  taskReadyDispatcher?: TaskReadyDispatcherHandle;
 }
 
 export interface RpcOptions {
@@ -199,6 +213,10 @@ export interface OrchestratorServerHandle {
   autoMergeBroker: AutoMergeBroker;
   /** Phase 3O.1 — exposed for tests that need to wait on shutdown drain. */
   autoMergeDispatcher: AutoMergeDispatcherHandle;
+  /** Phase 3P — exposed for tests that subscribe to task-ready events. */
+  taskReadyBroker: TaskReadyBroker;
+  /** Phase 3P — exposed for tests that need to wait on shutdown drain. */
+  taskReadyDispatcher: TaskReadyDispatcherHandle;
   defaultProjectPath: string;
   resolveProjectPath: (project?: string) => string;
   setContext: (partial: Partial<DispatchContext>) => void;
@@ -260,11 +278,27 @@ export async function startOrchestratorServer(
       return store;
     })();
 
+  // Phase 3P — holder pattern for the task-ready dispatcher, mirroring
+  // 3O.1's autoMergeDispatcherRef. The taskStore needs an
+  // `onTaskStatusChange` callback AT CONSTRUCTION, but the dispatcher
+  // needs the taskStore as a dep. We construct the holder, point the
+  // store's callback at it, then fill it immediately after the
+  // dispatcher is created. By the time any status change actually
+  // fires (via a tool dispatch), the ref is live.
+  const taskReadyDispatcherRef: { current?: TaskReadyDispatcherHandle } = {};
+  const taskReadyOnTaskStatusChange = (snapshot: TaskSnapshot): void => {
+    taskReadyDispatcherRef.current?.onTaskStatusChange(snapshot);
+  };
   const taskStore: TaskStore =
     options.taskStore ??
     (options.database
-      ? new SqliteTaskStore(options.database.db)
-      : new TaskRegistry({ projectStore }));
+      ? new SqliteTaskStore(options.database.db, {
+          onTaskStatusChange: taskReadyOnTaskStatusChange,
+        })
+      : new TaskRegistry({
+          projectStore,
+          onTaskStatusChange: taskReadyOnTaskStatusChange,
+        }));
   // Phase 3H.3 — instantiate the notifications dispatcher BEFORE the
   // question store so its `onQuestionEnqueued` hook is wired at the
   // store's construction. The dispatcher reads `loadConfig` fresh per
@@ -390,6 +424,28 @@ export async function startOrchestratorServer(
       },
     });
   autoMergeDispatcherRef.current = autoMergeDispatcher;
+
+  // Phase 3P — task-ready broker + dispatcher. Construct AFTER
+  // `taskStore` (the dispatcher needs `.list` + `.snapshot`) and AFTER
+  // `projectStore` (the resolver consults it). Fills
+  // `taskReadyDispatcherRef` so the store's `onTaskStatusChange`
+  // closure resolves to a live dispatcher by the time any update
+  // actually fires. Test overrides via
+  // `options.taskReadyBroker` / `options.taskReadyDispatcher`.
+  const taskReadyBroker: TaskReadyBroker =
+    options.taskReadyBroker ?? createTaskReadyBroker();
+  const taskReadyDispatcher: TaskReadyDispatcherHandle =
+    options.taskReadyDispatcher ??
+    createTaskReadyDispatcher({
+      taskStore,
+      broker: taskReadyBroker,
+      getProjectName: (projectId) => {
+        if (projectId.length === 0) return fallbackProjectLabel;
+        const stored = projectStore.get(projectId);
+        return stored?.name ?? fallbackProjectLabel;
+      },
+    });
+  taskReadyDispatcherRef.current = taskReadyDispatcher;
 
   // Phase 2B.1 m6: prune `default-N` orphan rows that have no live
   // task / worker references BEFORE we synthesize a new default. Stale
@@ -518,6 +574,10 @@ export async function startOrchestratorServer(
       lifecycle: workerLifecycle,
       resolveProjectPath: spawnResolve,
       projectStore,
+      // Phase 3P — enables the optional task_id auto-link path:
+      // spawn_worker validates task readiness, atomically flips
+      // pending → in_progress, and stamps task.workerId post-spawn.
+      taskStore,
     }),
   );
   registry.register(
@@ -637,6 +697,8 @@ export async function startOrchestratorServer(
       completionsBroker,
       // Phase 3O.1 — accept `subscribe('auto-merge.events')` from the TUI.
       autoMergeBroker,
+      // Phase 3P — accept `subscribe('task-ready.events')` from the TUI.
+      taskReadyBroker,
       ...(rpcConfig.host !== undefined ? { host: rpcConfig.host } : {}),
       ...(rpcConfig.port !== undefined ? { port: rpcConfig.port } : {}),
     });
@@ -676,6 +738,7 @@ export async function startOrchestratorServer(
       eventBroker.clear();
       completionsBroker.clear();
       autoMergeBroker.clear();
+      taskReadyBroker.clear();
       if (rpcHandle.tokenFilePath !== undefined) {
         await deleteRpcDescriptor(rpcHandle.tokenFilePath).catch(() => {});
       }
@@ -687,6 +750,12 @@ export async function startOrchestratorServer(
     // git children. The summarizer is faster (single one-shot Claude
     // call) so it can drain second.
     await autoMergeDispatcher.shutdown().catch(() => {});
+    // Phase 3P — drain task-ready BEFORE the lifecycle's SIGTERM kill
+    // window. A worker exit during graceful drain can update a task's
+    // status to completed via Maestro's late update_task; that would
+    // otherwise fan out a chat row to a dying TUI. shutdown() is sync
+    // today but the contract is async to match AutoMergeDispatcher.
+    await taskReadyDispatcher.shutdown().catch(() => {});
     // Phase 3K — drain summarizer in-flights BEFORE the lifecycle's
     // SIGTERM kill window. Workers that fail-class-exit during the kill
     // would otherwise re-enter `onWorkerExit` post-disposed and (with
@@ -723,6 +792,8 @@ export async function startOrchestratorServer(
     completionSummarizer,
     autoMergeBroker,
     autoMergeDispatcher,
+    taskReadyBroker,
+    taskReadyDispatcher,
     defaultProjectPath,
     resolveProjectPath,
     setContext: (partial) => {

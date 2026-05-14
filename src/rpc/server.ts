@@ -6,6 +6,7 @@ import { UnauthorizedError, validateAuthHeader, validateQueryToken } from './aut
 import type { WorkerEventBroker } from './event-broker.js';
 import type { CompletionsBroker } from '../orchestrator/completion-summarizer-types.js';
 import type { AutoMergeBroker } from '../orchestrator/auto-merge-types.js';
+import type { TaskReadyBroker } from '../orchestrator/task-ready-types.js';
 import { MAX_FRAME_BYTES } from './protocol.js';
 
 /**
@@ -56,6 +57,11 @@ export interface RpcServerOptions {
    * dispatchers accept `subscribe('auto-merge.events')`.
    */
   readonly autoMergeBroker?: AutoMergeBroker;
+  /**
+   * Phase 3P — global task-ready broker. When supplied, per-connection
+   * dispatchers accept `subscribe('task-ready.events')`.
+   */
+  readonly taskReadyBroker?: TaskReadyBroker;
 }
 
 export interface RpcServerHandle {
@@ -147,6 +153,9 @@ export async function startRpcServer(opts: RpcServerOptions): Promise<RpcServerH
         : {}),
       ...(opts.autoMergeBroker !== undefined
         ? { autoMergeBroker: opts.autoMergeBroker }
+        : {}),
+      ...(opts.taskReadyBroker !== undefined
+        ? { taskReadyBroker: opts.taskReadyBroker }
         : {}),
     });
     ws.on('message', (data) => {

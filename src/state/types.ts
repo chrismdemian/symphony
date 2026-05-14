@@ -71,6 +71,15 @@ export interface TaskPatch {
 export interface TaskListFilter {
   readonly projectId?: string;
   readonly status?: TaskStatus | readonly TaskStatus[];
+  /**
+   * Phase 3P — when `true`, restrict to tasks with `status === 'pending'`
+   * AND every entry in `dependsOn` resolving to a task whose status is
+   * `'completed'`. Stacks with `status`/`projectId` filters; readiness
+   * is evaluated against the FULL task set (so a cross-project dep
+   * still gates correctly even if the projectId filter would have
+   * hidden the dep itself).
+   */
+  readonly readyOnly?: boolean;
 }
 
 export interface TaskStore {
@@ -81,6 +90,28 @@ export interface TaskStore {
   snapshot(id: string): TaskSnapshot | undefined;
   snapshots(filter?: TaskListFilter): TaskSnapshot[];
   size(): number;
+  /**
+   * Phase 3P audit M1 — atomic "claim this pending task for a worker"
+   * primitive. Returns the updated record on success, or `null` when:
+   *   - the task does not exist
+   *   - the task is not `status === 'pending'` (someone else already
+   *     claimed it, OR it's terminal/cancelled)
+   *
+   * Does NOT validate dependency readiness — that's the caller's
+   * responsibility before calling `claim`. The atomicity guarantee is
+   * solely on the `pending → in_progress` transition + workerId stamp,
+   * which protects against concurrent `spawn_worker(task_id=X)` racing
+   * to spawn parallel worktrees against the same task (see audit M1).
+   *
+   * Fires `onTaskStatusChange` exactly once on success (same as a
+   * regular `update({status: 'in_progress'})`). Does NOT fire on the
+   * null-return path (no transition happened).
+   *
+   * SQL impl uses `UPDATE ... WHERE id=? AND status='pending' RETURNING *`
+   * for true atomicity; in-memory impl runs in one JS turn so the
+   * check-then-set is naturally atomic.
+   */
+  claim(taskId: string, workerId: string): TaskRecord | null;
 }
 
 /** State machine — `Set` per origin status of valid target statuses. */
@@ -132,5 +163,45 @@ export class UnknownTaskError extends Error {
     super(`TaskRegistry: unknown task '${taskId}'`);
     this.name = 'UnknownTaskError';
     this.taskId = taskId;
+  }
+}
+
+/**
+ * Phase 3P — thrown by `spawn_worker` when `task_id` is set but the
+ * task's `dependsOn` chain is unmet. `code` is the typed discriminant
+ * the chat row uses to render a specific message; `blockedBy` lists
+ * each unmet dep with its current status (`null` for unknown id).
+ */
+export interface TaskBlocker {
+  readonly id: string;
+  readonly status: TaskStatus | null;
+}
+
+export class TaskNotReadyError extends Error {
+  readonly code = 'task-not-ready';
+  readonly taskId: string;
+  readonly blockedBy: readonly TaskBlocker[];
+  constructor(taskId: string, blockedBy: readonly TaskBlocker[]) {
+    const ids = blockedBy.map((b) => b.id).join(', ');
+    super(`Task '${taskId}' is not ready; blocked by ${ids}`);
+    this.name = 'TaskNotReadyError';
+    this.taskId = taskId;
+    this.blockedBy = blockedBy;
+  }
+}
+
+/**
+ * Phase 3P — defensive cycle detection error. Never produced by the
+ * current API (create_task validates deps exist; update_task does not
+ * mutate dependsOn) but surfaced by `/deps` when hand-edited SQLite
+ * or a future API mutation path introduces a back-edge.
+ */
+export class TaskCycleError extends Error {
+  readonly code = 'task-cycle';
+  readonly path: readonly string[];
+  constructor(path: readonly string[]) {
+    super(`Task dependency cycle detected: ${path.join(' → ')}`);
+    this.name = 'TaskCycleError';
+    this.path = path;
   }
 }

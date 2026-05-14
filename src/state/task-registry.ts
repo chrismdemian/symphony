@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { ProjectStore } from '../projects/types.js';
+import { isTaskReady } from '../orchestrator/task-deps.js';
 import {
   canTransition,
   InvalidTaskTransitionError,
@@ -25,6 +26,21 @@ export interface TaskRegistryOptions {
    * `UnknownProjectIdError` instead of accepting any string. Phase 2B.1 m4.
    */
   readonly projectStore?: ProjectStore;
+  /**
+   * Phase 3P — fired AFTER `update()` writes a status transition.
+   * Receives a frozen `TaskSnapshot` (readonly fields, defensive copy)
+   * — NOT the live mutable record — so the dispatcher and any other
+   * downstream consumer see the exact state at fire time even if
+   * the record is mutated again before async work resumes. Mirrors
+   * the immutability contract of `AutoMergeEvent` (3O.1).
+   *
+   * ONLY fired when `patch.status` causes an actual status change;
+   * idempotent same-status updates (`canTransition(x, x) === true`) do
+   * not fire. Non-status patches (notes, workerId, result) do not
+   * fire either. Errors thrown by the callback are swallowed (mirrors
+   * `WorkerLifecycleOptions.onWorkerStatusChange`).
+   */
+  readonly onTaskStatusChange?: (snapshot: TaskSnapshot) => void;
 }
 
 function defaultIdGenerator(): string {
@@ -41,23 +57,35 @@ export class TaskRegistry implements TaskStore {
   private readonly now: () => number;
   private readonly genId: () => string;
   private readonly projectStore: ProjectStore | undefined;
+  private readonly onTaskStatusChange: ((snapshot: TaskSnapshot) => void) | undefined;
 
   constructor(opts: TaskRegistryOptions = {}) {
     this.now = opts.now ?? Date.now;
     this.genId = opts.idGenerator ?? defaultIdGenerator;
     this.projectStore = opts.projectStore;
+    this.onTaskStatusChange = opts.onTaskStatusChange;
   }
 
   list(filter: TaskListFilter = {}): TaskRecord[] {
-    const records = Array.from(this.records.values());
+    // Phase 3P audit M2 — return defensive shallow copies so callers
+    // (esp. TaskReadyDispatcher) hold a snapshot of the post-update
+    // state at list time, immune to subsequent in-place mutations of
+    // the live records. SqliteTaskStore.list() naturally returns fresh
+    // records (each row re-decoded from SQL); this brings the in-memory
+    // path to parity.
+    const allRecords = Array.from(this.records.values()).map((r) => cloneRecord(r));
     const statusSet = Array.isArray(filter.status)
       ? new Set(filter.status as readonly TaskStatus[])
       : typeof filter.status === 'string'
         ? new Set<TaskStatus>([filter.status])
         : null;
-    return records.filter((r) => {
+    return allRecords.filter((r) => {
       if (filter.projectId !== undefined && r.projectId !== filter.projectId) return false;
       if (statusSet !== null && !statusSet.has(r.status)) return false;
+      // Phase 3P: readiness is evaluated against the FULL record set
+      // so a cross-project dep gates correctly even when projectId
+      // filter would hide the dep itself.
+      if (filter.readyOnly === true && !isTaskReady(r, allRecords)) return false;
       return true;
     });
   }
@@ -108,6 +136,7 @@ export class TaskRegistry implements TaskStore {
     const record = this.records.get(id);
     if (!record) throw new UnknownTaskError(id);
     const iso = new Date(this.now()).toISOString();
+    const priorStatus = record.status;
 
     if (patch.status !== undefined) {
       if (!canTransition(record.status, patch.status)) {
@@ -136,6 +165,45 @@ export class TaskRegistry implements TaskStore {
       record.result = patch.result;
     }
     record.updatedAt = iso;
+    // Phase 3P — fire ONLY on real status transitions. Same-status
+    // idempotent updates (canTransition(x, x) === true) do not fire;
+    // notes/workerId/result updates do not fire. Errors swallowed.
+    // Pass a frozen snapshot so consumers see fire-time state even
+    // if the record is mutated again before async work resumes.
+    if (
+      this.onTaskStatusChange !== undefined &&
+      patch.status !== undefined &&
+      patch.status !== priorStatus
+    ) {
+      try {
+        this.onTaskStatusChange(toTaskSnapshot(record));
+      } catch {
+        // downstream consumer must not poison the update path
+      }
+    }
+    return record;
+  }
+
+  /**
+   * Phase 3P audit M1 — atomic claim. See `TaskStore.claim` for contract.
+   * In-memory single-turn JS execution makes the check-then-set
+   * naturally atomic. Fires `onTaskStatusChange` on success.
+   */
+  claim(taskId: string, workerId: string): TaskRecord | null {
+    const record = this.records.get(taskId);
+    if (record === undefined) return null;
+    if (record.status !== 'pending') return null;
+    const iso = new Date(this.now()).toISOString();
+    record.status = 'in_progress';
+    record.workerId = workerId;
+    record.updatedAt = iso;
+    if (this.onTaskStatusChange !== undefined) {
+      try {
+        this.onTaskStatusChange(toTaskSnapshot(record));
+      } catch {
+        // downstream consumer must not poison the claim path
+      }
+    }
     return record;
   }
 
@@ -159,6 +227,29 @@ export class TaskRegistry implements TaskStore {
     }
     throw new Error('TaskRegistry.create: id generator produced 8 collisions in a row');
   }
+}
+
+/**
+ * Phase 3P audit M2 — shallow clone for `list()` defensive copy. The
+ * `notes` array is sliced to prevent later push() leaks; `dependsOn`
+ * is `readonly string[]` so a slice would be redundant but we copy
+ * anyway to make the freeze contract explicit.
+ */
+function cloneRecord(r: TaskRecord): TaskRecord {
+  return {
+    id: r.id,
+    projectId: r.projectId,
+    description: r.description,
+    status: r.status,
+    priority: r.priority,
+    dependsOn: r.dependsOn.slice(),
+    notes: r.notes.slice(),
+    createdAt: r.createdAt,
+    updatedAt: r.updatedAt,
+    ...(r.workerId !== undefined ? { workerId: r.workerId } : {}),
+    ...(r.result !== undefined ? { result: r.result } : {}),
+    ...(r.completedAt !== undefined ? { completedAt: r.completedAt } : {}),
+  };
 }
 
 export function toTaskSnapshot(r: TaskRecord): TaskSnapshot {

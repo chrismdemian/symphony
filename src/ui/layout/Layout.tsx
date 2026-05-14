@@ -14,6 +14,7 @@ import { HelpOverlay } from '../panels/help/HelpOverlay.js';
 import { SettingsPanel } from '../panels/settings/SettingsPanel.js';
 import { KeybindEditorPopup } from '../panels/settings/KeybindEditorPopup.js';
 import { StatsPanel } from '../panels/stats/StatsPanel.js';
+import { DepsPanel } from '../panels/deps/DepsPanel.js';
 import { useFocus, type FocusContext } from '../focus/focus.js';
 import { KeybindBar } from './KeybindBar.js';
 import { StatusBar } from './StatusBar.js';
@@ -160,6 +161,10 @@ function renderPopup(
       // Phase 3N.3 — `/stats` opens this read-only popup with three
       // sections: session totals, by-project rollup, recent workers.
       return <StatsPanel rpc={props.rpc} />;
+    case 'deps':
+      // Phase 3P — `/deps` opens the task dep-graph popup (graph-only
+      // filter: tasks with at least one edge).
+      return <DepsPanel rpc={props.rpc} />;
     case 'keybind-list':
     case 'keybind-capture':
       // Phase 3H.4 — both scopes route to the same component instance

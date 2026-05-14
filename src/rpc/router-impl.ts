@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { extractGraphEdges, type TaskGraph } from '../orchestrator/task-deps.js';
 import type { ProjectStore, ProjectSnapshot } from '../projects/types.js';
 import type {
   CreateTaskInput,
@@ -116,6 +117,12 @@ export interface ProjectsRegisterArgs {
 export interface TasksListArgs {
   readonly projectId?: string;
   readonly status?: TaskListFilter['status'];
+  /**
+   * Phase 3P — restrict to ready tasks (status='pending' AND every
+   * dep completed). Evaluated against the full task set so cross-project
+   * deps gate correctly. See `TaskListFilter.readyOnly` for semantics.
+   */
+  readonly readyOnly?: boolean;
 }
 
 export interface TasksUpdateArgs {
@@ -361,6 +368,16 @@ export function createSymphonyRouter(deps: RouterDeps) {
         throw new Error(`tasks.update: snapshot missing for '${record.id}' after update`);
       }
       return snap;
+    },
+    /**
+     * Phase 3P — full dep-graph snapshot for the TUI's `/deps` panel.
+     * Returns nodes (filtered to tasks with at least one edge per
+     * `extractGraphEdges`), edges, and any detected cycles (defensive —
+     * the current API can't produce cycles, but a hand-edited DB might).
+     */
+    graph(): TaskGraph {
+      const snapshots = taskStore.snapshots();
+      return extractGraphEdges(snapshots);
     },
   });
 
@@ -887,6 +904,7 @@ function coerceTaskFilter(args: TasksListArgs | undefined): TaskListFilter {
   const filter: TaskListFilter = {
     ...(args.projectId !== undefined ? { projectId: args.projectId } : {}),
     ...(args.status !== undefined ? { status: args.status } : {}),
+    ...(args.readyOnly !== undefined ? { readyOnly: args.readyOnly } : {}),
   };
   return filter;
 }

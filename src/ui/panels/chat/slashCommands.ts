@@ -70,6 +70,12 @@ export interface SlashHandlers {
    * 3N transition; mirrors the openSettings / toggleAway pattern.
    */
   readonly openStats?: () => void;
+  /**
+   * Phase 3P — `/deps` opens the dep-graph popup. Optional so tests
+   * building SlashHandlers without it keep working. When omitted,
+   * `/deps` is NOT registered (surfaces as "Unknown command: deps").
+   */
+  readonly openDeps?: () => void;
 }
 
 export interface SlashTable {
@@ -91,6 +97,10 @@ export function buildSlashTable(handlers: SlashHandlers): SlashTable {
   if (handlers.openStats !== undefined) {
     const open = handlers.openStats;
     table['stats'] = () => open();
+  }
+  if (handlers.openDeps !== undefined) {
+    const open = handlers.openDeps;
+    table['deps'] = () => open();
   }
   return table;
 }
