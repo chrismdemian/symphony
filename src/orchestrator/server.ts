@@ -547,6 +547,12 @@ export async function startOrchestratorServer(
     }
     return globalMaxWorkers;
   };
+  // Phase 3S — default autonomy tier for spawn-time fallback. Reads
+  // from the live dispatch context cursor so a user's Ctrl+Y mid-session
+  // immediately affects subsequent spawns. The context.tier value is
+  // kept in sync with `config.autonomyTier` via `setDispatchAutonomyTier`
+  // (called by the runtime.setAutonomyTier RPC).
+  const getDefaultAutonomyTier = (): AutonomyTier => context.tier;
   const workerLifecycle =
     options.workerLifecycle ??
     createWorkerLifecycle({
@@ -555,6 +561,7 @@ export async function startOrchestratorServer(
       worktreeManager,
       getMaxConcurrentWorkers,
       getDefaultModel,
+      getDefaultAutonomyTier,
       resolveProjectPath: (projectId) => {
         if (projectId === null) return '';
         for (const p of projectStore.list()) {

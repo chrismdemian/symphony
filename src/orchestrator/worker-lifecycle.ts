@@ -95,6 +95,20 @@ export interface WorkerLifecycleOptions {
    */
   readonly getDefaultModel?: () => string | undefined;
   /**
+   * Phase 3S — default autonomy tier when `input.autonomyTier === undefined`.
+   * The server wires this to `() => config.autonomyTier` (read fresh per
+   * spawn so user tier flips reflect immediately on new spawns). When
+   * undefined, falls back to Tier 1 (Free reign) — matches pre-3S
+   * behavior for legacy test rigs.
+   *
+   * Per-worker tier is metadata-only in 3S — surfaced in `list_workers`
+   * for Maestro's prompt awareness and as a Tier-3 chip on the worker
+   * row, but NOT enforced at the capability shim (workers don't
+   * dispatch through Maestro's MCP). Phase 7's worker-side MCP layer
+   * wires the architectural enforcement.
+   */
+  readonly getDefaultAutonomyTier?: () => AutonomyTier;
+  /**
    * Phase 3H.3 — fired whenever a worker transitions to a terminal
    * status (`completed` / `failed` / `killed` / `timeout` / `crashed`).
    * The callback receives the record AFTER `registry.markCompleted` has
@@ -140,6 +154,14 @@ export interface PendingSpawnSnapshot {
   readonly featureIntent: string;
   readonly taskDescription: string;
   readonly enqueuedAt: number;
+  /**
+   * Phase 3S — per-worker autonomy tier override for queued spawns.
+   * `undefined` means "use the orchestrator default at spawn time"
+   * (resolved at the actual spawn moment, not enqueue moment, so a
+   * user who flips Ctrl+Y while requests are queued sees the new tier
+   * on drained spawns).
+   */
+  readonly autonomyTier?: AutonomyTier;
 }
 
 /**
@@ -534,7 +556,14 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         role: input.role,
         featureIntent,
         taskDescription: input.taskDescription,
-        autonomyTier: input.autonomyTier ?? 1,
+        // Phase 3S — default at spawn time to the orchestrator's
+        // configured tier (server wires `() => context.tier` so a Ctrl+Y
+        // mid-session flips the default for subsequent spawns). Pre-3S
+        // behavior preserved when `getDefaultAutonomyTier` is undefined:
+        // legacy test rigs and older config-less callers default to
+        // Tier 1.
+        autonomyTier:
+          input.autonomyTier ?? opts.getDefaultAutonomyTier?.() ?? 1,
         dependsOn: input.dependsOn ?? [],
         status: 'spawning',
         createdAt: nowIso(now),
@@ -790,6 +819,13 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
             entry.input.featureIntent ?? deriveFeatureIntent(entry.input.taskDescription),
           taskDescription: entry.input.taskDescription,
           enqueuedAt: entry.enqueuedAt,
+          // Phase 3S — surface the queued spawn's tier so the queue
+          // panel can render a Tier-3 chip. Spread guard: omit when
+          // undefined so the snapshot remains shape-stable for
+          // serialization across the RPC boundary.
+          ...(entry.input.autonomyTier !== undefined
+            ? { autonomyTier: entry.input.autonomyTier }
+            : {}),
         });
       }
     }

@@ -57,6 +57,27 @@ function errorResult(text: string): ToolHandlerResult {
   return { content: [{ type: 'text', text }], isError: true };
 }
 
+/**
+ * Phase 3S — per-worker autonomy tier is NOT enforced here. The
+ * temptation is to peek at `args.worker_id` and substitute the
+ * worker's tier into the DispatchContext for that call — but that's
+ * incoherent for Symphony's architecture:
+ *
+ *   - Workers run as `claude -p` subprocesses that do NOT dispatch
+ *     through this shim (no `--mcp-config` is passed; see
+ *     `src/workers/args.ts`).
+ *   - The `worker_id` arg on Maestro's tools (kill_worker,
+ *     send_to_worker, audit_changes, finalize) names the TARGET of
+ *     Maestro's action, not the CALLER. Flipping Maestro's tier to
+ *     the worker's tier would LOWER Maestro's autonomy when it acts
+ *     on a high-tier worker — the opposite of the intended policy.
+ *
+ * Per-worker tier is therefore METADATA-ONLY in 3S: surfaced in
+ * `list_workers` for Maestro prompt awareness and as a worker-row
+ * chip in the TUI. The real architectural enforcement lands when
+ * Phase 7 plugins introduce worker-side MCP tooling — at that point
+ * the worker's OWN dispatch shim reads from the worker's tier.
+ */
 export function wrapToolHandler<TArgs extends Record<string, unknown>>(
   opts: WrapToolHandlerOptions<TArgs>,
 ): (args: TArgs, signal?: AbortSignal) => Promise<ToolHandlerResult> {

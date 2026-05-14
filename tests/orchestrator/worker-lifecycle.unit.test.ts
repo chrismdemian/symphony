@@ -476,4 +476,114 @@ describe('createWorkerLifecycle', () => {
     expect(snap?.status).toBe('completed');
     expect(snap?.sessionId).toBe('final');
   });
+
+  // Phase 3S — per-worker autonomy override default-resolution.
+
+  it('spawn() uses input.autonomyTier when explicitly provided (3S)', async () => {
+    const registry = new WorkerRegistry();
+    const { mgr: wm } = stubWorkerManager();
+    const { mgr: wt } = stubWorktreeManager();
+    const worker = new ScriptedWorker('wk-t3', emitEvents([]));
+    const stubbed = wm as unknown as { spawn: (cfg: WorkerConfig) => Promise<Worker> };
+    stubbed.spawn = (async () => worker) as unknown as (
+      cfg: WorkerConfig,
+    ) => Promise<Worker>;
+    const lc = createWorkerLifecycle({
+      registry,
+      workerManager: wm,
+      worktreeManager: wt,
+      idGenerator: () => 'wk-t3',
+      // Default-getter returns 2, but explicit input should win.
+      getDefaultAutonomyTier: () => 2,
+    });
+    const record = await lc.spawn({
+      projectPath: '/proj',
+      taskDescription: 'do',
+      role: 'implementer',
+      autonomyTier: 3,
+    });
+    expect(record.autonomyTier).toBe(3);
+  });
+
+  it('spawn() falls back to getDefaultAutonomyTier when input omits it (3S)', async () => {
+    const registry = new WorkerRegistry();
+    const { mgr: wm } = stubWorkerManager();
+    const { mgr: wt } = stubWorktreeManager();
+    const worker = new ScriptedWorker('wk-t2', emitEvents([]));
+    const stubbed = wm as unknown as { spawn: (cfg: WorkerConfig) => Promise<Worker> };
+    stubbed.spawn = (async () => worker) as unknown as (
+      cfg: WorkerConfig,
+    ) => Promise<Worker>;
+    const lc = createWorkerLifecycle({
+      registry,
+      workerManager: wm,
+      worktreeManager: wt,
+      idGenerator: () => 'wk-t2',
+      getDefaultAutonomyTier: () => 2,
+    });
+    const record = await lc.spawn({
+      projectPath: '/proj',
+      taskDescription: 'do',
+      role: 'implementer',
+    });
+    expect(record.autonomyTier).toBe(2);
+  });
+
+  it('spawn() reads getDefaultAutonomyTier fresh per spawn (3S)', async () => {
+    // Simulates Ctrl+Y cycling between spawns: first spawn reads Tier 2,
+    // then the dispatcher cursor flips to Tier 3, second spawn reads it.
+    const registry = new WorkerRegistry();
+    const { mgr: wm } = stubWorkerManager();
+    const { mgr: wt } = stubWorktreeManager();
+    let currentTier: 1 | 2 | 3 = 2;
+    let counter = 0;
+    const stubbed = wm as unknown as { spawn: (cfg: WorkerConfig) => Promise<Worker> };
+    stubbed.spawn = (async () => {
+      counter += 1;
+      return new ScriptedWorker(`wk-tier-${counter}`, emitEvents([]));
+    }) as unknown as (cfg: WorkerConfig) => Promise<Worker>;
+    const lc = createWorkerLifecycle({
+      registry,
+      workerManager: wm,
+      worktreeManager: wt,
+      idGenerator: () => `wk-tier-${counter + 1}`,
+      getDefaultAutonomyTier: () => currentTier,
+    });
+    const first = await lc.spawn({
+      projectPath: '/proj-a',
+      taskDescription: 'first',
+      role: 'implementer',
+    });
+    currentTier = 3;
+    const second = await lc.spawn({
+      projectPath: '/proj-b',
+      taskDescription: 'second',
+      role: 'implementer',
+    });
+    expect(first.autonomyTier).toBe(2);
+    expect(second.autonomyTier).toBe(3);
+  });
+
+  it('spawn() falls back to Tier 1 when getDefaultAutonomyTier is omitted (3S, legacy compat)', async () => {
+    const registry = new WorkerRegistry();
+    const { mgr: wm } = stubWorkerManager();
+    const { mgr: wt } = stubWorktreeManager();
+    const worker = new ScriptedWorker('wk-legacy', emitEvents([]));
+    const stubbed = wm as unknown as { spawn: (cfg: WorkerConfig) => Promise<Worker> };
+    stubbed.spawn = (async () => worker) as unknown as (
+      cfg: WorkerConfig,
+    ) => Promise<Worker>;
+    const lc = createWorkerLifecycle({
+      registry,
+      workerManager: wm,
+      worktreeManager: wt,
+      idGenerator: () => 'wk-legacy',
+    });
+    const record = await lc.spawn({
+      projectPath: '/proj',
+      taskDescription: 'do',
+      role: 'implementer',
+    });
+    expect(record.autonomyTier).toBe(1);
+  });
 });

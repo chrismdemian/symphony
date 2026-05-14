@@ -82,6 +82,16 @@ export function WorkerRow({
       </Box>
       <Text color={theme['text']}>{featureIntentDisplay}</Text>
       <Box flexGrow={1} />
+      {/* Phase 3S — render a small `T3` chip when the worker is at
+          explicit Tier 3 (Confirm). Only Tier-3 to keep the visual
+          uncluttered: pre-3S workers default to Tier 1 in SQL
+          (migration 0003), and Tier 2 is the orchestrator default —
+          surfacing chips on every row would be noise. A Tier-3 chip
+          signals "this worker is configured for Confirm autonomy when
+          Phase 7 enforcement lands." */}
+      {worker.autonomyTier === 3 ? (
+        <Text color={theme['warning']}> T3 </Text>
+      ) : null}
       {modelLabel !== '' ? (
         <Text color={theme['textMuted']}> {modelLabel} </Text>
       ) : null}
