@@ -1,5 +1,10 @@
 import { CapabilityDeniedError, SafetyGuardError } from './types.js';
-import type { CapabilityFlag, DispatchContext, ToolScope } from './types.js';
+import type {
+  CapabilityFlag,
+  CapabilityNotice,
+  DispatchContext,
+  ToolScope,
+} from './types.js';
 import type { CapabilityEvaluator } from './capabilities.js';
 import type { AgentSafetyGuard } from './safety.js';
 
@@ -22,6 +27,22 @@ export interface WrapToolHandlerOptions<TArgs extends Record<string, unknown>> {
   safety: AgentSafetyGuard;
   capabilityEvaluator: CapabilityEvaluator;
   getContext: () => DispatchContext;
+  /**
+   * Phase 3S — optional sink for capability-decision notices. Invoked when
+   * the evaluator returns `allow: true` AND attaches a `notice` (e.g.
+   * first-use of a `requires-secrets-read` tool at Tier 2). Server wires
+   * this to a TUI toast broker so the user sees a one-shot heads-up
+   * independent of `notifications.enabled` / TTY / CI suppression.
+   *
+   * Failures inside the sink are swallowed — a misbehaving toast must
+   * never block a tool from executing. The sink fires AFTER the
+   * capability check passes but BEFORE the safety budget check and
+   * handler invocation; this ordering means a tool denied by the safety
+   * guard still records its first-use notice (because the user's intent
+   * to invoke was recorded by the capability evaluator's seen-set
+   * mutation).
+   */
+  noticeSink?: (notice: CapabilityNotice) => void;
 }
 
 function isSafetyError(err: unknown): err is SafetyGuardError {
@@ -36,10 +57,40 @@ function errorResult(text: string): ToolHandlerResult {
   return { content: [{ type: 'text', text }], isError: true };
 }
 
+/**
+ * Phase 3S — per-worker autonomy tier is NOT enforced here. The
+ * temptation is to peek at `args.worker_id` and substitute the
+ * worker's tier into the DispatchContext for that call — but that's
+ * incoherent for Symphony's architecture:
+ *
+ *   - Workers run as `claude -p` subprocesses that do NOT dispatch
+ *     through this shim (no `--mcp-config` is passed; see
+ *     `src/workers/args.ts`).
+ *   - The `worker_id` arg on Maestro's tools (kill_worker,
+ *     send_to_worker, audit_changes, finalize) names the TARGET of
+ *     Maestro's action, not the CALLER. Flipping Maestro's tier to
+ *     the worker's tier would LOWER Maestro's autonomy when it acts
+ *     on a high-tier worker — the opposite of the intended policy.
+ *
+ * Per-worker tier is therefore METADATA-ONLY in 3S: surfaced in
+ * `list_workers` for Maestro prompt awareness and as a worker-row
+ * chip in the TUI. The real architectural enforcement lands when
+ * Phase 7 plugins introduce worker-side MCP tooling — at that point
+ * the worker's OWN dispatch shim reads from the worker's tier.
+ */
 export function wrapToolHandler<TArgs extends Record<string, unknown>>(
   opts: WrapToolHandlerOptions<TArgs>,
 ): (args: TArgs, signal?: AbortSignal) => Promise<ToolHandlerResult> {
-  const { name, scope, capabilities, handler, safety, capabilityEvaluator, getContext } = opts;
+  const {
+    name,
+    scope,
+    capabilities,
+    handler,
+    safety,
+    capabilityEvaluator,
+    getContext,
+    noticeSink,
+  } = opts;
 
   return async (args: TArgs, signal?: AbortSignal): Promise<ToolHandlerResult> => {
     const base = getContext();
@@ -49,9 +100,23 @@ export function wrapToolHandler<TArgs extends Record<string, unknown>>(
       return errorResult(`tool '${name}' is not available in ${ctx.mode} mode`);
     }
 
-    const decision = capabilityEvaluator.evaluate(capabilities, ctx);
+    // Phase 3S — pass `name` so the evaluator can key its first-use
+    // tracker per (flag, tool) pair. Existing call sites that don't pass
+    // a name (e.g. unit tests against the evaluator alone) get the
+    // 2A.1 behavior unchanged — `toolName === undefined` skips the
+    // first-use branch.
+    const decision = capabilityEvaluator.evaluate(capabilities, ctx, name);
     if (!decision.allow) {
       return errorResult(`tool '${name}' denied by capability policy: ${decision.reason ?? 'unspecified'}`);
+    }
+    if (decision.notice !== undefined && noticeSink !== undefined) {
+      try {
+        noticeSink(decision.notice);
+      } catch {
+        // Sink failure must never block a tool — drop silently and let
+        // the dispatch continue. The seen-set is already mutated, so we
+        // won't re-fire next call.
+      }
     }
 
     try {

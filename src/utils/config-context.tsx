@@ -242,6 +242,10 @@ function applyPatchInMemory(
   if (patch.awayMode !== undefined) next.awayMode = patch.awayMode;
   // Phase 3O.1 — auto-merge policy. Same 4-site invariant as awayMode.
   if (patch.autoMerge !== undefined) next.autoMerge = patch.autoMerge;
+  // Phase 3S — global autonomy tier. Runtime-aware (6-site rule): the
+  // dispatcher's tier cursor is updated via `runtime.setAutonomyTier`
+  // RPC. Mirror in `mergePatch` and `applyConfigEdits` (config.ts).
+  if (patch.autonomyTier !== undefined) next.autonomyTier = patch.autonomyTier;
   if (patch.notifications !== undefined) {
     next.notifications = { ...current.notifications, ...patch.notifications };
   }

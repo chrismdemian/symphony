@@ -1,12 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Box } from 'ink';
 import { useTheme } from '../../theme/context.js';
 import type { TuiRpc } from '../../runtime/rpc.js';
 import { useRegisterCommands } from '../../keybinds/dispatcher.js';
 import type { Command } from '../../keybinds/registry.js';
 import { applyKeybindOverrides } from '../../keybinds/overrides.js';
 import { useConfig } from '../../../utils/config-context.js';
+import { useToast } from '../../feedback/ToastProvider.js';
+import { useResolveWorkerName } from '../../data/InstrumentNameContext.js';
 import { WorkerOutputView } from './WorkerOutputView.js';
 import { WorkerDiffView } from './WorkerDiffView.js';
+import { OutputInlineInput } from './OutputInlineInput.js';
 import {
   TERMINAL_WORKER_STATUSES,
   type WorkerRecordSnapshot,
@@ -56,12 +60,19 @@ export function WorkerOutputContainer({
   const theme = useTheme();
   const [viewMode, setViewMode] = useState<'output' | 'diff'>('output');
   const [refreshSignal, setRefreshSignal] = useState(0);
+  // Phase 3S — Mission Control inject mode. `i` (panel-scoped) flips
+  // this on; the inline input renders at the bottom of the panel,
+  // submits via `rpc.call.workers.sendTo`, and Esc/onCancel flips it
+  // back off. Reset on workerId change so re-selecting a worker
+  // doesn't leak the previous inject state across selection.
+  const [injectActive, setInjectActive] = useState(false);
 
   // Reset to streaming output whenever the selected worker changes.
   // Selection stability already remounts the inner views via key, but
   // that doesn't reset the container's own viewMode state.
   useEffect(() => {
     setViewMode('output');
+    setInjectActive(false);
   }, [workerId]);
 
   const toggleDiff = useCallback(() => {
@@ -160,9 +171,31 @@ export function WorkerOutputContainer({
     [refreshDiff],
   );
 
+  // Phase 3S — Mission Control inject command. Panel-scoped to `output`,
+  // single-letter `i`. Disabled while inject mode is already active so
+  // the keystroke doesn't bounce in/out. Listed in the bottom keybind
+  // bar to advertise the affordance.
+  const injectCommand = useMemo<Command>(
+    () => ({
+      id: 'output.missionControlInject',
+      title: 'inject message',
+      key: { kind: 'char', char: 'i' },
+      scope: 'output',
+      displayOnScreen: true,
+      onSelect: () => {
+        if (!injectActive) setInjectActive(true);
+      },
+      ...(injectActive ? { disabledReason: 'inject input is open' } : {}),
+    }),
+    [injectActive],
+  );
+
   const commands = useMemo<readonly Command[]>(
-    () => (viewMode === 'diff' ? [toggleCommand, refreshCommand] : [toggleCommand]),
-    [viewMode, toggleCommand, refreshCommand],
+    () =>
+      viewMode === 'diff'
+        ? [toggleCommand, refreshCommand]
+        : [toggleCommand, injectCommand],
+    [viewMode, toggleCommand, refreshCommand, injectCommand],
   );
 
   const { config } = useConfig();
@@ -170,15 +203,44 @@ export function WorkerOutputContainer({
     () => applyKeybindOverrides(commands, config.keybindOverrides),
     [commands, config.keybindOverrides],
   );
-  useRegisterCommands(overriddenCommands, isFocused);
+  // Phase 3S — gate panel-scope command registration while the inline
+  // input is active. The OutputInlineInput's own useInput captures all
+  // printable keystrokes; suspending command registration means D / r
+  // don't fire mid-type even if the user pastes their letters.
+  useRegisterCommands(overriddenCommands, isFocused && !injectActive);
+
+  // Phase 3S — Mission Control inject wiring. Resolve the worker's
+  // instrument name at render time (3K precedent — the allocator may
+  // lag the selection if the user clicks fast). Toast on success/error
+  // mirrors the cycleAutonomyTier feedback pattern from commit 4.
+  const toast = useToast();
+  const resolveName = useResolveWorkerName();
+  const handleInjectSubmit = useCallback(
+    async (text: string): Promise<void> => {
+      try {
+        const name = resolveName(workerId) ?? workerId;
+        await rpc.call.workers.sendTo({ workerId, message: text });
+        toast.showToast(`Sent to ${name}.`, { tone: 'success', ttlMs: 2_500 });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        toast.showToast(`Mission Control inject failed: ${msg}`, { tone: 'error' });
+      } finally {
+        setInjectActive(false);
+      }
+    },
+    [workerId, rpc, resolveName, toast],
+  );
+  const handleInjectCancel = useCallback(() => {
+    setInjectActive(false);
+  }, []);
 
   // ── Render ───────────────────────────────────────────────────────────
   // Note: theme isn't used here directly but kept available for future
   // header chrome (e.g. mode indicator). Mark as referenced for now.
   void theme;
 
-  if (viewMode === 'diff') {
-    return (
+  const body =
+    viewMode === 'diff' ? (
       <WorkerDiffView
         rpc={rpc}
         workerId={workerId}
@@ -186,7 +248,24 @@ export function WorkerOutputContainer({
         refreshSignal={refreshSignal}
         {...(now !== undefined ? { now } : {})}
       />
+    ) : (
+      <WorkerOutputView rpc={rpc} workerId={workerId} isFocused={isFocused} />
     );
-  }
-  return <WorkerOutputView rpc={rpc} workerId={workerId} isFocused={isFocused} />;
+
+  // Phase 3S — wrap body + inline input in a column box. The input
+  // mounts only when injectActive, capturing input from the dispatcher
+  // exclusive of D / r (gated above). When unmounted, its useInput
+  // listener clears so the parent's panel-scope commands re-register.
+  return (
+    <Box flexDirection="column" width="100%">
+      {body}
+      {injectActive ? (
+        <OutputInlineInput
+          workerName={resolveName(workerId) ?? workerId}
+          onSubmit={handleInjectSubmit}
+          onCancel={handleInjectCancel}
+        />
+      ) : null}
+    </Box>
+  );
 }

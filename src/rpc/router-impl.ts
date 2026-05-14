@@ -90,6 +90,15 @@ export interface RouterDeps {
    */
   readonly setDispatchAwayMode?: (awayMode: boolean) => void;
   /**
+   * Phase 3S — same shape as `setDispatchAwayMode` but for the global
+   * autonomy tier cursor. The CLI server's closure ALSO calls
+   * `capabilityEvaluator.resetFirstUseTracker()` so first-use notices
+   * re-arm after a tier change (changing the tier is an implicit
+   * re-confirmation of intent). Omit in test rigs that don't construct
+   * a context cursor — the RPC echoes back the requested tier.
+   */
+  readonly setDispatchAutonomyTier?: (tier: AutonomyTier) => void;
+  /**
    * Phase 3N.2 — ISO timestamp stamped at orchestrator boot. Used by the
    * `stats.session` aggregator to filter out crash-recovered workers
    * from a prior session (their `createdAt` predates `bootIso`). When
@@ -164,6 +173,18 @@ export interface WorkersDiffArgs {
   readonly capBytes?: number;
 }
 
+// Phase 3S — Mission Control inject.
+
+export interface WorkersSendToArgs {
+  readonly workerId: string;
+  readonly message: string;
+}
+
+export interface WorkersSendToResult {
+  readonly workerId: string;
+  readonly bytes: number;
+}
+
 export interface WorkersDiffFile {
   readonly path: string;
   readonly status: string;
@@ -223,6 +244,16 @@ export interface RuntimeSetAwayModeArgs {
 
 export interface RuntimeSetAwayModeResult {
   readonly awayMode: boolean;
+}
+
+// Phase 3S — autonomy tier hot-apply.
+
+export interface RuntimeSetAutonomyTierArgs {
+  readonly tier: AutonomyTier;
+}
+
+export interface RuntimeSetAutonomyTierResult {
+  readonly tier: AutonomyTier;
 }
 
 // ── Queue argument shapes (Phase 3L) ─────────────────────────────────
@@ -558,6 +589,51 @@ export function createSymphonyRouter(deps: RouterDeps) {
         throw err;
       }
     },
+    /**
+     * Phase 3S — Mission Control inject. The TUI's `i` keybind on a
+     * focused output panel queues a user follow-up message to a running
+     * worker's stdin. Same machinery as the `send_to_worker` MCP tool
+     * (`src/orchestrator/tools/send-to-worker.ts:22-53`), exposed via
+     * RPC so the TUI doesn't go through Maestro for a direct
+     * user-to-worker affordance.
+     *
+     * Honest framing: this is "queued follow-up while the worker is
+     * running" — bytes hit stdin immediately but `claude -p` only
+     * processes them at the next turn boundary. Not literally mid-
+     * stream.
+     *
+     * Precondition: worker must be `running`. Recovered/crashed/terminal
+     * workers reject — same shape as the MCP tool. Message size capped
+     * at 4 KB to bound runaway pastes through worker stdin.
+     */
+    sendTo(args: WorkersSendToArgs): WorkersSendToResult {
+      requireString(args?.workerId, 'workerId');
+      requireBoundedString(args?.message, 'message', WORKERS_SEND_TO_MESSAGE_MAX);
+      if (args.message.length === 0) {
+        throw badArgs('message must not be empty');
+      }
+      const record = workerRegistry.get(args.workerId);
+      if (record === undefined) {
+        throw notFound(`worker '${args.workerId}' is not registered`);
+      }
+      if (record.status !== 'running') {
+        throw badArgs(
+          `worker '${args.workerId}' is ${record.status}; use resume_worker for terminal workers or wait for status=running.`,
+        );
+      }
+      try {
+        record.worker.sendFollowup(args.message);
+      } catch (cause) {
+        throw new Error(
+          `workers.sendTo: failed for '${args.workerId}': ${cause instanceof Error ? cause.message : String(cause)}`,
+          { cause },
+        );
+      }
+      return {
+        workerId: args.workerId,
+        bytes: Buffer.byteLength(args.message, 'utf8'),
+      };
+    },
   });
 
   const questions = createRPCController({
@@ -661,6 +737,21 @@ export function createSymphonyRouter(deps: RouterDeps) {
       }
       deps.setDispatchAwayMode?.(args.awayMode);
       return { awayMode: args.awayMode };
+    },
+    // Phase 3S — push the autonomy tier from the TUI into the dispatch
+    // context cursor. Validates literal 1|2|3 (numbers, not strings) and
+    // rejects anything else with a typed bad-args error so a misbehaving
+    // client can't silently desync. Mirrors `setAwayMode`'s best-effort
+    // shape: the CLI server wires `deps.setDispatchAutonomyTier`; test
+    // rigs without a dispatch cursor still get arg validation.
+    async setAutonomyTier(
+      args: RuntimeSetAutonomyTierArgs,
+    ): Promise<RuntimeSetAutonomyTierResult> {
+      if (args?.tier !== 1 && args?.tier !== 2 && args?.tier !== 3) {
+        throw badArgs('tier must be 1, 2, or 3');
+      }
+      deps.setDispatchAutonomyTier?.(args.tier);
+      return { tier: args.tier };
     },
   });
 
@@ -898,6 +989,15 @@ function requireString(value: unknown, name: string): asserts value is string {
  */
 const TASKS_DESCRIPTION_MAX = 16 * 1024;
 const TASKS_NOTES_MAX = 64 * 1024;
+
+/**
+ * Phase 3S — `workers.sendTo` message cap. The TUI's Mission Control
+ * inline input is a single-line affordance; 4 KB is generous (mirrors
+ * a typed paragraph) but bounds runaway paste so we don't shove
+ * megabytes through worker stdin. The cap is bytes, not chars, to
+ * match `requireBoundedString`'s UTF-8 measurement.
+ */
+const WORKERS_SEND_TO_MESSAGE_MAX = 4 * 1024;
 
 /**
  * Phase 3J — `workers.diff` body cap bounds. Default 256 KB matches

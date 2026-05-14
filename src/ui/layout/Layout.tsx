@@ -66,6 +66,8 @@ export interface LayoutProps {
   readonly questionsResult?: UseQuestionsResult;
   /** Phase 3M — Away Mode flag for StatusBar segment + capability surfacing. */
   readonly awayMode?: boolean;
+  /** Phase 3S — global autonomy tier for StatusBar chip. */
+  readonly autonomyTier?: 1 | 2 | 3;
   /** Phase 3N.2 — session token + cost totals for StatusBar segment. */
   readonly sessionTotals?: SessionTotals;
 }
@@ -102,6 +104,7 @@ export function Layout(props: LayoutProps): React.JSX.Element {
         blockingCount={props.questionsResult?.blockingCount ?? 0}
         awayMode={props.awayMode ?? false}
         pendingQueueCount={props.queueResult?.pending.length ?? 0}
+        autonomyTier={props.autonomyTier ?? 2}
         {...(props.sessionTotals !== undefined ? { sessionTotals: props.sessionTotals } : {})}
       />
       {/*

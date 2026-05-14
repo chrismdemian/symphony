@@ -113,6 +113,20 @@ export interface GlobalCommandHandlers {
    * dep-graph popup. Optional during 3P transition.
    */
   openDeps?(): void;
+  /**
+   * Phase 3S — Ctrl+Y cycles the global autonomy tier (1 → 2 → 3 → 1).
+   * Calls `setConfig` with a function-patch (race-safe per 3H.2 audit
+   * C2), surfaces a toast naming the new tier, and the AppShell's
+   * autonomyTier useEffect propagates the new value into the server's
+   * dispatch context via `runtime.setAutonomyTier`.
+   *
+   * Scope is `'global'` (not `'main'`) so the chord fires from inside
+   * popups too — the user may want to dial autonomy down while reading
+   * the help overlay or composing a Mission Control inject.
+   *
+   * Optional during 3S transition; falls back to a toast when omitted.
+   */
+  cycleAutonomyTier?(): Promise<void> | void;
 }
 
 export interface GlobalCommandState {
@@ -320,6 +334,23 @@ export function buildGlobalCommands(
       scope: 'global',
       displayOnScreen: false,
       onSelect: handlers.openDeps ?? (() => undefined),
+    },
+    // Phase 3S — Ctrl+Y cycles autonomy tier. `scope: 'global'` matches
+    // app.exit / focus.cycle / palette.open so the chord fires from
+    // inside popups too (user may want to dial autonomy while reading
+    // help or composing a Mission Control inject). Not flagged
+    // `unbindable` — users CAN rebind via the 3H.4 editor; PLAN.md's
+    // unbindable list is only for escape-hatch chords (Ctrl+C, Tab,
+    // Shift+Tab) where rebinding would brick navigation.
+    {
+      id: 'app.cycleAutonomyTier',
+      title: 'cycle autonomy tier',
+      key: { kind: 'ctrl', char: 'y' },
+      scope: 'global',
+      displayOnScreen: false,
+      onSelect: () =>
+        handlers.cycleAutonomyTier?.() ??
+        handlers.showLeaderToast?.('Autonomy tier cycle — handler not wired.'),
     },
   ];
 }

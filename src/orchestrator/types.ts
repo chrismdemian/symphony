@@ -34,6 +34,20 @@ export interface DispatchContext {
 export interface CapabilityDecision {
   allow: boolean;
   reason?: string;
+  /**
+   * Phase 3S — informational signal emitted when an allowed tool call
+   * crosses a sensitivity threshold for the first time in this session.
+   * Surfaced via a TUI toast (independent of the desktop-notifications
+   * dispatcher's enabled/TTY/CI gating). Resets on tier change and on
+   * server restart. Only emitted when `allow === true`.
+   */
+  notice?: CapabilityNotice;
+}
+
+export interface CapabilityNotice {
+  readonly kind: 'first-use';
+  readonly tool: string;
+  readonly flag: CapabilityFlag;
 }
 
 export interface SafetyGuardStats {

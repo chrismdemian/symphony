@@ -72,4 +72,97 @@ describe('CapabilityEvaluator', () => {
     expect(evaluator.evaluate(['external-visible'], ctx({ tier: 2 })).allow).toBe(true);
     expect(evaluator.evaluate(['external-visible'], ctx({ tier: 3 })).allow).toBe(true);
   });
+
+  // Phase 3S — new tier-floor checks.
+
+  it('rejects requires-secrets-read below tier 2 (3S)', () => {
+    const e = new CapabilityEvaluator();
+    expect(e.evaluate(['requires-secrets-read'], ctx({ tier: 1 })).allow).toBe(false);
+    expect(e.evaluate(['requires-secrets-read'], ctx({ tier: 2 })).allow).toBe(true);
+    expect(e.evaluate(['requires-secrets-read'], ctx({ tier: 3 })).allow).toBe(true);
+  });
+
+  it('rejects requires-network-egress-uncontrolled below tier 2 (3S)', () => {
+    const e = new CapabilityEvaluator();
+    expect(
+      e.evaluate(['requires-network-egress-uncontrolled'], ctx({ tier: 1 })).allow,
+    ).toBe(false);
+    expect(
+      e.evaluate(['requires-network-egress-uncontrolled'], ctx({ tier: 2 })).allow,
+    ).toBe(true);
+    expect(
+      e.evaluate(['requires-network-egress-uncontrolled'], ctx({ tier: 3 })).allow,
+    ).toBe(true);
+  });
+
+  // Phase 3S — first-use notice.
+
+  it('emits first-use notice on first secrets-read at tier 2 (3S)', () => {
+    const e = new CapabilityEvaluator();
+    const first = e.evaluate(['requires-secrets-read'], ctx({ tier: 2 }), 'secrets_get');
+    expect(first.allow).toBe(true);
+    expect(first.notice).toEqual({
+      kind: 'first-use',
+      tool: 'secrets_get',
+      flag: 'requires-secrets-read',
+    });
+  });
+
+  it('skips notice on repeat secrets-read for the same tool (3S)', () => {
+    const e = new CapabilityEvaluator();
+    e.evaluate(['requires-secrets-read'], ctx({ tier: 2 }), 'secrets_get');
+    const second = e.evaluate(['requires-secrets-read'], ctx({ tier: 2 }), 'secrets_get');
+    expect(second.allow).toBe(true);
+    expect(second.notice).toBeUndefined();
+  });
+
+  it('emits notice per (tool) pair independently (3S)', () => {
+    const e = new CapabilityEvaluator();
+    const a = e.evaluate(['requires-secrets-read'], ctx({ tier: 2 }), 'secrets_get');
+    const b = e.evaluate(['requires-secrets-read'], ctx({ tier: 2 }), 'secrets_put');
+    expect(a.notice?.tool).toBe('secrets_get');
+    expect(b.notice?.tool).toBe('secrets_put');
+  });
+
+  it('does not emit notice at tier 3 (3S — confirm tier is its own signal)', () => {
+    const e = new CapabilityEvaluator();
+    const result = e.evaluate(['requires-secrets-read'], ctx({ tier: 3 }), 'secrets_get');
+    expect(result.allow).toBe(true);
+    expect(result.notice).toBeUndefined();
+  });
+
+  it('does not emit notice at tier 1 (3S — denied before notice path)', () => {
+    const e = new CapabilityEvaluator();
+    const result = e.evaluate(['requires-secrets-read'], ctx({ tier: 1 }), 'secrets_get');
+    expect(result.allow).toBe(false);
+    expect(result.notice).toBeUndefined();
+  });
+
+  it('does not emit notice for network-egress-uncontrolled (3S — no first-use for this flag)', () => {
+    const e = new CapabilityEvaluator();
+    const result = e.evaluate(
+      ['requires-network-egress-uncontrolled'],
+      ctx({ tier: 2 }),
+      'fetch_url',
+    );
+    expect(result.allow).toBe(true);
+    expect(result.notice).toBeUndefined();
+  });
+
+  it('skips notice when toolName is omitted (3S — preserves 2A.1 evaluator-only callers)', () => {
+    const e = new CapabilityEvaluator();
+    const result = e.evaluate(['requires-secrets-read'], ctx({ tier: 2 }));
+    expect(result.allow).toBe(true);
+    expect(result.notice).toBeUndefined();
+  });
+
+  it('resetFirstUseTracker re-arms first-use emission (3S)', () => {
+    const e = new CapabilityEvaluator();
+    e.evaluate(['requires-secrets-read'], ctx({ tier: 2 }), 'secrets_get');
+    const afterReset = e.evaluate(['requires-secrets-read'], ctx({ tier: 2 }), 'secrets_get');
+    expect(afterReset.notice).toBeUndefined();
+    e.resetFirstUseTracker();
+    const refired = e.evaluate(['requires-secrets-read'], ctx({ tier: 2 }), 'secrets_get');
+    expect(refired.notice?.tool).toBe('secrets_get');
+  });
 });

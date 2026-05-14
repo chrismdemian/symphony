@@ -105,4 +105,92 @@ describe('away-mode dispatch context (3M, integration)', () => {
     await router.runtime.setAwayMode({ awayMode: false });
     expect(context.awayMode).toBe(false);
   });
+
+  // Phase 3S — autonomy tier propagation (same shape as awayMode above).
+
+  it('stamps autonomyTier from config at boot (3S)', async () => {
+    writeFileSync(
+      cfgFile,
+      JSON.stringify({ schemaVersion: 1, autonomyTier: 3 }, null, 2),
+      'utf8',
+    );
+    const [, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = await startOrchestratorServer({ transport: serverTransport });
+    handles.push(server);
+    expect(server.getContext().tier).toBe(3);
+  });
+
+  it('falls back to default tier 2 when config omits autonomyTier (3S)', async () => {
+    writeFileSync(cfgFile, JSON.stringify({ schemaVersion: 1 }, null, 2), 'utf8');
+    const [, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = await startOrchestratorServer({ transport: serverTransport });
+    handles.push(server);
+    expect(server.getContext().tier).toBe(2);
+  });
+
+  it('options.initialTier overrides the disk-read tier (3S, test rig precedence)', async () => {
+    writeFileSync(
+      cfgFile,
+      JSON.stringify({ schemaVersion: 1, autonomyTier: 3 }, null, 2),
+      'utf8',
+    );
+    const [, serverTransport] = InMemoryTransport.createLinkedPair();
+    const server = await startOrchestratorServer({ transport: serverTransport, initialTier: 1 });
+    handles.push(server);
+    expect(server.getContext().tier).toBe(1);
+  });
+
+  it('runtime.setAutonomyTier mutates the context cursor closure (3S)', async () => {
+    let context: { tier: import('../../src/orchestrator/types.js').AutonomyTier } = { tier: 2 };
+    const setter = (value: import('../../src/orchestrator/types.js').AutonomyTier): void => {
+      context = { ...context, tier: value };
+    };
+    const { ProjectRegistry } = await import('../../src/projects/registry.js');
+    const { TaskRegistry } = await import('../../src/state/task-registry.js');
+    const { QuestionRegistry } = await import('../../src/state/question-registry.js');
+    const { WaveRegistry } = await import('../../src/orchestrator/research-wave-registry.js');
+    const { WorkerRegistry } = await import('../../src/orchestrator/worker-registry.js');
+    const { ModeController } = await import('../../src/orchestrator/mode.js');
+    const projectStore = new ProjectRegistry();
+    const router = createSymphonyRouter({
+      projectStore,
+      taskStore: new TaskRegistry({ projectStore }),
+      questionStore: new QuestionRegistry(),
+      waveStore: new WaveRegistry(),
+      workerRegistry: new WorkerRegistry(),
+      modeController: new ModeController({ initial: 'plan' }),
+      setDispatchAutonomyTier: setter,
+    });
+
+    expect(context.tier).toBe(2);
+    await router.runtime.setAutonomyTier({ tier: 3 });
+    expect(context.tier).toBe(3);
+    await router.runtime.setAutonomyTier({ tier: 1 });
+    expect(context.tier).toBe(1);
+  });
+
+  it('runtime.setAutonomyTier rejects non-literal tier (3S, validates literal 1|2|3)', async () => {
+    const { ProjectRegistry } = await import('../../src/projects/registry.js');
+    const { TaskRegistry } = await import('../../src/state/task-registry.js');
+    const { QuestionRegistry } = await import('../../src/state/question-registry.js');
+    const { WaveRegistry } = await import('../../src/orchestrator/research-wave-registry.js');
+    const { WorkerRegistry } = await import('../../src/orchestrator/worker-registry.js');
+    const { ModeController } = await import('../../src/orchestrator/mode.js');
+    const projectStore = new ProjectRegistry();
+    const router = createSymphonyRouter({
+      projectStore,
+      taskStore: new TaskRegistry({ projectStore }),
+      questionStore: new QuestionRegistry(),
+      waveStore: new WaveRegistry(),
+      workerRegistry: new WorkerRegistry(),
+      modeController: new ModeController({ initial: 'plan' }),
+    });
+
+    await expect(
+      router.runtime.setAutonomyTier({ tier: 4 as 1 | 2 | 3 }),
+    ).rejects.toThrow(/tier must be 1, 2, or 3/);
+    await expect(
+      router.runtime.setAutonomyTier({ tier: 0 as 1 | 2 | 3 }),
+    ).rejects.toThrow(/tier must be 1, 2, or 3/);
+  });
 });

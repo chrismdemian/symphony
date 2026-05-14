@@ -367,6 +367,56 @@ function AppShell(props: AppProps): React.JSX.Element {
     }
   }, [setConfig, showToast]);
 
+  // Phase 3S — Ctrl+Y cycles the global autonomy tier 1 → 2 → 3 → 1.
+  // Function-patch resolves against the freshly-committed disk state
+  // inside the setConfig serialization queue so two rapid presses each
+  // see the post-flip value (3H.2 audit C2 + 3M precedent). The tier
+  // propagation useEffect below mirrors awayMode and pushes the new
+  // value into the server's dispatch context via
+  // `runtime.setAutonomyTier` — keeping the capability shim's per-call
+  // cursor reads in sync with the TUI's displayed chip.
+  const tierLabel = useCallback((tier: 1 | 2 | 3): string => {
+    return tier === 1 ? 'Free reign' : tier === 2 ? 'Notify' : 'Confirm';
+  }, []);
+  const cycleAutonomyTier = useCallback(async () => {
+    try {
+      const next = await setConfig((current) => {
+        const t = current.autonomyTier;
+        const advanced = t === 1 ? 2 : t === 2 ? 3 : 1;
+        return { autonomyTier: advanced };
+      });
+      showToast(`Autonomy: T${next.autonomyTier} (${tierLabel(next.autonomyTier)}).`, {
+        tone: 'info',
+        ttlMs: 3_000,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Autonomy cycle failed: ${msg}`, { tone: 'error' });
+    }
+  }, [setConfig, showToast, tierLabel]);
+
+  // Phase 3S — autonomy tier propagation. Mirrors awayMode's effect
+  // shape: any state change pushes the new value to the server's
+  // dispatch context via `runtime.setAutonomyTier`. Server-side closure
+  // additionally clears the capability evaluator's first-use seen-set
+  // so a tier change implicitly re-arms notices.
+  //
+  // The boot-time stamp in `server.ts` already reads autonomyTier from
+  // disk, so this effect's only job is mid-session syncing. `prevTierRef`
+  // mounts initialized to the current value so the first run is a no-op
+  // even on mounts where the disk + RPC haven't yet converged.
+  const autonomyTier = config.autonomyTier;
+  const prevTierRef = React.useRef(autonomyTier);
+  useEffect(() => {
+    const prev = prevTierRef.current;
+    if (prev === autonomyTier) return;
+    prevTierRef.current = autonomyTier;
+    void rpc.call.runtime.setAutonomyTier({ tier: autonomyTier }).catch(() => {
+      // Best-effort; the dispatcher's per-call cursor reads will stay
+      // at the prior value until the next push. Acceptable for MVP.
+    });
+  }, [autonomyTier, rpc]);
+
   const appActions = useMemo(
     () => ({
       onRequestExit: props.onRequestExit,
@@ -409,6 +459,8 @@ function AppShell(props: AppProps): React.JSX.Element {
           openKeybindReset: () => focus.pushPopup('keybind-list'),
           // Phase 3M — `<leader>a` chord + palette entry.
           toggleAwayMode,
+          // Phase 3S — Ctrl+Y chord cycles autonomy tier.
+          cycleAutonomyTier,
           // Phase 3N.3 — palette entry "show session stats". Slash
           // command `/stats` is wired in ChatPanel.
           openStats: () => focus.pushPopup('stats'),
@@ -432,6 +484,7 @@ function AppShell(props: AppProps): React.JSX.Element {
       cycleModelMode,
       toggleThemeFallback,
       toggleAwayMode,
+      cycleAutonomyTier,
     ],
   );
 
@@ -463,6 +516,7 @@ function AppShell(props: AppProps): React.JSX.Element {
               queueResult={queueResult}
               questionsResult={questionsResult}
               awayMode={awayMode}
+              autonomyTier={autonomyTier}
               sessionTotals={sessionTotalsResult.totals}
             />
           </Box>

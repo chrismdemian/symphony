@@ -29,7 +29,9 @@ const shape = {
   autonomy_tier: z
     .union([z.literal(1), z.literal(2), z.literal(3)])
     .optional()
-    .describe('Worker autonomy tier (1 = free reign, 2 = notify, 3 = confirm). Default: 1.'),
+    .describe(
+      'Per-worker autonomy tier override (1=free reign, 2=notify, 3=confirm). Defaults to the orchestrator-wide tier (config.autonomyTier, cycled via Ctrl+Y) when omitted. Advisory in 3S — surfaced via list_workers for Maestro context and as a worker-row chip when tier=3; architectural enforcement requires Phase 7 worker-side MCP.',
+    ),
   task_id: z
     .string()
     .optional()
