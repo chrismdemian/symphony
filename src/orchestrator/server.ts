@@ -574,6 +574,10 @@ export async function startOrchestratorServer(
       lifecycle: workerLifecycle,
       resolveProjectPath: spawnResolve,
       projectStore,
+      // Phase 3P — enables the optional task_id auto-link path:
+      // spawn_worker validates task readiness, atomically flips
+      // pending → in_progress, and stamps task.workerId post-spawn.
+      taskStore,
     }),
   );
   registry.register(
