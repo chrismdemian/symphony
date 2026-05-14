@@ -3,7 +3,7 @@ import { Box, Text } from 'ink';
 import { useTheme } from '../theme/context.js';
 import type { ProjectSnapshot } from '../../projects/types.js';
 import type { WorkerRecordSnapshot } from '../../orchestrator/worker-registry.js';
-import type { ToolMode } from '../../orchestrator/types.js';
+import type { AutonomyTier, ToolMode } from '../../orchestrator/types.js';
 import {
   formatCostUsd,
   formatTokenCount,
@@ -55,6 +55,13 @@ export interface StatusBarProps {
    * `inputTokens + outputTokens` (cache counts visible in `/stats`).
    */
   readonly sessionTotals?: SessionTotals;
+  /**
+   * Phase 3S — global autonomy tier. Always rendered (unlike awayMode
+   * which only shows when on); tier is critical safety state and the
+   * chip is the canonical UI surface. Defaults to `2` (Notify) which
+   * matches the schema default. Cycled via Ctrl+Y.
+   */
+  readonly autonomyTier?: AutonomyTier;
 }
 
 function activeCount(workers: readonly WorkerRecordSnapshot[]): number {
@@ -105,6 +112,27 @@ function questionsColor(
 ): string {
   if (count === 0) return theme['textMuted']!;
   if (blockingCount > 0) return theme['error']!;
+  return theme['warning']!;
+}
+
+/**
+ * Phase 3S — autonomy-tier chip color mapping. Color semantics here are
+ * "attention required to use a flagged tool", rising:
+ *   - Tier 1 (Free reign)  → gold/primary — positive/active, you trust it.
+ *   - Tier 2 (Notify)      → violet/accent — mid-way, first-use heads-ups.
+ *   - Tier 3 (Confirm)     → gold-light/warning (amber) — needs attention.
+ *
+ * Note that this is the OPPOSITE of risk semantics (Tier 1 is the most
+ * autonomous, hence riskiest). Aligning to "user attention" rather than
+ * "risk" matches how PLAN.md §3S describes the dial.
+ */
+function tierLabel(tier: AutonomyTier): string {
+  return tier === 1 ? 'Free' : tier === 2 ? 'Notify' : 'Confirm';
+}
+
+function tierColor(theme: Record<string, string>, tier: AutonomyTier): string {
+  if (tier === 1) return theme['primary']!;
+  if (tier === 2) return theme['accent']!;
   return theme['warning']!;
 }
 
@@ -191,6 +219,26 @@ export function StatusBar(props: StatusBarProps): React.JSX.Element {
           <Text color={theme['text']}>{props.sessionId.slice(0, 8)}</Text>
         </>
       )}
+      {/*
+       * Phase 3S — autonomy tier chip. Always renders (unlike the
+       * conditional awayMode segment); tier is a critical safety
+       * setting that should be persistently visible. Defaults to Tier 2
+       * (Notify) — matches the schema default + DEFAULT_DISPATCH_CONTEXT
+       * in capabilities.ts. Cycled via Ctrl+Y (`app.cycleAutonomyTier`).
+       *
+       * Rendered as flat <Text> siblings (NOT wrapped in a Box) to match
+       * the awayMode segment's render shape — wrapping the chip in a
+       * <Box flexShrink={0}> interleaves with Ink's text-wrap algorithm
+       * under narrow widths, causing the bar's continuation lines to
+       * land mid-Away-segment ("3 │ T2 Notify ny : ) questions"). Flat
+       * Text siblings flow naturally with the rest of the bar. Position
+       * assertions belong in the visual harness (120-col fixed width),
+       * not unit tests where ink-testing-library wraps.
+       */}
+      <Text color={theme['border']}>{SEPARATOR}</Text>
+      <Text color={tierColor(theme, props.autonomyTier ?? 2)}>
+        T{props.autonomyTier ?? 2} {tierLabel(props.autonomyTier ?? 2)}
+      </Text>
     </Box>
   );
 }
