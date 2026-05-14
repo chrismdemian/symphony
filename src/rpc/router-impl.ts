@@ -173,6 +173,18 @@ export interface WorkersDiffArgs {
   readonly capBytes?: number;
 }
 
+// Phase 3S — Mission Control inject.
+
+export interface WorkersSendToArgs {
+  readonly workerId: string;
+  readonly message: string;
+}
+
+export interface WorkersSendToResult {
+  readonly workerId: string;
+  readonly bytes: number;
+}
+
 export interface WorkersDiffFile {
   readonly path: string;
   readonly status: string;
@@ -577,6 +589,51 @@ export function createSymphonyRouter(deps: RouterDeps) {
         throw err;
       }
     },
+    /**
+     * Phase 3S — Mission Control inject. The TUI's `i` keybind on a
+     * focused output panel queues a user follow-up message to a running
+     * worker's stdin. Same machinery as the `send_to_worker` MCP tool
+     * (`src/orchestrator/tools/send-to-worker.ts:22-53`), exposed via
+     * RPC so the TUI doesn't go through Maestro for a direct
+     * user-to-worker affordance.
+     *
+     * Honest framing: this is "queued follow-up while the worker is
+     * running" — bytes hit stdin immediately but `claude -p` only
+     * processes them at the next turn boundary. Not literally mid-
+     * stream.
+     *
+     * Precondition: worker must be `running`. Recovered/crashed/terminal
+     * workers reject — same shape as the MCP tool. Message size capped
+     * at 4 KB to bound runaway pastes through worker stdin.
+     */
+    sendTo(args: WorkersSendToArgs): WorkersSendToResult {
+      requireString(args?.workerId, 'workerId');
+      requireBoundedString(args?.message, 'message', WORKERS_SEND_TO_MESSAGE_MAX);
+      if (args.message.length === 0) {
+        throw badArgs('message must not be empty');
+      }
+      const record = workerRegistry.get(args.workerId);
+      if (record === undefined) {
+        throw notFound(`worker '${args.workerId}' is not registered`);
+      }
+      if (record.status !== 'running') {
+        throw badArgs(
+          `worker '${args.workerId}' is ${record.status}; use resume_worker for terminal workers or wait for status=running.`,
+        );
+      }
+      try {
+        record.worker.sendFollowup(args.message);
+      } catch (cause) {
+        throw new Error(
+          `workers.sendTo: failed for '${args.workerId}': ${cause instanceof Error ? cause.message : String(cause)}`,
+          { cause },
+        );
+      }
+      return {
+        workerId: args.workerId,
+        bytes: Buffer.byteLength(args.message, 'utf8'),
+      };
+    },
   });
 
   const questions = createRPCController({
@@ -932,6 +989,15 @@ function requireString(value: unknown, name: string): asserts value is string {
  */
 const TASKS_DESCRIPTION_MAX = 16 * 1024;
 const TASKS_NOTES_MAX = 64 * 1024;
+
+/**
+ * Phase 3S — `workers.sendTo` message cap. The TUI's Mission Control
+ * inline input is a single-line affordance; 4 KB is generous (mirrors
+ * a typed paragraph) but bounds runaway paste so we don't shove
+ * megabytes through worker stdin. The cap is bytes, not chars, to
+ * match `requireBoundedString`'s UTF-8 measurement.
+ */
+const WORKERS_SEND_TO_MESSAGE_MAX = 4 * 1024;
 
 /**
  * Phase 3J — `workers.diff` body cap bounds. Default 256 KB matches
