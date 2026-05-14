@@ -45,7 +45,7 @@ import { makeGlobalStatusTool } from './tools/global-status.js';
 import { makeAuditChangesTool } from './tools/audit-changes.js';
 import { makeFinalizeTool } from './tools/finalize.js';
 import { defaultOneShotRunner, type OneShotRunner } from './one-shot.js';
-import type { AutonomyTier, DispatchContext, ToolMode } from './types.js';
+import type { AutonomyTier, CapabilityNotice, DispatchContext, ToolMode } from './types.js';
 import { createWorkerLifecycle, type WorkerLifecycleHandle } from './worker-lifecycle.js';
 import { WorkerRegistry } from './worker-registry.js';
 import { WorkerEventBroker } from '../rpc/event-broker.js';
@@ -251,12 +251,30 @@ export async function startOrchestratorServer(
     context = { ...context, mode: evt.next };
   });
 
+  // Phase 3S — capability first-use notice sink. Today the only
+  // consumer is the capability evaluator's `requires-secrets-read`
+  // first-use branch at Tier 2, but no tool with that flag ships in
+  // Symphony's 3S codebase (the first real consumer is the Chrome
+  // DevTools MCP plugin in Phase 7). The seam is wired through the
+  // registry NOW so when Phase 7 adds its first secrets-read tool, the
+  // wiring is already in place — we just swap this stderr stub for a
+  // TUI toast broker. Stderr is intercepted by the launcher and tagged
+  // with `[symphony:capability]` so the user sees something even before
+  // a toast surface exists.
+  const noticeSink = (notice: CapabilityNotice): void => {
+    if (typeof process !== 'undefined' && process.stderr?.writable) {
+      process.stderr.write(
+        `[symphony:capability] first-use of ${notice.flag} via tool '${notice.tool}'\n`,
+      );
+    }
+  };
   const registry = new ToolRegistry({
     server,
     mode,
     safety,
     capabilityEvaluator,
     getContext: () => context,
+    noticeSink,
   });
 
   const defaultProjectPath = path.resolve(options.defaultProjectPath ?? process.cwd());
@@ -479,24 +497,33 @@ export async function startOrchestratorServer(
   let globalMaxWorkers: number;
   let globalModelMode: 'opus' | 'mixed';
   let bootAwayMode: boolean;
+  let bootAutonomyTier: AutonomyTier;
   try {
     const bootGlobalConfig = await loadConfig();
     globalMaxWorkers = bootGlobalConfig.config.maxConcurrentWorkers;
     globalModelMode = bootGlobalConfig.config.modelMode;
     bootAwayMode = bootGlobalConfig.config.awayMode;
+    bootAutonomyTier = bootGlobalConfig.config.autonomyTier;
   } catch {
     const fallback = (await import('../utils/config-schema.js')).defaultConfig();
     globalMaxWorkers = fallback.maxConcurrentWorkers;
     globalModelMode = fallback.modelMode;
     bootAwayMode = fallback.awayMode;
+    bootAutonomyTier = fallback.autonomyTier;
   }
-  // Phase 3M — stamp the dispatch context with the persisted awayMode value
-  // so the capability shim's host-browser-control guard (`capabilities.ts`)
-  // takes effect on the first tool call after boot, even before the TUI
-  // mounts and pushes a `runtime.setAwayMode` over RPC. Without this, a
-  // user who quit while away would silently lose the protection on the
-  // next session until they re-toggled.
-  context = { ...context, awayMode: bootAwayMode };
+  // Phase 3M / 3S — stamp the dispatch context with the persisted runtime
+  // flags so the capability shim's guards take effect on the first tool
+  // call after boot, even before the TUI mounts and pushes
+  // `runtime.setAwayMode` / `runtime.setAutonomyTier` over RPC. Without
+  // these, a user who quit while away (or at a non-default tier) would
+  // silently lose the protection on the next session until they
+  // re-toggled. `options.initialTier` wins over the disk read when
+  // explicitly provided (test rigs); otherwise disk wins.
+  context = {
+    ...context,
+    awayMode: bootAwayMode,
+    tier: options.initialTier ?? bootAutonomyTier,
+  };
   // Phase 3H.2 — model mode → default-model resolver. opus → every
   // spawn that doesn't pass an explicit `model:` runs on Opus 4.7.
   // mixed → no default; Maestro's explicit per-task `model` arg wins
@@ -684,6 +711,16 @@ export async function startOrchestratorServer(
       // stay at the boot-time value for the life of the process.
       setDispatchAwayMode: (value) => {
         context = { ...context, awayMode: value };
+      },
+      // Phase 3S — same shape as setDispatchAwayMode but for the tier
+      // cursor. The closure ALSO clears the capability evaluator's
+      // first-use seen-set so notices re-arm: changing the tier is an
+      // implicit re-confirmation of intent, and a stale tier-2 session
+      // shouldn't silently suppress notices after the user dialed up to
+      // tier-3-then-back. Symphony 6-site rule reference impl.
+      setDispatchAutonomyTier: (value) => {
+        context = { ...context, tier: value };
+        capabilityEvaluator.resetFirstUseTracker();
       },
       // Phase 3N.2 — stamp orchestrator boot so the stats aggregator
       // can filter crash-recovered workers (their createdAt predates

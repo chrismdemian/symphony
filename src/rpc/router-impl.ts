@@ -90,6 +90,15 @@ export interface RouterDeps {
    */
   readonly setDispatchAwayMode?: (awayMode: boolean) => void;
   /**
+   * Phase 3S — same shape as `setDispatchAwayMode` but for the global
+   * autonomy tier cursor. The CLI server's closure ALSO calls
+   * `capabilityEvaluator.resetFirstUseTracker()` so first-use notices
+   * re-arm after a tier change (changing the tier is an implicit
+   * re-confirmation of intent). Omit in test rigs that don't construct
+   * a context cursor — the RPC echoes back the requested tier.
+   */
+  readonly setDispatchAutonomyTier?: (tier: AutonomyTier) => void;
+  /**
    * Phase 3N.2 — ISO timestamp stamped at orchestrator boot. Used by the
    * `stats.session` aggregator to filter out crash-recovered workers
    * from a prior session (their `createdAt` predates `bootIso`). When
@@ -223,6 +232,16 @@ export interface RuntimeSetAwayModeArgs {
 
 export interface RuntimeSetAwayModeResult {
   readonly awayMode: boolean;
+}
+
+// Phase 3S — autonomy tier hot-apply.
+
+export interface RuntimeSetAutonomyTierArgs {
+  readonly tier: AutonomyTier;
+}
+
+export interface RuntimeSetAutonomyTierResult {
+  readonly tier: AutonomyTier;
 }
 
 // ── Queue argument shapes (Phase 3L) ─────────────────────────────────
@@ -661,6 +680,21 @@ export function createSymphonyRouter(deps: RouterDeps) {
       }
       deps.setDispatchAwayMode?.(args.awayMode);
       return { awayMode: args.awayMode };
+    },
+    // Phase 3S — push the autonomy tier from the TUI into the dispatch
+    // context cursor. Validates literal 1|2|3 (numbers, not strings) and
+    // rejects anything else with a typed bad-args error so a misbehaving
+    // client can't silently desync. Mirrors `setAwayMode`'s best-effort
+    // shape: the CLI server wires `deps.setDispatchAutonomyTier`; test
+    // rigs without a dispatch cursor still get arg validation.
+    async setAutonomyTier(
+      args: RuntimeSetAutonomyTierArgs,
+    ): Promise<RuntimeSetAutonomyTierResult> {
+      if (args?.tier !== 1 && args?.tier !== 2 && args?.tier !== 3) {
+        throw badArgs('tier must be 1, 2, or 3');
+      }
+      deps.setDispatchAutonomyTier?.(args.tier);
+      return { tier: args.tier };
     },
   });
 

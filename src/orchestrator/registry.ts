@@ -5,7 +5,7 @@ import type { CapabilityEvaluator } from './capabilities.js';
 import { wrapToolHandler } from './dispatch.js';
 import type { ModeController } from './mode.js';
 import type { AgentSafetyGuard } from './safety.js';
-import type { CapabilityFlag, DispatchContext, ToolScope } from './types.js';
+import type { CapabilityFlag, CapabilityNotice, DispatchContext, ToolScope } from './types.js';
 
 export interface ToolRegistration<TShape extends z.ZodRawShape> {
   name: string;
@@ -34,6 +34,15 @@ export interface ToolRegistryOptions {
   safety: AgentSafetyGuard;
   capabilityEvaluator: CapabilityEvaluator;
   getContext: () => DispatchContext;
+  /**
+   * Phase 3S — optional sink for capability-decision notices. Forwarded
+   * verbatim to `wrapToolHandler.noticeSink`. The CLI server wires this
+   * to a logging fan-out for now; Phase 7 (Chrome DevTools MCP plugin —
+   * the first real consumer of `requires-secrets-read`) will swap to a
+   * proper TUI toast broker so first-use notices surface immediately.
+   * Test rigs can omit it.
+   */
+  noticeSink?: (notice: CapabilityNotice) => void;
 }
 
 interface TrackedTool {
@@ -58,6 +67,7 @@ export class ToolRegistry {
   private readonly safety: AgentSafetyGuard;
   private readonly capabilityEvaluator: CapabilityEvaluator;
   private readonly getContext: () => DispatchContext;
+  private readonly noticeSink?: (notice: CapabilityNotice) => void;
   private readonly tracked: TrackedTool[] = [];
   private readonly byName = new Map<string, TrackedTool>();
   private readonly offModeChange: () => void;
@@ -68,6 +78,7 @@ export class ToolRegistry {
     this.safety = opts.safety;
     this.capabilityEvaluator = opts.capabilityEvaluator;
     this.getContext = opts.getContext;
+    this.noticeSink = opts.noticeSink;
     this.offModeChange = this.mode.onChange(() => this.applyMode());
   }
 
@@ -83,6 +94,7 @@ export class ToolRegistry {
       safety: this.safety,
       capabilityEvaluator: this.capabilityEvaluator,
       getContext: this.getContext,
+      ...(this.noticeSink !== undefined ? { noticeSink: this.noticeSink } : {}),
       handler: (args, ctx) =>
         reg.handler(
           args as TShape extends z.ZodRawShape ? { [K in keyof TShape]: z.infer<TShape[K]> } : Record<string, never>,
