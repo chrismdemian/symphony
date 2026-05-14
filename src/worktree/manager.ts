@@ -381,6 +381,40 @@ export class WorktreeManager {
           });
         }
       }
+
+      // 3Q Opus audit Major 2 — after the worktree sweep, prune
+      // orphaned Symphony branches whose worktrees were deleted
+      // externally before reset ran. Without this, the user's
+      // `git branch --list` accumulates `symphony/<old-id>/<slug>`
+      // entries indefinitely.
+      //
+      // Best-effort: failures are swallowed (no entry in skipped[]) so
+      // a broken `for-each-ref` invocation doesn't fail the whole
+      // sweep. Honors `deleteBranch !== false` so callers that want
+      // to keep branches around (test fixtures, debugging) still can.
+      if ((options.deleteBranch ?? true) === true) {
+        try {
+          const { stdout: refs } = await execFileAsync(
+            'git',
+            [
+              'for-each-ref',
+              '--format=%(refname:short)',
+              `refs/heads/${this.branchPrefix}/`,
+            ],
+            { cwd: projectPath },
+          );
+          const branchNames = refs.split(/\r?\n/).filter((s) => s.length > 0);
+          for (const branch of branchNames) {
+            await deleteBranchWithPruneRetry(projectPath, branch).catch(() => {
+              // Best-effort. A branch that's still checked out
+              // (e.g., the main branch coincidentally matched the
+              // prefix) will fail; that's the desired behavior.
+            });
+          }
+        } catch {
+          // for-each-ref failed (no refs match, or git error). No-op.
+        }
+      }
       return { removed, skipped };
     });
   }

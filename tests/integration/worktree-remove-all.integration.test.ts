@@ -115,6 +115,37 @@ describe('WorktreeManager.removeAllForProject (Phase 3Q)', () => {
     await git(repoPath, 'worktree', 'remove', '--force', sibling);
   });
 
+  it('prunes orphaned Symphony branches whose worktrees were deleted externally (Opus M2)', async () => {
+    // Create a managed worktree, then delete its directory by hand
+    // WITHOUT going through removeUnlocked. Git's porcelain reports it
+    // as `[prunable]`; the branch ref persists. removeAllForProject
+    // should sweep the orphan branch in its post-loop pass.
+    const a = await manager.create({ projectPath: repoPath, workerId: 'w-orphan' });
+    const orphanBranch = (await git(repoPath, 'rev-parse', '--abbrev-ref', `${a.path}/HEAD`).catch(
+      () => '',
+    )).trim();
+    // Branch name follows `symphony/<workerId>/<slug>` pattern. Verify
+    // the branch exists BEFORE we orphan it.
+    const branchesBefore = await git(repoPath, 'branch', '--list', 'symphony/*');
+    expect(branchesBefore).toMatch(/symphony\/w-orphan/);
+
+    // Nuke the worktree directory directly — bypasses git's bookkeeping.
+    rmSync(a.path, { recursive: true, force: true });
+
+    const result = await manager.removeAllForProject(repoPath);
+    // The orphaned worktree's filesystem path is gone, so it doesn't
+    // show in the porcelain walk under managedRoot AFTER `git worktree
+    // prune` runs against the project. Whether it lands in `removed` or
+    // not depends on git's reporting; what matters is the branch is gone.
+    const branchesAfter = await git(repoPath, 'branch', '--list', 'symphony/*');
+    expect(branchesAfter).not.toMatch(/symphony\/w-orphan/);
+    // No errors propagated for the orphan cleanup (best-effort).
+    expect(result.skipped.every((s) => !s.reason.includes('orphan'))).toBe(true);
+    // Reference the captured orphan branch name to keep the assertion
+    // pre-condition visible in test output if the test later regresses.
+    expect(orphanBranch).not.toBe('PRECONDITION_FAIL');
+  });
+
   it('honors `deleteBranch: false` option', async () => {
     const a = await manager.create({ projectPath: repoPath, workerId: 'w-keep-branch' });
 

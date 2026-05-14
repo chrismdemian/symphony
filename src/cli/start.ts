@@ -170,11 +170,13 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
       }
     }, SHUTDOWN_DEADLINE_MS);
     deadline.unref?.();
+    let cleanupErrorCount = 0;
     while (cleanup.length > 0) {
       const step = cleanup.pop()!;
       try {
         await step.run();
       } catch (err) {
+        cleanupErrorCount += 1;
         log(`cleanup step '${step.label}' failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
@@ -182,7 +184,19 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
     // Phase 3Q — final user-facing message after every cleanup step has
     // run. Distinct from the diagnostic `log(...)` lines above: this is
     // the one sentence the user sees on a graceful exit.
-    stderr.write('State saved. Run `symphony start` to resume.\n');
+    //
+    // Opus audit Minor 2 — when one or more cleanup steps threw, the
+    // unconditional "State saved" was misleading. SQLite is still
+    // write-through (so persistent state IS saved) but qualifying the
+    // message keeps the user honest about diagnostic noise just printed.
+    if (cleanupErrorCount > 0) {
+      stderr.write(
+        `State saved (with ${cleanupErrorCount} cleanup warning${cleanupErrorCount === 1 ? '' : 's'} above). ` +
+          `Run \`symphony start\` to resume.\n`,
+      );
+    } else {
+      stderr.write('State saved. Run `symphony start` to resume.\n');
+    }
     resolveDone();
   };
 

@@ -122,6 +122,27 @@ describe('runReset (Phase 3Q)', () => {
     expect(existsSync(path.join(repoPath, 'README.md'))).toBe(true);
   });
 
+  it('refuses with db-probe-failed when the DB file is malformed (Opus M1)', async () => {
+    // Write a NOT-SQLite file at dbPath. better-sqlite3's open() will
+    // succeed (it lazy-validates), but BEGIN IMMEDIATE fails because the
+    // file has no valid header. The error is NOT busy/locked, so reset
+    // must return 'db-probe-failed' — NOT 'server-running'.
+    writeFileSync(dbPath, 'this is not a sqlite database', 'utf8');
+
+    const result = await runReset({
+      force: true,
+      home,
+      dbFilePath: dbPath,
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('db-probe-failed');
+    // DB file untouched.
+    expect(existsSync(dbPath)).toBe(true);
+  });
+
   it('refuses when another writer holds the DB (server-running)', async () => {
     await initRepo(repoPath);
     seedDb(dbPath, [repoPath]);

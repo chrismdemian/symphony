@@ -44,7 +44,7 @@ export interface RunResetOptions {
   readonly worktreeManager?: WorktreeManager;
 }
 
-export type ResetRefusalReason = 'server-running' | 'cancelled';
+export type ResetRefusalReason = 'server-running' | 'cancelled' | 'db-probe-failed';
 
 export interface RunResetResult {
   readonly ok: boolean;
@@ -89,13 +89,19 @@ export async function runReset(options: RunResetOptions = {}): Promise<RunResetR
       // not retry for 5 seconds.
       probe.pragma('busy_timeout = 250');
     } catch (err) {
+      // 3Q Opus audit Major 1 — distinguish "DB exists but can't open"
+      // from "DB held by another writer". Open-failure is `db-probe-failed`
+      // (don't lie that the server is running).
       log(`failed to open DB at ${dbFilePath}: ${err instanceof Error ? err.message : String(err)}`);
-      return { ok: false, reason: 'server-running', removed: [], skipped: [], deletedFiles: [] };
+      return { ok: false, reason: 'db-probe-failed', removed: [], skipped: [], deletedFiles: [] };
     }
     try {
       // BEGIN IMMEDIATE acquires the reserved lock. If another writer is
       // active, this fails with SQLITE_BUSY. WAL readers don't block this
-      // probe — only writers do.
+      // probe — only writers do. Production Symphony uses WAL mode via
+      // the migration runner; non-WAL on-disk files are unusual and the
+      // probe's behavior in that case is acceptable (BEGIN IMMEDIATE
+      // works in both journal modes).
       probe.exec('BEGIN IMMEDIATE');
       probe.exec('ROLLBACK');
     } catch (err) {
@@ -107,9 +113,11 @@ export async function runReset(options: RunResetOptions = {}): Promise<RunResetR
         );
         return { ok: false, reason: 'server-running', removed: [], skipped: [], deletedFiles: [] };
       }
-      // Some other DB error — don't proceed.
-      log(`pre-flight lock probe failed: ${message}`);
-      return { ok: false, reason: 'server-running', removed: [], skipped: [], deletedFiles: [] };
+      // 3Q Opus audit Major 1 — non-busy SQLite errors (corrupt DB, disk
+      // full mid-probe) are NOT server-running. Surface as a distinct
+      // refusal so the user can debug.
+      log(`pre-flight lock probe failed (not busy): ${message}`);
+      return { ok: false, reason: 'db-probe-failed', removed: [], skipped: [], deletedFiles: [] };
     }
     // Read project paths. Defensive against schema variance: if the
     // table is missing or shape is off, we treat as zero projects (the
@@ -186,10 +194,15 @@ export async function runReset(options: RunResetOptions = {}): Promise<RunResetR
   }
 
   // ── 6. Summary ──────────────────────────────────────────────────────
+  // 3Q Opus audit Minor 1 — when every project's worktree sweep
+  // failed (removed === 0 && skipped > 0), the DB still wiped but
+  // the worktree state didn't. Lead with "Reset partial" so the
+  // user knows to investigate before assuming a clean slate.
   const projectCount = projectPaths.length;
   const skippedSummary = skipped.length === 0 ? '' : ` Skipped ${skipped.length} (see log).`;
+  const lead = removed.length === 0 && skipped.length > 0 ? 'Reset partial' : 'Reset complete';
   stdout.write(
-    `Reset complete. Removed ${removed.length} worktree${removed.length === 1 ? '' : 's'} ` +
+    `${lead}. Removed ${removed.length} worktree${removed.length === 1 ? '' : 's'} ` +
       `across ${projectCount} project${projectCount === 1 ? '' : 's'}.${skippedSummary} ` +
       `Run \`symphony start\` to begin fresh.\n`,
   );
