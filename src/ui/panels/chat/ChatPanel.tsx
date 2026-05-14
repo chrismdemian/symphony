@@ -66,6 +66,8 @@ export function ChatPanel(): React.JSX.Element {
         // Phase 3N.3 — `/stats` opens the session-stats popup. Mirrors
         // `app.stats` palette entry.
         openStats: () => focus.pushPopup('stats'),
+        // Phase 3P — `/deps` opens the dep-graph popup.
+        openDeps: () => focus.pushPopup('deps'),
       }),
     [actions.onRequestExit, actions.toggleAwayMode, focus.pushPopup],
   );

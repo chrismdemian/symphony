@@ -21,6 +21,7 @@ import {
 } from './data/MaestroEventsProvider.js';
 import { useCompletionEvents } from './data/useCompletionEvents.js';
 import { useAutoMergeEvents } from './data/useAutoMergeEvents.js';
+import { useTaskReadyEvents } from './data/useTaskReadyEvents.js';
 import { useInstrumentNames } from './data/useInstrumentNames.js';
 import { InstrumentNameProvider } from './data/InstrumentNameContext.js';
 import { AppActionsProvider } from './runtime/AppActions.js';
@@ -126,6 +127,13 @@ function AppShell(props: AppProps): React.JSX.Element {
   // SystemSummary shape by the hook (statusKind mapping carries the
   // glyph + color, headline carries the message).
   useAutoMergeEvents({
+    rpc: props.rpc,
+    pushSystem,
+  });
+  // Phase 3P — task-ready events fire when a dep clears and a
+  // dependent's `dependsOn` chain is now fully completed. Mirrors
+  // the auto-merge subscribe shape exactly.
+  useTaskReadyEvents({
     rpc: props.rpc,
     pushSystem,
   });
@@ -351,6 +359,9 @@ function AppShell(props: AppProps): React.JSX.Element {
           // Phase 3N.3 — palette entry "show session stats". Slash
           // command `/stats` is wired in ChatPanel.
           openStats: () => focus.pushPopup('stats'),
+          // Phase 3P — palette entry "show task dep graph". Slash
+          // command `/deps` is wired in ChatPanel.
+          openDeps: () => focus.pushPopup('deps'),
         },
         {
           questionsCount: questionsResult.count,

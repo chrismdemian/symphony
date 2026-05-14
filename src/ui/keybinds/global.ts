@@ -108,6 +108,11 @@ export interface GlobalCommandHandlers {
    * the stats popup. Optional during 3N transition.
    */
   openStats?(): void;
+  /**
+   * Phase 3P — `/deps` slash + `app.openDeps` palette entry push the
+   * dep-graph popup. Optional during 3P transition.
+   */
+  openDeps?(): void;
 }
 
 export interface GlobalCommandState {
@@ -305,6 +310,16 @@ export function buildGlobalCommands(
       scope: 'global',
       displayOnScreen: false,
       onSelect: handlers.openStats ?? (() => undefined),
+    },
+    // Phase 3P — palette-only entry into the dep-graph popup. No hotkey;
+    // `/deps` slash is the keystroke surface.
+    {
+      id: 'app.deps',
+      title: 'show task dep graph',
+      key: { kind: 'none' },
+      scope: 'global',
+      displayOnScreen: false,
+      onSelect: handlers.openDeps ?? (() => undefined),
     },
   ];
 }
