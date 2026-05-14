@@ -221,4 +221,58 @@ describe('wrapToolHandler', () => {
     mode = 'act';
     expect((await handler({})).isError).toBe(true);
   });
+
+  // Phase 3S — noticeSink wiring.
+
+  it('invokes noticeSink on first-use of requires-secrets-read at tier 2 (3S)', async () => {
+    const seen: Array<{ tool: string; flag: string }> = [];
+    const handler = wrapToolHandler({
+      name: 'secrets_get',
+      scope: 'act',
+      capabilities: ['requires-secrets-read'],
+      handler: async () => ok('read'),
+      safety: new AgentSafetyGuard(),
+      capabilityEvaluator: new CapabilityEvaluator(),
+      getContext: () => baseCtx({ mode: 'act', tier: 2 }),
+      noticeSink: (n) => seen.push({ tool: n.tool, flag: n.flag }),
+    });
+    await handler({});
+    expect(seen).toEqual([{ tool: 'secrets_get', flag: 'requires-secrets-read' }]);
+    // Second call: same tool, no re-fire.
+    await handler({});
+    expect(seen).toHaveLength(1);
+  });
+
+  it('does not invoke noticeSink when sink is not provided (3S)', async () => {
+    const evaluator = new CapabilityEvaluator();
+    const handler = wrapToolHandler({
+      name: 'secrets_get',
+      scope: 'act',
+      capabilities: ['requires-secrets-read'],
+      handler: async () => ok('read'),
+      safety: new AgentSafetyGuard(),
+      capabilityEvaluator: evaluator,
+      getContext: () => baseCtx({ mode: 'act', tier: 2 }),
+    });
+    const result = await handler({});
+    // Tool still runs; seen-set still mutated.
+    expect(result.isError).toBeFalsy();
+  });
+
+  it('swallows noticeSink failures so the tool still runs (3S)', async () => {
+    const handler = wrapToolHandler({
+      name: 'secrets_get',
+      scope: 'act',
+      capabilities: ['requires-secrets-read'],
+      handler: async () => ok('read'),
+      safety: new AgentSafetyGuard(),
+      capabilityEvaluator: new CapabilityEvaluator(),
+      getContext: () => baseCtx({ mode: 'act', tier: 2 }),
+      noticeSink: () => {
+        throw new Error('toast tray exploded');
+      },
+    });
+    const result = await handler({});
+    expect(result.isError).toBeFalsy();
+  });
 });
