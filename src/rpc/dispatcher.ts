@@ -13,6 +13,7 @@ import { resolveProcedure } from './router.js';
 import type { WorkerEventBroker } from './event-broker.js';
 import type { CompletionsBroker } from '../orchestrator/completion-summarizer-types.js';
 import type { AutoMergeBroker } from '../orchestrator/auto-merge-types.js';
+import type { TaskReadyBroker } from '../orchestrator/task-ready-types.js';
 
 /**
  * Per-connection dispatcher — Phase 2B.2.
@@ -88,6 +89,13 @@ export interface DispatcherOptions {
    * resolve `not_found`.
    */
   readonly autoMergeBroker?: AutoMergeBroker;
+  /**
+   * Phase 3P — optional task-ready broker. When supplied,
+   * `subscribe('task-ready.events')` is accepted; subscribers receive
+   * every `TaskReadyEvent` published server-side. When omitted,
+   * subscribes to that topic resolve `not_found`.
+   */
+  readonly taskReadyBroker?: TaskReadyBroker;
 }
 
 interface SubscriptionEntry {
@@ -98,12 +106,14 @@ interface SubscriptionEntry {
 const WORKERS_EVENTS_TOPIC = 'workers.events' as const;
 const COMPLETIONS_EVENTS_TOPIC = 'completions.events' as const;
 const AUTO_MERGE_EVENTS_TOPIC = 'auto-merge.events' as const;
+const TASK_READY_EVENTS_TOPIC = 'task-ready.events' as const;
 
 export class Dispatcher {
   private readonly router: RouterMap;
   private readonly broker: WorkerEventBroker;
   private readonly completionsBroker: CompletionsBroker | undefined;
   private readonly autoMergeBroker: AutoMergeBroker | undefined;
+  private readonly taskReadyBroker: TaskReadyBroker | undefined;
   private readonly send: DispatcherSend;
   private readonly signal: AbortSignal;
   private readonly closeOnProtocolError: DispatcherProtocolViolationCloser;
@@ -116,6 +126,7 @@ export class Dispatcher {
     this.broker = opts.broker;
     this.completionsBroker = opts.completionsBroker;
     this.autoMergeBroker = opts.autoMergeBroker;
+    this.taskReadyBroker = opts.taskReadyBroker;
     this.send = opts.send;
     this.signal = opts.signal;
     this.closeOnProtocolError = opts.closeOnProtocolError ?? (() => {});
@@ -220,6 +231,10 @@ export class Dispatcher {
     }
     if (frame.topic === AUTO_MERGE_EVENTS_TOPIC) {
       this.handleAutoMergeSubscribe(frame);
+      return;
+    }
+    if (frame.topic === TASK_READY_EVENTS_TOPIC) {
+      this.handleTaskReadySubscribe(frame);
       return;
     }
     if (frame.topic !== WORKERS_EVENTS_TOPIC) {
@@ -328,6 +343,33 @@ export class Dispatcher {
     });
     this.subscriptions.set(frame.id, { topic: AUTO_MERGE_EVENTS_TOPIC, unsubscribe });
     this.sendResult(frame.id, ok({ topic: AUTO_MERGE_EVENTS_TOPIC }));
+  }
+
+  private handleTaskReadySubscribe(frame: SubscribeFrame): void {
+    // Phase 3P — global task-ready event feed. Mirrors auto-merge
+    // subscribe shape: no args (channel is global), duplicate-id check
+    // mirrors parent handleSubscribe, drop-on-backpressure send policy.
+    if (this.subscriptions.has(frame.id)) {
+      this.sendResult(frame.id, err('bad_args', `subscription id '${frame.id}' already in use`));
+      return;
+    }
+    if (this.taskReadyBroker === undefined) {
+      this.sendResult(
+        frame.id,
+        err('not_found', `subscription topic '${TASK_READY_EVENTS_TOPIC}' is not configured`),
+      );
+      return;
+    }
+    const unsubscribe = this.taskReadyBroker.subscribe((event) => {
+      const out: EventFrame = {
+        kind: 'event',
+        topic: TASK_READY_EVENTS_TOPIC,
+        payload: event,
+      };
+      this.send(encodeFrame(out), { dropOnBackpressure: true });
+    });
+    this.subscriptions.set(frame.id, { topic: TASK_READY_EVENTS_TOPIC, unsubscribe });
+    this.sendResult(frame.id, ok({ topic: TASK_READY_EVENTS_TOPIC }));
   }
 
   private handleUnsubscribe(frame: UnsubscribeFrame): void {

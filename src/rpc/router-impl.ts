@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { extractGraphEdges, type TaskGraph } from '../orchestrator/task-deps.js';
 import type { ProjectStore, ProjectSnapshot } from '../projects/types.js';
 import type {
   CreateTaskInput,
@@ -367,6 +368,16 @@ export function createSymphonyRouter(deps: RouterDeps) {
         throw new Error(`tasks.update: snapshot missing for '${record.id}' after update`);
       }
       return snap;
+    },
+    /**
+     * Phase 3P — full dep-graph snapshot for the TUI's `/deps` panel.
+     * Returns nodes (filtered to tasks with at least one edge per
+     * `extractGraphEdges`), edges, and any detected cycles (defensive —
+     * the current API can't produce cycles, but a hand-edited DB might).
+     */
+    graph(): TaskGraph {
+      const snapshots = taskStore.snapshots();
+      return extractGraphEdges(snapshots);
     },
   });
 
