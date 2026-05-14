@@ -134,3 +134,43 @@ export class UnknownTaskError extends Error {
     this.taskId = taskId;
   }
 }
+
+/**
+ * Phase 3P — thrown by `spawn_worker` when `task_id` is set but the
+ * task's `dependsOn` chain is unmet. `code` is the typed discriminant
+ * the chat row uses to render a specific message; `blockedBy` lists
+ * each unmet dep with its current status (`null` for unknown id).
+ */
+export interface TaskBlocker {
+  readonly id: string;
+  readonly status: TaskStatus | null;
+}
+
+export class TaskNotReadyError extends Error {
+  readonly code = 'task-not-ready';
+  readonly taskId: string;
+  readonly blockedBy: readonly TaskBlocker[];
+  constructor(taskId: string, blockedBy: readonly TaskBlocker[]) {
+    const ids = blockedBy.map((b) => b.id).join(', ');
+    super(`Task '${taskId}' is not ready; blocked by ${ids}`);
+    this.name = 'TaskNotReadyError';
+    this.taskId = taskId;
+    this.blockedBy = blockedBy;
+  }
+}
+
+/**
+ * Phase 3P — defensive cycle detection error. Never produced by the
+ * current API (create_task validates deps exist; update_task does not
+ * mutate dependsOn) but surfaced by `/deps` when hand-edited SQLite
+ * or a future API mutation path introduces a back-edge.
+ */
+export class TaskCycleError extends Error {
+  readonly code = 'task-cycle';
+  readonly path: readonly string[];
+  constructor(path: readonly string[]) {
+    super(`Task dependency cycle detected: ${path.join(' → ')}`);
+    this.name = 'TaskCycleError';
+    this.path = path;
+  }
+}
