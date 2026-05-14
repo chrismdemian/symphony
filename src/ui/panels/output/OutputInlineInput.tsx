@@ -53,6 +53,14 @@ export function OutputInlineInput({
   const unmountedRef = useRef(false);
 
   useEffect(() => {
+    // Audit Minor #1: explicit `false` reset on mount mirrors the codebase
+    // pattern in `useAnswerQuestion.ts`, `useWorkerDiff.ts`, and
+    // `WorkerPanel.tsx`. Symphony doesn't use StrictMode today so the
+    // double-invoke isn't load-bearing; future StrictMode adoption (or a
+    // refactor that re-mounts under the same Fiber) would otherwise carry
+    // the stale `true` from a prior cycle and silently skip every
+    // post-submit setState.
+    unmountedRef.current = false;
     return () => {
       unmountedRef.current = true;
     };

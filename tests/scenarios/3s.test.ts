@@ -271,6 +271,13 @@ describe('Phase 3S scenario — autonomy dial + Mission Control', () => {
     expect(rpc.call.runtime.setAutonomyTier).toHaveBeenCalledTimes(3);
     expect(rpc.call.runtime.setAutonomyTier).toHaveBeenLastCalledWith({ tier: 2 });
 
+    // Audit Minor #4 — assert ABSENCE of unrelated RPC fires. With 28
+    // namespaces in the fake, a regression where Ctrl+Y wires through
+    // the wrong path could pass silently. Lock the invariant.
+    expect(rpc.call.runtime.setAwayMode).not.toHaveBeenCalled();
+    expect(rpc.call.workers.sendTo).not.toHaveBeenCalled();
+    expect(rpc.call.workers.kill).not.toHaveBeenCalled();
+
     await handle.stop('scenario shutdown');
     await handle.done;
   });

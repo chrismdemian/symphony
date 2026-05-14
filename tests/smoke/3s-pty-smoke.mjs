@@ -42,7 +42,7 @@ const args = isWin
 // Phase 3S — sandbox the config file so the smoke doesn't read/write
 // the user's real ~/.symphony/config.json. Each smoke run starts from
 // schema defaults (autonomyTier=2) regardless of what the user has set.
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 const sandboxConfigDir = mkdtempSync(path.join(tmpdir(), 'symphony-3s-smoke-'));
 const sandboxConfigFile = path.join(sandboxConfigDir, 'config.json');
@@ -190,6 +190,14 @@ try {
   findings.push({ ok: false, label: `harness error: ${err instanceof Error ? err.message : String(err)}` });
 } finally {
   if (!exited) pty.kill();
+  // Audit Minor #5 — clean up the sandbox config dir. mkdtempSync would
+  // otherwise leak `symphony-3s-smoke-*` directories on CI workers that
+  // retain disk state across runs.
+  try {
+    rmSync(sandboxConfigDir, { recursive: true, force: true });
+  } catch {
+    // best-effort
+  }
 }
 
 if (process.env['SYMPHONY_PTY_DEBUG'] === '1') {
