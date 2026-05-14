@@ -554,6 +554,11 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
     stdin: stdin as NodeJS.ReadStream,
     stdout: stdout as NodeJS.WriteStream,
     ...(options.initialPopup !== undefined ? { initialPopup: options.initialPopup } : {}),
+    // Phase 3Q — thread the boot-time recovery snapshot into the TUI.
+    // `<AppShell>`'s mount-effect dispatches a one-shot system chat row
+    // when `crashedIds` is non-empty. Empty snapshots are also passed so
+    // the AppShell hook's guard runs cleanly.
+    recovery: recoveryReport,
   });
 
   if (tui.active) {

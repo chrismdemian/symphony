@@ -55,6 +55,17 @@ export interface RunTuiInput {
    * mount-time effect in `<AppShell>`. Re-mount (e.g. tests) re-fires.
    */
   readonly initialPopup?: string;
+  /**
+   * Phase 3Q — boot-time recovery snapshot. When `crashedIds.length > 0`,
+   * `<AppShell>` dispatches a one-shot SystemSummary chat row at mount
+   * naming the recovered workers. The launcher reads the snapshot via
+   * `rpc.call.recovery.report()` and threads it through. Fires exactly
+   * once (StrictMode-safe firedRef).
+   */
+  readonly recovery?: {
+    readonly crashedIds: readonly string[];
+    readonly capturedAt: string;
+  };
 }
 
 export interface RunTuiHandle {
@@ -114,6 +125,7 @@ export function runTui(input: RunTuiInput): RunTuiHandle {
       version: input.version,
       onRequestExit: input.onRequestExit,
       ...(input.initialPopup !== undefined ? { initialPopup: input.initialPopup } : {}),
+      ...(input.recovery !== undefined ? { recovery: input.recovery } : {}),
     }),
     {
       stdout,
