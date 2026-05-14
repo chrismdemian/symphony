@@ -78,6 +78,18 @@ program
   });
 
 program
+  .command('reset')
+  .description(
+    'Wipe all Symphony workers, tasks, questions, and worktrees. User config preserved.',
+  )
+  .option('--force', 'Skip the typed-confirmation prompt (CI / scripted).')
+  .action(async (opts: { force?: boolean }) => {
+    const { runReset } = await import('./cli/reset.js');
+    const result = await runReset({ force: opts.force === true });
+    process.exit(result.ok ? 0 : 1);
+  });
+
+program
   .command('mcp-server')
   .description('Run the Symphony orchestrator MCP server over stdio. Spawned as a child of claude -p.')
   .option('--in-memory', 'Skip the SQLite store; use in-memory registries only (Phase 2A behavior).')
