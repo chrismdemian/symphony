@@ -52,6 +52,16 @@ export interface AppProps {
    * `<AppShell>` AFTER the focus provider has settled.
    */
   readonly initialPopup?: string;
+  /**
+   * Phase 3Q — boot-time recovery snapshot. When `crashedIds.length > 0`,
+   * `<AppShell>` dispatches a one-shot system chat row at mount. The
+   * `firedRef` pattern keeps StrictMode double-invoke from doubling
+   * the row.
+   */
+  readonly recovery?: {
+    readonly crashedIds: readonly string[];
+    readonly capturedAt: string;
+  };
 }
 
 export function App(props: AppProps): React.JSX.Element {
@@ -238,6 +248,49 @@ function AppShell(props: AppProps): React.JSX.Element {
     initialPopupFiredRef.current = true;
     focus.pushPopup(initialPopupKey);
   }, [initialPopupKey, focus.pushPopup]);
+
+  // Phase 3Q — boot-time recovery banner. When the server reports
+  // workers that were flipped to `crashed` at boot, surface a one-shot
+  // system chat row so the user/Maestro sees the recovery immediately
+  // instead of having to open the workers panel. SystemSummary carrier
+  // is the same one the 3K completion + 3O.1 auto-merge + 3P task-ready
+  // hooks use (`pushSystem`). Mapped to `'failed'` statusKind because
+  // crashed workers DID fail to complete — the ✗ red glyph is the
+  // honest visual.
+  //
+  // The chat reducer's "defer when last turn is in-flight assistant"
+  // rule (3K gotcha) handles the case where Maestro has a streaming
+  // turn open at mount time — the system row joins the `pendingSystems`
+  // queue and drains on `turn_completed`.
+  //
+  // Synthetic workerId mirrors the 3M away-digest posture
+  // (`recovery-boot-<capturedAt>`); the chat reducer keys turns by its
+  // own `nextTurnId`, so collisions don't matter for rendering.
+  const recoveryFiredRef = React.useRef(false);
+  const recovery = props.recovery;
+  React.useEffect(() => {
+    if (recoveryFiredRef.current) return;
+    if (recovery === undefined) return;
+    if (recovery.crashedIds.length === 0) return;
+    recoveryFiredRef.current = true;
+    const n = recovery.crashedIds.length;
+    const headline =
+      n === 1
+        ? `Recovered 1 worker from previous session — visible in /workers as 'crashed'. Use resume_worker(id) to revive or kill_worker(id) to dismiss.`
+        : `Recovered ${n} workers from previous session — visible in /workers as 'crashed'. Use resume_worker(id) to revive or kill_worker(id) to dismiss.`;
+    pushSystem({
+      workerId: `recovery-boot-${recovery.capturedAt}`,
+      workerName: 'Symphony',
+      projectName: '',
+      // 'failed' renders with the ✗ red glyph — honest because the
+      // workers DID fail to complete (process boundary killed them).
+      // Maestro can decide per-worker whether to call resume_worker.
+      statusKind: 'failed',
+      durationMs: null,
+      headline,
+      fallback: false,
+    });
+  }, [recovery, pushSystem]);
 
   // Phase 3H.2 — real `<leader>m` and `<leader>t` handlers. Each
   // calls `setConfig` with a function-patch (audit C2 fix), surfaces a

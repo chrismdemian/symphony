@@ -559,7 +559,15 @@ export async function startOrchestratorServer(
   // process boundary; flip them to `crashed` so `list_workers` and
   // `global_status` reflect reality. User/Maestro revives intentional
   // ones via `resume_worker`.
-  workerLifecycle.recoverFromStore();
+  //
+  // Phase 3Q — capture the report so the `recovery.report` RPC can
+  // surface it to the launcher (which threads to the TUI as a chat
+  // banner). Snapshot is frozen here; repeat RPC calls return the same
+  // value for the life of the server.
+  const recoveryReport = {
+    crashedIds: workerLifecycle.recoverFromStore().crashedIds,
+    capturedAt: new Date().toISOString(),
+  };
 
   const planStore = createProposePlanStore();
   registry.register(thinkTool);
@@ -682,6 +690,10 @@ export async function startOrchestratorServer(
       // this) out of the "this session" tally. Stamped once per
       // `startOrchestratorServer` invocation, never mutated thereafter.
       orchestratorBootIso: new Date().toISOString(),
+      // Phase 3Q — boot-time recovery snapshot for the launcher's TUI
+      // banner. Captured above before this server was even constructed,
+      // so RPC clients see a stable value from the first call.
+      recoveryReport,
     });
     const handle = await startRpcServer({
       router: router as unknown as Parameters<typeof startRpcServer>[0]['router'],

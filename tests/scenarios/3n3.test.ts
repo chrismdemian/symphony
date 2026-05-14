@@ -165,6 +165,7 @@ function makeFakeRpc(
         byProject: vi.fn(async () => statsResponses.byProject),
         byWorker: vi.fn(async () => statsResponses.byWorker),
       },
+      recovery: { report: vi.fn(async () => ({ crashedIds: [], capturedAt: '1970-01-01T00:00:00.000Z' })) },
     },
     subscribe: vi.fn(async () => ({ topic: 'noop', unsubscribe: async () => {} })),
     close: vi.fn(async () => undefined),

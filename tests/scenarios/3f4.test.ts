@@ -160,6 +160,7 @@ function makeFakeRpc(
       notifications: {
         flushAwayDigest: vi.fn(async () => ({ digest: null })),
       },
+      recovery: { report: vi.fn(async () => ({ crashedIds: [], capturedAt: '1970-01-01T00:00:00.000Z' })) },
     },
     subscribe: vi.fn(
       async (_topic: string, args: unknown, _listener: (e: unknown) => void) => {
