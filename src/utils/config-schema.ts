@@ -118,6 +118,26 @@ export const SymphonyConfigSchema = z.object({
   defaultProjectPath: z.string().min(1).optional(),
   leaderTimeoutMs: z.number().int().min(100).max(1000).default(300),
   keybindOverrides: z.record(z.string(), KeyChordSchema).default({}),
+  /**
+   * Phase 3S — global autonomy tier. Controls the dispatch-context
+   * cursor's `tier` value, which the capability evaluator reads on every
+   * tool call to gate flag-floor enforcement. Cycled via Ctrl+Y in the
+   * TUI (`scope: 'global'`).
+   *
+   * Tier 1 = Free reign (no notifications), Tier 2 = Notify (default,
+   * matches `DEFAULT_DISPATCH_CONTEXT.tier` in
+   * `orchestrator/capabilities.ts`), Tier 3 = Confirm. Capability-flag
+   * floors apply on top: `requires-host-browser-control` requires Tier 3
+   * exactly; `requires-secrets-read` and `requires-network-egress-
+   * uncontrolled` require Tier 2 minimum.
+   *
+   * Runtime-aware field (6-site rule per 3M): mirror `awayMode`'s
+   * server-side propagation seam (`bootAutonomyTier` +
+   * `runtime.setAutonomyTier`), not just disk-write plumbing. The
+   * dispatcher's tier cursor is updated in-memory by the RPC; disk read
+   * happens once at boot.
+   */
+  autonomyTier: z.union([z.literal(1), z.literal(2), z.literal(3)]).default(2),
 });
 
 export type SymphonyConfig = z.infer<typeof SymphonyConfigSchema>;

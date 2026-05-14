@@ -156,4 +156,19 @@ describe('config helper', () => {
     const text = readFileSync(cfgFile, 'utf8');
     expect(text).not.toContain('defaultProjectPath');
   });
+
+  it('saveConfig() round-trips autonomyTier (3S)', async () => {
+    const cfg = { ...defaultConfig(), autonomyTier: 3 as const };
+    await saveConfig(cfg, cfgFile);
+    const loaded = await loadConfig(cfgFile);
+    expect(loaded.config.autonomyTier).toBe(3);
+  });
+
+  it('saveConfig() persists autonomyTier in the on-disk JSON (3S)', async () => {
+    const cfg = { ...defaultConfig(), autonomyTier: 1 as const };
+    await saveConfig(cfg, cfgFile);
+    const text = readFileSync(cfgFile, 'utf8');
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    expect(parsed['autonomyTier']).toBe(1);
+  });
 });

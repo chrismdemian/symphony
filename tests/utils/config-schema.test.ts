@@ -19,6 +19,10 @@ describe('config-schema', () => {
     expect(cfg.defaultProjectPath).toBeUndefined();
     expect(cfg.leaderTimeoutMs).toBe(300);
     expect(cfg.keybindOverrides).toEqual({});
+    // Phase 3S — default tier 2 matches DEFAULT_DISPATCH_CONTEXT.tier in
+    // orchestrator/capabilities.ts. Changing this default requires
+    // updating both files in lockstep.
+    expect(cfg.autonomyTier).toBe(2);
   });
 
   it('parseConfig(undefined) returns defaults with no warnings', () => {
@@ -155,5 +159,23 @@ describe('config-schema', () => {
     const result = parseConfig({ autoMerge: 'maybe' });
     expect(result.config.autoMerge).toBe('ask');
     expect(result.warnings.some((w) => w.includes('autoMerge'))).toBe(true);
+  });
+
+  it('parseConfig accepts each autonomyTier literal (3S)', () => {
+    expect(parseConfig({ autonomyTier: 1 }).config.autonomyTier).toBe(1);
+    expect(parseConfig({ autonomyTier: 2 }).config.autonomyTier).toBe(2);
+    expect(parseConfig({ autonomyTier: 3 }).config.autonomyTier).toBe(3);
+  });
+
+  it('parseConfig salvages out-of-range autonomyTier (3S)', () => {
+    const result = parseConfig({ autonomyTier: 99 });
+    expect(result.config.autonomyTier).toBe(2);
+    expect(result.warnings.some((w) => w.includes('autonomyTier'))).toBe(true);
+  });
+
+  it('parseConfig salvages a non-numeric autonomyTier (3S)', () => {
+    const result = parseConfig({ autonomyTier: 'high' });
+    expect(result.config.autonomyTier).toBe(2);
+    expect(result.warnings.some((w) => w.includes('autonomyTier'))).toBe(true);
   });
 });

@@ -200,6 +200,12 @@ function applyConfigEdits(existing: string, next: SymphonyConfig): string {
     // writes silently drop the change (the schema-default fills in on
     // re-read, masking the missed write). Smoke: tests/scenarios/3h3.
     ['awayMode', next.awayMode],
+    // Phase 3S — global autonomy tier. Same 6-site invariant as
+    // awayMode: zod schema, SymphonyConfigPatch, mergePatch,
+    // applyPatchInMemory (config-context.tsx), THIS field list, AND
+    // server.ts (boot stamp + runtime.setAutonomyTier RPC). Missing
+    // any site silently disconnects persistence from runtime.
+    ['autonomyTier', next.autonomyTier],
     ['theme', next.theme],
     ['leaderTimeoutMs', next.leaderTimeoutMs],
     ['keybindOverrides', next.keybindOverrides],
@@ -304,6 +310,15 @@ export interface SymphonyConfigPatch {
    * status indicator can toggle it without reaching into a sub-object.
    */
   readonly awayMode?: SymphonyConfig['awayMode'];
+  /**
+   * Phase 3S — global autonomy tier. Runtime-aware (mirrors `awayMode`):
+   * hot-applies via `runtime.setAutonomyTier` RPC into the dispatch-
+   * context cursor. The 6-site invariant for any future runtime-aware
+   * field — adding the field here without the matching `server.ts`
+   * propagation seam silently disconnects disk persistence from live
+   * dispatch.
+   */
+  readonly autonomyTier?: SymphonyConfig['autonomyTier'];
   readonly theme?: Partial<SymphonyConfig['theme']>;
   readonly defaultProjectPath?: SymphonyConfig['defaultProjectPath'] | null;
   readonly leaderTimeoutMs?: SymphonyConfig['leaderTimeoutMs'];
@@ -376,6 +391,9 @@ function mergePatch(current: SymphonyConfig, patch: SymphonyConfigPatch): Sympho
   if (patch.leaderTimeoutMs !== undefined) next.leaderTimeoutMs = patch.leaderTimeoutMs;
   if (patch.awayMode !== undefined) next.awayMode = patch.awayMode;
   if (patch.autoMerge !== undefined) next.autoMerge = patch.autoMerge;
+  // Phase 3S — autonomy tier. Same shape as awayMode but for
+  // dispatch-context tier-cursor rather than capability-gate boolean.
+  if (patch.autonomyTier !== undefined) next.autonomyTier = patch.autonomyTier;
   if (patch.notifications !== undefined) {
     next.notifications = { ...current.notifications, ...patch.notifications };
   }
