@@ -154,6 +154,7 @@ function makeFakeRpc(opts: {
       notifications: {
         flushAwayDigest: vi.fn(async () => ({ digest: null })),
       },
+      recovery: { report: vi.fn(async () => ({ crashedIds: [], capturedAt: '1970-01-01T00:00:00.000Z' })) },
     },
     subscribe: vi.fn(async (topic: string, _args: unknown, listener: (e: unknown) => void) => {
       if (topic === 'auto-merge.events') {

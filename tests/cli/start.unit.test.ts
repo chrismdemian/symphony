@@ -147,6 +147,9 @@ function makeFakeRpc(projects: ProjectSnapshot[]): FakeRpc {
       mode: {
         get: vi.fn(async () => ({ mode: 'plan' as const })),
       },
+      recovery: {
+        report: vi.fn(async () => ({ crashedIds: [], capturedAt: new Date(0).toISOString() })),
+      },
     },
     subscribe: vi.fn(async () => ({ topic: 'noop', unsubscribe: async () => {} })),
     close: vi.fn(async () => undefined),
@@ -532,5 +535,178 @@ describe('runStart wiring (unit)', () => {
     expect(factoryDeps?.defaultProjectPath).toBeUndefined();
     await handle.stop();
     await handle.done;
+  });
+});
+
+/**
+ * Phase 3Q — Reliability. SIGHUP / uncaughtException / unhandledRejection
+ * routing, final "State saved" message, recovery RPC call.
+ */
+describe('runStart 3Q reliability', () => {
+  it('calls rpc.call.recovery.report() after RPC connect and logs count when > 0', async () => {
+    const fakeMaestro = new FakeMaestroProcess();
+    const fakeMaestroAsProcess = fakeMaestro as unknown as MaestroProcess;
+    Object.defineProperty(fakeMaestroAsProcess, 'events', {
+      value: () => fakeMaestro.eventsIter(),
+    });
+    const rpc = makeFakeRpc([]);
+    rpc.call.recovery.report = vi.fn(async () => ({
+      crashedIds: ['w-1', 'w-2', 'w-3'],
+      capturedAt: '2026-05-14T10:00:00.000Z',
+    }));
+
+    const stderr = new PassThrough();
+    const stderrBufs: string[] = [];
+    stderr.on('data', (c: Buffer) => stderrBufs.push(c.toString('utf8')));
+
+    const handle = await runStart({
+      home,
+      cliEntryPath: '/fake/cli/entry.js',
+      io: { stdin: new PassThrough(), stdout: new PassThrough(), stderr },
+      skipSignalHandlers: true,
+      rpcOverride: { descriptor: { host: '127.0.0.1', port: 0, token: 't' }, client: rpc },
+      hookServerFactory: () => new MaestroHookServer({ token: 'tok' }),
+      maestroFactory: () => fakeMaestroAsProcess,
+      workerManager: {} as never,
+    });
+
+    expect(rpc.call.recovery.report).toHaveBeenCalledTimes(1);
+    expect(stderrBufs.join('')).toMatch(/recovered 3 crashed workers from previous session/);
+
+    await handle.stop();
+    await handle.done;
+  });
+
+  it('omits recovery log line when crashedIds is empty', async () => {
+    const fakeMaestro = new FakeMaestroProcess();
+    const fakeMaestroAsProcess = fakeMaestro as unknown as MaestroProcess;
+    Object.defineProperty(fakeMaestroAsProcess, 'events', {
+      value: () => fakeMaestro.eventsIter(),
+    });
+    const rpc = makeFakeRpc([]);
+
+    const stderr = new PassThrough();
+    const stderrBufs: string[] = [];
+    stderr.on('data', (c: Buffer) => stderrBufs.push(c.toString('utf8')));
+
+    const handle = await runStart({
+      home,
+      cliEntryPath: '/fake/cli/entry.js',
+      io: { stdin: new PassThrough(), stdout: new PassThrough(), stderr },
+      skipSignalHandlers: true,
+      rpcOverride: { descriptor: { host: '127.0.0.1', port: 0, token: 't' }, client: rpc },
+      hookServerFactory: () => new MaestroHookServer({ token: 'tok' }),
+      maestroFactory: () => fakeMaestroAsProcess,
+      workerManager: {} as never,
+    });
+
+    expect(stderrBufs.join('')).not.toMatch(/recovered .* crashed worker/);
+
+    await handle.stop();
+    await handle.done;
+  });
+
+  it('writes "State saved" message on stderr after every cleanup step has run', async () => {
+    const fakeMaestro = new FakeMaestroProcess();
+    const fakeMaestroAsProcess = fakeMaestro as unknown as MaestroProcess;
+    Object.defineProperty(fakeMaestroAsProcess, 'events', {
+      value: () => fakeMaestro.eventsIter(),
+    });
+    const rpc = makeFakeRpc([]);
+
+    const stderr = new PassThrough();
+    const stderrBufs: string[] = [];
+    stderr.on('data', (c: Buffer) => stderrBufs.push(c.toString('utf8')));
+
+    const handle = await runStart({
+      home,
+      cliEntryPath: '/fake/cli/entry.js',
+      io: { stdin: new PassThrough(), stdout: new PassThrough(), stderr },
+      skipSignalHandlers: true,
+      rpcOverride: { descriptor: { host: '127.0.0.1', port: 0, token: 't' }, client: rpc },
+      hookServerFactory: () => new MaestroHookServer({ token: 'tok' }),
+      maestroFactory: () => fakeMaestroAsProcess,
+      workerManager: {} as never,
+    });
+
+    await handle.stop('test-shutdown');
+    await handle.done;
+
+    const out = stderrBufs.join('');
+    expect(out).toMatch(/State saved\. Run `symphony start` to resume\./);
+    // Ordering: the final message comes AFTER the diagnostic shutdown
+    // logs (cleanup steps log via `[symphony start] cleanup ...`).
+    const idxShutdown = out.indexOf('shutting down');
+    const idxFinal = out.indexOf('State saved');
+    expect(idxShutdown).toBeGreaterThanOrEqual(0);
+    expect(idxFinal).toBeGreaterThan(idxShutdown);
+  });
+
+  it('registers SIGHUP / uncaughtException / unhandledRejection handlers and removes them on stop', async () => {
+    const fakeMaestro = new FakeMaestroProcess();
+    const fakeMaestroAsProcess = fakeMaestro as unknown as MaestroProcess;
+    Object.defineProperty(fakeMaestroAsProcess, 'events', {
+      value: () => fakeMaestro.eventsIter(),
+    });
+
+    const before = {
+      sighup: process.listenerCount('SIGHUP'),
+      uncaught: process.listenerCount('uncaughtException'),
+      rejection: process.listenerCount('unhandledRejection'),
+    };
+
+    const handle = await runStart({
+      home,
+      cliEntryPath: '/fake/cli/entry.js',
+      io: { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() },
+      // skipSignalHandlers omitted → defaults to false → handlers register
+      rpcOverride: { descriptor: { host: '127.0.0.1', port: 0, token: 't' }, client: makeFakeRpc([]) },
+      hookServerFactory: () => new MaestroHookServer({ token: 'tok' }),
+      maestroFactory: () => fakeMaestroAsProcess,
+      workerManager: {} as never,
+    });
+
+    expect(process.listenerCount('SIGHUP')).toBe(before.sighup + 1);
+    expect(process.listenerCount('uncaughtException')).toBe(before.uncaught + 1);
+    expect(process.listenerCount('unhandledRejection')).toBe(before.rejection + 1);
+
+    await handle.stop();
+    await handle.done;
+
+    expect(process.listenerCount('SIGHUP')).toBe(before.sighup);
+    expect(process.listenerCount('uncaughtException')).toBe(before.uncaught);
+    expect(process.listenerCount('unhandledRejection')).toBe(before.rejection);
+  });
+
+  it('SIGHUP triggers graceful stop', async () => {
+    const fakeMaestro = new FakeMaestroProcess();
+    const fakeMaestroAsProcess = fakeMaestro as unknown as MaestroProcess;
+    Object.defineProperty(fakeMaestroAsProcess, 'events', {
+      value: () => fakeMaestro.eventsIter(),
+    });
+
+    const stderr = new PassThrough();
+    const stderrBufs: string[] = [];
+    stderr.on('data', (c: Buffer) => stderrBufs.push(c.toString('utf8')));
+
+    const handle = await runStart({
+      home,
+      cliEntryPath: '/fake/cli/entry.js',
+      io: { stdin: new PassThrough(), stdout: new PassThrough(), stderr },
+      // skipSignalHandlers omitted → handlers active
+      rpcOverride: { descriptor: { host: '127.0.0.1', port: 0, token: 't' }, client: makeFakeRpc([]) },
+      hookServerFactory: () => new MaestroHookServer({ token: 'tok' }),
+      maestroFactory: () => fakeMaestroAsProcess,
+      workerManager: {} as never,
+    });
+
+    // Emit SIGHUP — the runStart-registered handler runs `void stop('SIGHUP')`.
+    process.emit('SIGHUP');
+    await handle.done;
+
+    const out = stderrBufs.join('');
+    expect(out).toMatch(/shutting down: SIGHUP/);
+    expect(out).toMatch(/State saved/);
+    expect(fakeMaestro.killCount).toBe(1);
   });
 });

@@ -179,6 +179,10 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
       }
     }
     clearTimeout(deadline);
+    // Phase 3Q — final user-facing message after every cleanup step has
+    // run. Distinct from the diagnostic `log(...)` lines above: this is
+    // the one sentence the user sees on a graceful exit.
+    stderr.write('State saved. Run `symphony start` to resume.\n');
     resolveDone();
   };
 
@@ -188,14 +192,41 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
   const sigtermHandler = (): void => {
     void stop('SIGTERM');
   };
+  // Phase 3Q — SIGHUP (terminal disconnect) routes through the same
+  // graceful path as SIGINT/SIGTERM. Without this, a closed-terminal
+  // tmux/ssh session would leave Maestro + workers + worktree locks
+  // orphaned.
+  const sighupHandler = (): void => {
+    void stop('SIGHUP');
+  };
+  // Phase 3Q — thrown errors that escape every `try/catch` route to
+  // graceful stop instead of silent `process.exit`. State is mostly
+  // write-through SQLite (workers, tasks, questions) so persistence is
+  // safe on its own; the value of these handlers is unwinding the
+  // cleanup stack (Maestro kill, hook-server teardown, RPC client
+  // close, descriptor file delete) before the runtime exits.
+  const uncaughtHandler = (err: unknown): void => {
+    log(`uncaughtException: ${err instanceof Error ? `${err.message}\n${err.stack ?? ''}` : String(err)}`);
+    void stop('uncaughtException');
+  };
+  const rejectionHandler = (reason: unknown): void => {
+    log(`unhandledRejection: ${reason instanceof Error ? `${reason.message}\n${reason.stack ?? ''}` : String(reason)}`);
+    void stop('unhandledRejection');
+  };
   if (options.skipSignalHandlers !== true) {
     process.once('SIGINT', sigintHandler);
     process.once('SIGTERM', sigtermHandler);
+    process.once('SIGHUP', sighupHandler);
+    process.once('uncaughtException', uncaughtHandler);
+    process.once('unhandledRejection', rejectionHandler);
     cleanup.push({
       label: 'remove signal handlers',
       run: async () => {
         process.off('SIGINT', sigintHandler);
         process.off('SIGTERM', sigtermHandler);
+        process.off('SIGHUP', sighupHandler);
+        process.off('uncaughtException', uncaughtHandler);
+        process.off('unhandledRejection', rejectionHandler);
       },
     });
   }
@@ -385,6 +416,18 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
     projects.length === 0
       ? '(none)'
       : projects.map((p) => `- ${p.name} → ${p.path}`).join('\n');
+
+  // Phase 3Q — pull the boot-time recovery snapshot from the server. The
+  // server captured `RecoveryReport` from `workerLifecycle.recoverFromStore()`
+  // BEFORE the RPC bound, so this call returns a frozen value. The TUI
+  // banner (Phase 3Q commit 2) is the consumer; for now we log the count
+  // so non-TTY/readline-fallback users see the count too.
+  const recoveryReport = await rpc.call.recovery.report();
+  if (recoveryReport.crashedIds.length > 0) {
+    log(
+      `recovered ${recoveryReport.crashedIds.length} crashed worker${recoveryReport.crashedIds.length === 1 ? '' : 's'} from previous session`,
+    );
+  }
 
   // ── 3. Maestro workspace + Stop hook installation ──────────────────────
   const workspaceOpts = options.home !== undefined ? { home: options.home } : {};

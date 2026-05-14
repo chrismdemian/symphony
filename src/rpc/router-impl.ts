@@ -97,6 +97,14 @@ export interface RouterDeps {
    * sufficient for test rigs that don't simulate recovery.
    */
   readonly orchestratorBootIso?: string;
+  /**
+   * Phase 3Q — boot-time recovery snapshot, captured once by the caller
+   * (server.ts wraps `lifecycle.recoverFromStore()` + a stamp) and frozen
+   * here. The `recovery.report` RPC returns this verbatim every call so
+   * the snapshot is stable for the life of the server. Undefined when
+   * the caller has no recovery to report (legacy test rigs).
+   */
+  readonly recoveryReport?: RecoveryReportResult;
 }
 
 // ── Argument shapes (validated at the boundary) ──────────────────────
@@ -241,6 +249,20 @@ export interface QueueReorderResult {
 // Re-export so client SDKs can type the wire shape without reaching
 // into orchestrator/worker-lifecycle.js.
 export type { PendingSpawnSnapshot };
+
+// ── Recovery argument shapes (Phase 3Q) ──────────────────────────────
+
+/**
+ * Phase 3Q — boot-time recovery snapshot. The `crashedIds` mirror the
+ * `RecoveryReport` returned by `WorkerLifecycle.recoverFromStore()`;
+ * `capturedAt` is stamped once at server boot so repeat calls return the
+ * same snapshot (idempotent). The launcher reads this immediately after
+ * RPC connect to decide whether to surface a TUI banner.
+ */
+export interface RecoveryReportResult {
+  readonly crashedIds: readonly string[];
+  readonly capturedAt: string;
+}
 
 // ── Stats argument shapes (Phase 3N.3) ───────────────────────────────
 
@@ -805,6 +827,25 @@ export function createSymphonyRouter(deps: RouterDeps) {
     },
   });
 
+  /**
+   * Phase 3Q — boot-time recovery snapshot. Returns the IDs of workers
+   * that `WorkerLifecycle.recoverFromStore` flipped from `running`/
+   * `spawning` to `crashed` at server boot. The launcher reads this
+   * once after RPC connect to surface a TUI banner. Idempotent: every
+   * call returns the same captured value for the life of the server.
+   *
+   * When `deps.recoveryReport` is undefined (legacy test rigs that
+   * don't simulate recovery), returns an empty list with a synthetic
+   * `capturedAt` so the wire shape stays stable.
+   */
+  const recovery = createRPCController({
+    report(): RecoveryReportResult {
+      return (
+        deps.recoveryReport ?? { crashedIds: [], capturedAt: new Date(0).toISOString() }
+      );
+    },
+  });
+
   return createRPCRouter({
     projects,
     tasks,
@@ -816,6 +857,7 @@ export function createSymphonyRouter(deps: RouterDeps) {
     queue,
     runtime,
     stats,
+    recovery,
   });
 }
 
