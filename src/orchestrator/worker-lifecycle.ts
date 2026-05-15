@@ -12,6 +12,7 @@ import { deriveFeatureIntent } from './feature-intent.js';
 import {
   CircularBuffer,
   DEFAULT_OUTPUT_BUFFER_CAP,
+  TERMINAL_WORKER_STATUSES as TERMINAL_STATUSES,
   type WorkerRegistry,
   type WorkerRecord,
 } from './worker-registry.js';
@@ -250,6 +251,26 @@ export interface WorkerLifecycleHandle {
     recordId: string,
     direction: 'up' | 'down',
   ): { moved: boolean; reason?: string };
+  /**
+   * Phase 3T — SIGTERM every non-terminal worker with intent='interrupt'
+   * so classifyExit lands them at status `'interrupted'`. Synchronous;
+   * does NOT await worker exits (those fire async through the existing
+   * wireExit chain). Recovered stub workers are filtered out — their
+   * `kill()` is a no-op, mirroring the `workers.kill` RPC's audit m9
+   * precedent. Returns the killed-worker IDs for logging/telemetry.
+   *
+   * Idempotent: a second call returns an empty list because the first
+   * already moved every worker into a terminal state.
+   */
+  killAllRunning(): { killedIds: readonly string[] };
+  /**
+   * Phase 3T — reject every pending queued spawn across every project
+   * with `QueueCancelledError`. Composed from `listPendingGlobal()` +
+   * `cancelQueued(id)`. Synchronous. Returns the cancelled recordIds.
+   *
+   * Idempotent: a second call returns an empty list.
+   */
+  cancelAllQueued(): { cancelledIds: readonly string[] };
 }
 
 function defaultIdGenerator(): string {
@@ -859,6 +880,37 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
     return { cancelled: true };
   }
 
+  function killAllRunning(): { killedIds: readonly string[] } {
+    const killedIds: string[] = [];
+    for (const record of registry.list()) {
+      if (TERMINAL_STATUSES.has(record.status)) continue;
+      try {
+        // Pass intent='interrupt' so WorkerImpl.kill stamps stopIntent
+        // accordingly (precedence-aware — see Phase 3T commit 2). Stub
+        // workers (recovered, post-reboot) implement kill() as a no-op;
+        // their status was never non-terminal in the first place per the
+        // TERMINAL_STATUSES guard above, so they never reach this branch.
+        record.worker.kill('SIGTERM', 'interrupt');
+        killedIds.push(record.id);
+      } catch {
+        // best effort — a worker that throws during kill is already
+        // exiting; the wireExit chain will classify it on its own.
+      }
+    }
+    return { killedIds };
+  }
+
+  function cancelAllQueued(): { cancelledIds: readonly string[] } {
+    const cancelledIds: string[] = [];
+    // Walk a snapshot of recordIds (listPendingGlobal is already a snapshot)
+    // so `cancelQueued`'s in-place splice doesn't shift the iteration.
+    for (const entry of listPendingGlobal()) {
+      const result = cancelQueued(entry.recordId);
+      if (result.cancelled) cancelledIds.push(entry.recordId);
+    }
+    return { cancelledIds };
+  }
+
   function reorderQueued(
     recordId: string,
     direction: 'up' | 'down',
@@ -893,6 +945,8 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
     listPendingGlobal,
     cancelQueued,
     reorderQueued,
+    killAllRunning,
+    cancelAllQueued,
   };
 }
 

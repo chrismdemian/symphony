@@ -185,6 +185,39 @@ export class TaskRegistry implements TaskStore {
   }
 
   /**
+   * Phase 3T — batch-cancel every pending task. See `TaskStore.cancelAllPending`.
+   * In-memory single-turn JS execution makes the iteration atomic with
+   * respect to other JS callers. Fires `onTaskStatusChange` once per
+   * transitioning task.
+   */
+  cancelAllPending(projectId?: string): { cancelledIds: readonly string[] } {
+    const iso = new Date(this.now()).toISOString();
+    const cancelledIds: string[] = [];
+    // Snapshot first so the mid-iteration onTaskStatusChange consumer
+    // (which may read this.records) sees a consistent view.
+    const targets: TaskRecord[] = [];
+    for (const record of this.records.values()) {
+      if (record.status !== 'pending') continue;
+      if (projectId !== undefined && record.projectId !== projectId) continue;
+      targets.push(record);
+    }
+    for (const record of targets) {
+      record.status = 'cancelled';
+      if (record.completedAt === undefined) record.completedAt = iso;
+      record.updatedAt = iso;
+      cancelledIds.push(record.id);
+      if (this.onTaskStatusChange !== undefined) {
+        try {
+          this.onTaskStatusChange(toTaskSnapshot(record));
+        } catch {
+          // downstream consumer must not poison the cancel path
+        }
+      }
+    }
+    return { cancelledIds };
+  }
+
+  /**
    * Phase 3P audit M1 — atomic claim. See `TaskStore.claim` for contract.
    * In-memory single-turn JS execution makes the check-then-set
    * naturally atomic. Fires `onTaskStatusChange` on success.
