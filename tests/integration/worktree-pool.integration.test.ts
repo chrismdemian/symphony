@@ -109,8 +109,9 @@ describe('WorktreePool.claimReserve', () => {
     expect(existsSync(info.path)).toBe(true);
     expect(info.branch).toBe('symphony/w-pool-1/pool-claim');
 
-    // Exclude file written
-    const gitDirOut = await git(info.path, 'rev-parse', '--git-dir');
+    // Exclude file written (to --git-common-dir — the location git
+    // honors for linked worktrees; see exclude.ts post-4D.2 fix).
+    const gitDirOut = await git(info.path, 'rev-parse', '--git-common-dir');
     const gitDir = gitDirOut.trim();
     const absGitDir = path.isAbsolute(gitDir) ? gitDir : path.join(info.path, gitDir);
     const exclude = readFileSync(path.join(absGitDir, 'info', 'exclude'), 'utf8');

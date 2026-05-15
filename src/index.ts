@@ -89,6 +89,55 @@ program
     process.exit(result.ok ? 0 : 1);
   });
 
+const skills = program
+  .command('skills')
+  .description('Manage persistent, cross-project skills (~/.symphony/skills).');
+
+skills
+  .command('install <source>')
+  .description(
+    'Install a skill from a directory containing SKILL.md, or a .md file.',
+  )
+  .option('--id <id>', 'Override the skill id (default: source basename).')
+  .action(async (source: string, opts: { id?: string }) => {
+    const { runSkillsInstall } = await import('./cli/skills.js');
+    const result = await runSkillsInstall({
+      source,
+      ...(opts.id !== undefined ? { id: opts.id } : {}),
+    });
+    process.exit(result.exitCode);
+  });
+
+skills
+  .command('list')
+  .description('List installed skills and their agent-link status.')
+  .action(async () => {
+    const { runSkillsList } = await import('./cli/skills.js');
+    const result = await runSkillsList();
+    process.exit(result.exitCode);
+  });
+
+skills
+  .command('sync-bundled')
+  .description('Install/refresh the bundled skill set (idempotent).')
+  .option('--force', 'Reinstall even if already up-to-date.')
+  .action(async (opts: { force?: boolean }) => {
+    const { runSkillsSyncBundled } = await import('./cli/skills.js');
+    const result = await runSkillsSyncBundled(
+      opts.force === true ? { force: true } : {},
+    );
+    process.exit(result.exitCode);
+  });
+
+skills
+  .command('uninstall <name>')
+  .description('Remove a skill and its agent symlink.')
+  .action(async (name: string) => {
+    const { runSkillsUninstall } = await import('./cli/skills.js');
+    const result = await runSkillsUninstall({ id: name });
+    process.exit(result.exitCode);
+  });
+
 program
   .command('mcp-server')
   .description('Run the Symphony orchestrator MCP server over stdio. Spawned as a child of claude -p.')

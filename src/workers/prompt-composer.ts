@@ -73,9 +73,14 @@ const ROLE_OPENER_FILES: Record<WorkerRole, string> = {
 };
 
 const SUFFIX_FILENAME = 'worker-common-suffix-v1.md';
-const SUFFIX_BEGIN_MARKER = '## BEGIN SUFFIX';
-const SUFFIX_END_MARKER = '## END SUFFIX';
+export const SUFFIX_BEGIN_MARKER = '## BEGIN SUFFIX';
+export const SUFFIX_END_MARKER = '## END SUFFIX';
 const NONE_LITERAL = '(none)';
+
+/** Public view of the role → frozen-opener-filename map (Phase 4D.1). */
+export const WORKER_ROLE_OPENER_FILES: Readonly<Record<WorkerRole, string>> =
+  ROLE_OPENER_FILES;
+export { SUFFIX_FILENAME as WORKER_SUFFIX_FILENAME };
 
 export class WorkerPromptLoadError extends Error {
   constructor(
@@ -202,7 +207,7 @@ export function composeWorkerPrompt(
   const artifacts = options.preloaded ?? loadWorkerPromptArtifacts(role, options);
 
   const frozen = `${artifacts.opener}\n${artifacts.suffix}`;
-  const substituted = substituteVars(frozen, vars);
+  const substituted = substituteWorkerVars(frozen, vars);
 
   return `${substituted}\n\n---\n\n# Your Task\n\n${taskDescription.trim()}\n`;
 }
@@ -224,7 +229,7 @@ function readArtifact(file: string): string {
  * drops the `# Role Opener …` H1 + the `> Prepends to …` meta note that
  * must never reach the worker, keeping `## Your Role: …` onward.
  */
-function extractAfterFirstHr(raw: string, file: string): string {
+export function extractAfterFirstHr(raw: string, file: string): string {
   const lines = raw.split(/\r?\n/);
   const hrIdx = lines.findIndex((line) => line.trim() === '---');
   if (hrIdx === -1) {
@@ -241,7 +246,7 @@ function extractAfterFirstHr(raw: string, file: string): string {
  * marker line itself. Byte-for-byte the same logic as the Maestro
  * composer's `extractPromptBody` (CRLF-safe via `indexOf('\n')`).
  */
-function extractBetween(
+export function extractBetween(
   raw: string,
   begin: string,
   end: string,
@@ -270,7 +275,14 @@ function rawValue(vars: WorkerPromptVars, field: keyof WorkerPromptVars): string
   return s.trim().length === 0 ? NONE_LITERAL : s;
 }
 
-function substituteVars(body: string, vars: WorkerPromptVars): string {
+/**
+ * Substitute `{token}` template variables in a worker prompt body (or any
+ * fragment thereof). Exported so Phase 4D.1's fragment-based
+ * `PromptComposer` reuses the EXACT regex + trim/`(none)` rules — the
+ * single source of truth that guarantees fragment-assembled output is
+ * byte-identical to the monolith `composeWorkerPrompt` path.
+ */
+export function substituteWorkerVars(body: string, vars: WorkerPromptVars): string {
   // Match {token_name} where token_name is lowercase + underscores.
   // JSON-shaped braces in the reporting contract (`{` + newline + `"did"`)
   // never match — the class excludes whitespace/quotes. Unknown tokens are

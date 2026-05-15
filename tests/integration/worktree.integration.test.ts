@@ -64,7 +64,9 @@ describe('WorktreeManager.create', () => {
 
   it('writes default exclude patterns to .git/info/exclude', async () => {
     const info = await manager.create({ projectPath: repoPath, workerId: 'w-exc' });
-    const gitDirOut = await git(info.path, 'rev-parse', '--git-dir');
+    // --git-common-dir: the dir whose info/exclude git actually honors
+    // for linked worktrees (excludeFromGit writes there post-4D.2 fix).
+    const gitDirOut = await git(info.path, 'rev-parse', '--git-common-dir');
     const gitDir = gitDirOut.trim();
     const absGitDir = path.isAbsolute(gitDir) ? gitDir : path.join(info.path, gitDir);
     const excludeContent = readFileSync(path.join(absGitDir, 'info', 'exclude'), 'utf8');

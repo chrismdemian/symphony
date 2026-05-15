@@ -105,7 +105,7 @@ export function composeMaestroPrompt(
     );
   }
   const body = extractPromptBody(raw, file);
-  return substituteVars(body, vars);
+  return substituteMaestroVars(body, vars);
 }
 
 /**
@@ -119,7 +119,14 @@ function rawValue(vars: MaestroPromptVars, field: keyof MaestroPromptVars): stri
   return s.length === 0 ? NONE_LITERAL : s;
 }
 
-function substituteVars(body: string, vars: MaestroPromptVars): string {
+/**
+ * Substitute `{token}` template variables in a Maestro prompt body (or any
+ * fragment thereof). Exported so Phase 4D.1's fragment-based
+ * `PromptComposer` reuses the EXACT regex + `(none)`/boolean rules — the
+ * single source of truth that guarantees fragment-assembled output is
+ * byte-identical to the monolith path.
+ */
+export function substituteMaestroVars(body: string, vars: MaestroPromptVars): string {
   // Match {token_name} where token_name is lowercase + underscores.
   // Other braces (JSON examples in the prompt body) are left untouched.
   return body.replace(/\{([a-z_]+)\}/g, (match, key: string) => {
@@ -129,7 +136,12 @@ function substituteVars(body: string, vars: MaestroPromptVars): string {
   });
 }
 
-function extractPromptBody(raw: string, file: string): string {
+/**
+ * Slice the substituted prompt BODY out of the frozen v1 artifact
+ * (between `## BEGIN PROMPT` / `## END PROMPT`). Exported for 4D.1's
+ * fragment generator + equivalence oracle.
+ */
+export function extractPromptBody(raw: string, file: string): string {
   const beginIdx = raw.indexOf(BEGIN_MARKER);
   const endIdx = raw.indexOf(END_MARKER);
   if (beginIdx === -1 || endIdx === -1 || endIdx < beginIdx) {

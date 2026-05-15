@@ -258,6 +258,21 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
   }
   const modelMode = bootConfig?.config.modelMode ?? 'mixed';
 
+  // Phase 4D.4 — first-run bundled skills installer. Idempotent + cheap
+  // on every boot (up-to-date + linked skills are skipped). Best-effort:
+  // a skills-install hiccup must never block the orchestrator from
+  // starting (matches the loadConfig defense-in-depth convention above).
+  try {
+    const { installBundledSkills } = await import('../skills/bundled.js');
+    await installBundledSkills();
+  } catch (err) {
+    console.error(
+      `[symphony] bundled skills install skipped: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
   // Phase 3H.2 — boot-time defaultProjectPath validation. Audit C1
   // (commit 5): the validated path must reach BOTH the bootstrap
   // mcp-server (so projects.list registers it) AND Maestro's MCP
