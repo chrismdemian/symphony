@@ -163,6 +163,29 @@ export class PromptComposer {
   }
 
   /**
+   * Fast-fail seam: validate the role's fragment files are present +
+   * readable WITHOUT composing (no vars needed — fragment reads are
+   * var-independent). `worker-lifecycle.doSpawn` calls this in the
+   * fast-fail-BEFORE-`worktreeManager.create()` region so a broken
+   * bundle (missing `dist/prompts/fragments/`) or unknown role never
+   * leaks a worktree per spawn — the fragment-edition of the 4A audit-M1
+   * invariant.
+   */
+  preflightWorker(role: WorkerRole): void {
+    const openerFile = WORKER_ROLE_FRAGMENT_FILES[role];
+    if (openerFile === undefined) {
+      throw new PromptFragmentLoadError(
+        `unknown worker role '${String(role)}'; expected one of: ${Object.keys(
+          WORKER_ROLE_FRAGMENT_FILES,
+        ).join(', ')}`,
+        '',
+      );
+    }
+    this.read(openerFile);
+    this.read(WORKER_COMMON_SUFFIX_FRAGMENT);
+  }
+
+  /**
    * Assemble + substitute the full Maestro system prompt. Byte-identical
    * to `composeMaestroPrompt(vars)` (equivalence-tested).
    */

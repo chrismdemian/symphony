@@ -128,7 +128,7 @@ describe('Phase 1D production scenario — pool claim + real claude reads preser
       const preservedEnv = readFileSync(path.join(info.path, '.env'), 'utf8');
       expect(preservedEnv).toBe(`SECRET=${secret}\n`);
 
-      const gitDirOut = await git(info.path, 'rev-parse', '--git-dir');
+      const gitDirOut = await git(info.path, 'rev-parse', '--git-common-dir');
       const gitDir = gitDirOut.trim();
       const absGitDir = path.isAbsolute(gitDir) ? gitDir : path.join(info.path, gitDir);
       const excludeContent = readFileSync(path.join(absGitDir, 'info', 'exclude'), 'utf8');

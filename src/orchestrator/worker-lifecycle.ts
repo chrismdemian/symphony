@@ -1,12 +1,12 @@
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { WorkerManager } from '../workers/manager.js';
+import type { WorkerPromptVars } from '../workers/prompt-composer.js';
+import { PromptComposer } from './prompts/prompt-composer.js';
 import {
-  composeWorkerPrompt,
-  loadWorkerPromptArtifacts,
-  type WorkerPromptArtifacts,
-  type WorkerPromptVars,
-} from '../workers/prompt-composer.js';
+  defaultInjectWorkerClaudeMd,
+  type InjectWorkerClaudeMd,
+} from './worker-claude-md.js';
 import type {
   StreamEvent,
   Worker,
@@ -144,6 +144,21 @@ export interface WorkerLifecycleOptions {
    * `onEvent` broker convention).
    */
   readonly onWorkerStatusChange?: (record: WorkerRecord, totalRunning: number) => void;
+  /**
+   * Phase 4D.1/4D.2 — fragment-based prompt composer. Default
+   * `new PromptComposer()` resolves `research/prompts/fragments` (source
+   * runs) or `dist/prompts/fragments` (tsup bundle). Tests inject one
+   * pointed at a fixture dir.
+   */
+  readonly promptComposer?: PromptComposer;
+  /**
+   * Phase 4D.2 — worker-prompt injection seam. Default writes the role
+   * manual into `<worktree>/CLAUDE.md` (Multica pattern) and returns
+   * whether the worktree was reused; tests stub the OS boundary. When it
+   * returns `stdin-fallback`, `doSpawn` delivers the full monolithic
+   * prompt on stdin (byte-identical to 4A `composeWorkerPrompt`).
+   */
+  readonly injectWorkerClaudeMd?: InjectWorkerClaudeMd;
 }
 
 /**
@@ -378,6 +393,12 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
   const now = opts.now ?? Date.now;
   const genId = opts.idGenerator ?? defaultIdGenerator;
   const resolveProjectPath = opts.resolveProjectPath ?? (() => '');
+  // Phase 4D.1/4D.2 — fragment composer + worktree-CLAUDE.md injector.
+  // Constructed once (fragment reads are sync + tiny; no I/O until a
+  // compose call). Both injectable for tests.
+  const promptComposer = opts.promptComposer ?? new PromptComposer();
+  const injectWorkerClaudeMd =
+    opts.injectWorkerClaudeMd ?? defaultInjectWorkerClaudeMd;
   // `onEventRef` is a mutable closure cell so `attachEventTap` reads the
   // CURRENT value on each event push, not the value at attach time. This
   // lets `setOnEvent` late-bind the broker callback after the lifecycle
@@ -556,16 +577,13 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
       if (input.signal !== undefined && input.signal.aborted) {
         throw new Error(`spawn_worker aborted before worktree creation (recordId=${recordId})`);
       }
-      // Phase 4A — preflight the frozen prompt artifacts BEFORE the
-      // worktree exists. A broken bundle (missing `dist/prompts/`) or an
-      // unknown role throws `WorkerPromptLoadError` here, in the
-      // fast-fail-before-fs region, so it never leaks a worktree on
-      // every spawn. The validated artifacts are threaded into
-      // `composeWorkerPrompt` below (no double read; same artifacts
-      // validated == rendered).
-      const promptArtifacts: WorkerPromptArtifacts = loadWorkerPromptArtifacts(
-        input.role,
-      );
+      // Phase 4D.1 — preflight the role's prompt FRAGMENTS BEFORE the
+      // worktree exists (fragment edition of the 4A audit-M1 invariant).
+      // A broken bundle (missing `dist/prompts/fragments/`) or an
+      // unknown role throws `PromptFragmentLoadError` here, in the
+      // fast-fail-before-fs region, so it never leaks a worktree per
+      // spawn. Composition is var-dependent and happens post-create.
+      promptComposer.preflightWorker(input.role);
       const featureIntent = input.featureIntent ?? deriveFeatureIntent(input.taskDescription);
       const worktree = await worktreeManager.create({
         projectPath: input.projectPath,
@@ -588,12 +606,18 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
       const resolvedAutonomyTier: AutonomyTier =
         input.autonomyTier ?? opts.getDefaultAutonomyTier?.() ?? 1;
 
-      // Phase 4A — compose the role-specific worker prompt (role opener +
-      // common suffix + the task as a `# Your Task` block). Replaces the
-      // bare `input.taskDescription` first message. The worktree-`CLAUDE.md`
-      // file injection + `[NEW TASK]` staleness guard + `.git/info/exclude`
-      // coordination are deliberately deferred to Phase 4D.2; this uses the
-      // existing `cfg.prompt` stdin seam only.
+      // Phase 4D.2 — worker prompt injection (Multica pattern). The role
+      // "operating manual" (opener + common suffix, substituted) is
+      // written into `<worktree>/CLAUDE.md` so Claude Code discovers it
+      // natively; the TASK rides stdin (`cfg.prompt`). When the injector
+      // can't safely use a worktree CLAUDE.md (project tracks its own,
+      // non-worktree path, fs error), it falls back to delivering the
+      // full monolithic prompt on stdin — byte-identical to 4A
+      // `composeWorkerPrompt`, so this is never worse than the shipped
+      // behavior. `.git/info/exclude` already lists `CLAUDE.md`
+      // (DEFAULT_GIT_EXCLUDE_PATTERNS, written inside
+      // `worktreeManager.create`), so an injected CLAUDE.md never leaks
+      // into commits.
       const projectCmds = opts.resolveProjectCommands?.({
         projectPath: input.projectPath,
         projectId: input.projectId ?? null,
@@ -622,12 +646,21 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         // No `previewCommand` on ProjectRecord until Phase 5.
         previewCmd: '',
       };
-      const composedPrompt = composeWorkerPrompt(
+      const workerManual = promptComposer.composeWorkerManual(
         input.role,
-        input.taskDescription,
         promptVars,
-        { preloaded: promptArtifacts },
       );
+      const injection = await injectWorkerClaudeMd(worktree.path, workerManual);
+      const composedPrompt =
+        injection.mode === 'claude-md'
+          ? promptComposer.composeWorkerTaskKickoff(input.taskDescription, {
+              staleWorktree: injection.reused,
+            })
+          : promptComposer.composeWorker(
+              input.role,
+              input.taskDescription,
+              promptVars,
+            );
 
       const buffer = new CircularBuffer<StreamEvent>(bufferCap);
       const cfg: WorkerConfig = {

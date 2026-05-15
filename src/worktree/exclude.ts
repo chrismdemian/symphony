@@ -5,13 +5,27 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-async function resolveGitDir(worktreePath: string): Promise<string> {
-  const { stdout } = await execFileAsync('git', ['rev-parse', '--git-dir'], {
-    cwd: worktreePath,
-  });
+/**
+ * Resolve the git dir whose `info/exclude` git ACTUALLY consults for
+ * ignore resolution. For a LINKED worktree, `--git-dir` is the
+ * per-worktree dir (`.git/worktrees/<id>`) whose `info/exclude` git does
+ * NOT read — ignore patterns come from the COMMON dir's `info/exclude`
+ * (`--git-common-dir`). Writing to `--git-dir` silently no-ops for
+ * worktrees (the original 1C bug, surfaced by Phase 4D.2's injected
+ * `CLAUDE.md` showing up in `git status`). For a non-worktree repo,
+ * `--git-common-dir` == `--git-dir`, so this is strictly more correct.
+ */
+async function resolveGitCommonDir(worktreePath: string): Promise<string> {
+  const { stdout } = await execFileAsync(
+    'git',
+    ['rev-parse', '--git-common-dir'],
+    { cwd: worktreePath },
+  );
   const raw = stdout.trim();
   if (!raw) {
-    throw new Error(`git rev-parse --git-dir returned empty for ${worktreePath}`);
+    throw new Error(
+      `git rev-parse --git-common-dir returned empty for ${worktreePath}`,
+    );
   }
   return path.isAbsolute(raw) ? raw : path.join(worktreePath, raw);
 }
@@ -22,13 +36,16 @@ async function resolveGitDir(worktreePath: string): Promise<string> {
  * written so subsequent appends land on a fresh line.
  *
  * Multica parity: `server/internal/daemon/repocache/cache.go:603-637`.
+ * Writes to the COMMON git dir's `info/exclude` (see
+ * {@link resolveGitCommonDir}) so the patterns take effect for linked
+ * worktrees, not just bare repos.
  */
 export async function excludeFromGit(
   worktreePath: string,
   patterns: readonly string[],
 ): Promise<void> {
   if (patterns.length === 0) return;
-  const gitDir = await resolveGitDir(worktreePath);
+  const gitDir = await resolveGitCommonDir(worktreePath);
   const infoDir = path.join(gitDir, 'info');
   const excludePath = path.join(infoDir, 'exclude');
 
