@@ -1,5 +1,12 @@
+import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { WorkerManager } from '../workers/manager.js';
+import {
+  composeWorkerPrompt,
+  loadWorkerPromptArtifacts,
+  type WorkerPromptArtifacts,
+  type WorkerPromptVars,
+} from '../workers/prompt-composer.js';
 import type {
   StreamEvent,
   Worker,
@@ -109,6 +116,19 @@ export interface WorkerLifecycleOptions {
    * wires the architectural enforcement.
    */
   readonly getDefaultAutonomyTier?: () => AutonomyTier;
+  /**
+   * Phase 4A — resolves a project's verification commands for the
+   * worker prompt's `{test_cmd}` / `{build_cmd}` / `{lint_cmd}` slots.
+   * The server wires this to `projectStore.get(...)` (mirrors the
+   * `getDefaultModel?` / `getDefaultAutonomyTier?` optional-dep
+   * injection pattern). Omitted by legacy/test rigs → all three render
+   * as the `(none)` sentinel. `{preview_cmd}` has no `ProjectRecord`
+   * field until Phase 5 and is intentionally NOT sourced here.
+   */
+  readonly resolveProjectCommands?: (input: {
+    readonly projectPath: string;
+    readonly projectId: string | null;
+  }) => { test?: string; build?: string; lint?: string };
   /**
    * Phase 3H.3 — fired whenever a worker transitions to a terminal
    * status (`completed` / `failed` / `killed` / `timeout` / `crashed`).
@@ -536,6 +556,16 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
       if (input.signal !== undefined && input.signal.aborted) {
         throw new Error(`spawn_worker aborted before worktree creation (recordId=${recordId})`);
       }
+      // Phase 4A — preflight the frozen prompt artifacts BEFORE the
+      // worktree exists. A broken bundle (missing `dist/prompts/`) or an
+      // unknown role throws `WorkerPromptLoadError` here, in the
+      // fast-fail-before-fs region, so it never leaks a worktree on
+      // every spawn. The validated artifacts are threaded into
+      // `composeWorkerPrompt` below (no double read; same artifacts
+      // validated == rendered).
+      const promptArtifacts: WorkerPromptArtifacts = loadWorkerPromptArtifacts(
+        input.role,
+      );
       const featureIntent = input.featureIntent ?? deriveFeatureIntent(input.taskDescription);
       const worktree = await worktreeManager.create({
         projectPath: input.projectPath,
@@ -551,11 +581,59 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
       // default. The resolved value is recorded on the WorkerRecord so
       // SQL persistence reflects the model the worker actually ran on.
       const resolvedModel = input.model ?? opts.getDefaultModel?.();
+
+      // Phase 3S tier resolution — hoisted above the WorkerRecord so the
+      // Phase 4A prompt's `{autonomy_tier}` slot and the record's
+      // `autonomyTier` field read from the SAME resolved value.
+      const resolvedAutonomyTier: AutonomyTier =
+        input.autonomyTier ?? opts.getDefaultAutonomyTier?.() ?? 1;
+
+      // Phase 4A — compose the role-specific worker prompt (role opener +
+      // common suffix + the task as a `# Your Task` block). Replaces the
+      // bare `input.taskDescription` first message. The worktree-`CLAUDE.md`
+      // file injection + `[NEW TASK]` staleness guard + `.git/info/exclude`
+      // coordination are deliberately deferred to Phase 4D.2; this uses the
+      // existing `cfg.prompt` stdin seam only.
+      const projectCmds = opts.resolveProjectCommands?.({
+        projectPath: input.projectPath,
+        projectId: input.projectId ?? null,
+      });
+      // Advisory "don't touch sibling scope" context — every non-terminal
+      // worker except this one. Empty → composer renders `(none)`.
+      const siblingWorkers = registry
+        .list()
+        .filter((r) => r.id !== recordId && !TERMINAL_STATUSES.has(r.status))
+        .map((r) => `- ${r.featureIntent} — ${r.worktreePath}`)
+        .join('\n');
+      const promptVars: WorkerPromptVars = {
+        projectName: path.basename(input.projectPath),
+        worktreePath: worktree.path,
+        featureIntent,
+        autonomyTier: String(resolvedAutonomyTier) as '1' | '2' | '3',
+        siblingWorkers,
+        // Phase 4C delegation contract owns structured negative-constraint
+        // / definition-of-done propagation. 4A leaves them `(none)`; the
+        // task brief itself rides in the appended `# Your Task` block.
+        negativeConstraints: '',
+        definitionOfDone: '',
+        testCmd: projectCmds?.test ?? '',
+        buildCmd: projectCmds?.build ?? '',
+        lintCmd: projectCmds?.lint ?? '',
+        // No `previewCommand` on ProjectRecord until Phase 5.
+        previewCmd: '',
+      };
+      const composedPrompt = composeWorkerPrompt(
+        input.role,
+        input.taskDescription,
+        promptVars,
+        { preloaded: promptArtifacts },
+      );
+
       const buffer = new CircularBuffer<StreamEvent>(bufferCap);
       const cfg: WorkerConfig = {
         id: recordId,
         cwd: worktree.path,
-        prompt: input.taskDescription,
+        prompt: composedPrompt,
         keepStdinOpen: true,
         deterministicUuidInput: `${recordId}::${worktree.path}`,
         ...(input.signal !== undefined ? { signal: input.signal } : {}),
@@ -577,14 +655,11 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         role: input.role,
         featureIntent,
         taskDescription: input.taskDescription,
-        // Phase 3S — default at spawn time to the orchestrator's
-        // configured tier (server wires `() => context.tier` so a Ctrl+Y
-        // mid-session flips the default for subsequent spawns). Pre-3S
-        // behavior preserved when `getDefaultAutonomyTier` is undefined:
-        // legacy test rigs and older config-less callers default to
-        // Tier 1.
-        autonomyTier:
-          input.autonomyTier ?? opts.getDefaultAutonomyTier?.() ?? 1,
+        // Phase 3S — resolved above (hoisted for the Phase 4A prompt var).
+        // Server wires `getDefaultAutonomyTier` to `() => context.tier` so
+        // a Ctrl+Y mid-session flips the default for subsequent spawns;
+        // legacy/config-less callers default to Tier 1.
+        autonomyTier: resolvedAutonomyTier,
         dependsOn: input.dependsOn ?? [],
         status: 'spawning',
         createdAt: nowIso(now),
@@ -648,6 +723,11 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
     const cfg: WorkerConfig = {
       id: record.id,
       cwd: record.worktreePath,
+      // Phase 4A: composition is doSpawn-ONLY by design. Resume sends
+      // the raw follow-up into an existing `claude -p` session that
+      // already received the composed role prompt as its first message;
+      // re-composing here would re-inject the whole opener+suffix
+      // mid-conversation. The session preserves role context.
       prompt: input.message,
       keepStdinOpen: true,
       deterministicUuidInput: `${record.id}::${record.worktreePath}`,

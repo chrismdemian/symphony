@@ -691,6 +691,33 @@ export async function startOrchestratorServer(
         }
         return '';
       },
+      // Phase 4A — source the worker prompt's `{test_cmd}` /
+      // `{build_cmd}` / `{lint_cmd}` slots from the registered project.
+      // Resolve by stable id first; fall back to path match for
+      // unregistered absolute-path projects (projectId === null).
+      // Unresolved → undefined fields → composer renders `(none)`.
+      resolveProjectCommands: ({ projectPath, projectId }) => {
+        let rec: ProjectRecord | undefined;
+        if (projectId !== null) {
+          rec = projectStore.get(projectId);
+        }
+        if (rec === undefined) {
+          // 2A.4a-M2: normalize both sides — Win32 `C:\foo` vs `C:/foo`
+          // and trailing-slash discrepancies make raw `===` miss.
+          const want = path.resolve(projectPath);
+          for (const p of projectStore.list()) {
+            if (path.resolve(p.path) === want) {
+              rec = p;
+              break;
+            }
+          }
+        }
+        return {
+          ...(rec?.testCommand !== undefined ? { test: rec.testCommand } : {}),
+          ...(rec?.buildCommand !== undefined ? { build: rec.buildCommand } : {}),
+          ...(rec?.lintCommand !== undefined ? { lint: rec.lintCommand } : {}),
+        };
+      },
       // Phase 3H.3 — dispatcher receives the post-decrement total
       // running count. The lifecycle fires this AFTER markCompleted +
       // release(), so totalRunning === 0 truly means "no workers
