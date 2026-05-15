@@ -118,6 +118,18 @@ skills
   });
 
 skills
+  .command('sync-bundled')
+  .description('Install/refresh the bundled skill set (idempotent).')
+  .option('--force', 'Reinstall even if already up-to-date.')
+  .action(async (opts: { force?: boolean }) => {
+    const { runSkillsSyncBundled } = await import('./cli/skills.js');
+    const result = await runSkillsSyncBundled(
+      opts.force === true ? { force: true } : {},
+    );
+    process.exit(result.exitCode);
+  });
+
+skills
   .command('uninstall <name>')
   .description('Remove a skill and its agent symlink.')
   .action(async (name: string) => {

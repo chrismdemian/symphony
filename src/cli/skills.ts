@@ -6,6 +6,7 @@ import {
   SkillNotFoundError,
 } from '../skills/store.js';
 import { SkillIdError } from '../skills/paths.js';
+import { installBundledSkills } from '../skills/bundled.js';
 
 /**
  * Phase 4D.3 — `symphony skills {install,list,uninstall}` handlers.
@@ -51,6 +52,19 @@ export async function runSkillsList(): Promise<SkillsCliResult> {
     console.log(`${s.linked ? '*' : ' '} ${s.id}  ${s.path}`);
   }
   console.log(`[symphony] ${skills.length} skill(s) (* = linked into agent)`);
+  return { exitCode: 0 };
+}
+
+export async function runSkillsSyncBundled(opts: {
+  force?: boolean;
+} = {}): Promise<SkillsCliResult> {
+  const res = await installBundledSkills(
+    opts.force === true ? { force: true } : {},
+  );
+  console.log(
+    `[symphony] bundled skills — installed: [${res.installed.join(', ')}], ` +
+      `up-to-date: [${res.skipped.join(', ')}]`,
+  );
   return { exitCode: 0 };
 }
 
