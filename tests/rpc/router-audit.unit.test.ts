@@ -122,6 +122,29 @@ describe('audit.list / audit.count (3R)', () => {
     }
   });
 
+  it('m3: garbage sinceTs / untilTs is dropped (not forwarded to SQL)', () => {
+    const svc = SymphonyDatabase.open({ filePath: ':memory:' });
+    try {
+      const auditStore = new SqliteAuditStore(svc.db);
+      auditStore.append({
+        ts: '2026-05-14T12:00:00.000Z',
+        kind: 'worker_spawned',
+        headline: 'a',
+      });
+      const router = createSymphonyRouter({ ...makeBaseDeps(), auditStore });
+      // "banana" >= lexicographic would wrongly filter; m3 drops it →
+      // the row still returns.
+      expect(router.audit.list({ sinceTs: 'banana' }).length).toBe(1);
+      expect(router.audit.list({ untilTs: 'not-a-date' }).length).toBe(1);
+      // A real ISO bound still filters correctly.
+      expect(
+        router.audit.list({ sinceTs: '2027-01-01T00:00:00.000Z' }).length,
+      ).toBe(0);
+    } finally {
+      svc.close();
+    }
+  });
+
   it('empty kinds array is treated as no kind filter', () => {
     const svc = SymphonyDatabase.open({ filePath: ':memory:' });
     try {

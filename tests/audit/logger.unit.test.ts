@@ -196,6 +196,67 @@ describe('AuditLogger', () => {
     expect(store.rows[0]?.ts).toBe('2030-01-01T00:00:00.000Z');
   });
 
+  it('M1: cyclic payload does not blow the stack — emits [Circular]', () => {
+    const store = fakeStore();
+    const logger = createAuditLogger({ store });
+    const cyclic: Record<string, unknown> = { name: 'root' };
+    cyclic['self'] = cyclic;
+    const entry = logger.append({
+      ts: 't1',
+      kind: 'error',
+      headline: 'h',
+      payload: { data: cyclic },
+    });
+    expect(entry).not.toBeNull();
+    const data = store.rows[0]?.payload['data'] as Record<string, unknown>;
+    expect(data['self']).toBe('[Circular]');
+  });
+
+  it('M1: a shared sibling (DAG, not cycle) is NOT flagged circular', () => {
+    const store = fakeStore();
+    const logger = createAuditLogger({ store });
+    const shared = { v: 'leaf_word' };
+    logger.append({
+      ts: 't1',
+      kind: 'error',
+      headline: 'h',
+      payload: { a: shared, b: shared },
+    });
+    const p = store.rows[0]?.payload as Record<string, Record<string, string>>;
+    expect(p['a']?.['v']).toBe('leaf_word');
+    expect(p['b']?.['v']).toBe('leaf_word');
+  });
+
+  it('M1: over-deep nesting is truncated to [too deep]', () => {
+    const store = fakeStore();
+    const logger = createAuditLogger({ store });
+    // 10 levels deep; cap is 8.
+    let deep: Record<string, unknown> = { leaf: 'x' };
+    for (let i = 0; i < 10; i += 1) deep = { child: deep };
+    logger.append({ ts: 't1', kind: 'error', headline: 'h', payload: { deep } });
+    const serialized = JSON.stringify(store.rows[0]?.payload);
+    expect(serialized).toContain('[too deep]');
+  });
+
+  it('M2: Date / Error / Map non-plain objects are labelled, not mangled to {}', () => {
+    const store = fakeStore();
+    const logger = createAuditLogger({ store });
+    logger.append({
+      ts: 't1',
+      kind: 'error',
+      headline: 'h',
+      payload: {
+        when: new Date('2026-05-14T12:00:00.000Z'),
+        err: new Error('disk full'),
+        m: new Map([['k', 'v']]),
+      },
+    });
+    const p = store.rows[0]?.payload as Record<string, unknown>;
+    expect(p['when']).toBe('2026-05-14T12:00:00.000Z');
+    expect(String(p['err'])).toContain('disk full');
+    expect(String(p['m'])).toContain('Map size=1');
+  });
+
   it('shutdown is idempotent', async () => {
     const fileSink = fakeFileSink();
     const shutdownSpy = vi.spyOn(fileSink, 'shutdown');

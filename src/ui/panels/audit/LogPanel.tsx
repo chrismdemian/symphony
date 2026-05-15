@@ -65,6 +65,10 @@ export function LogPanel({ rpc }: LogPanelProps): React.JSX.Element {
   const isFocused = focus.currentScope === SCOPE;
   const popPopup = focus.popPopup;
   const log = useAuditLog(rpc, isFocused);
+  // Destructure the useCallback-stable handlers so the commands useMemo
+  // can depend on them WITHOUT pulling the whole (per-render) `log`
+  // object into its deps (3F.1 feedback-loop gotcha).
+  const { appendFilterChar, backspaceFilter, clearFilter } = log;
   const [selectedIdx, setSelectedIdx] = useState(0);
 
   const count = log.entries.length;
@@ -122,12 +126,16 @@ export function LogPanel({ rpc }: LogPanelProps): React.JSX.Element {
         displayOnScreen: false,
         internal: true,
         onSelect: () => {
-          log.clearFilter();
+          clearFilter();
           setSelectedIdx(0);
         },
       },
     ],
-    [popPopup, move, log],
+    // Phase 3F.1 gotcha: depend ONLY on stable callbacks, NEVER the
+    // whole `log` object (new identity every render → registry-mutation
+    // feedback loop → "Maximum update depth exceeded"). `clearFilter`
+    // is useCallback-stable in useAuditLog.
+    [popPopup, move, clearFilter],
   );
   useRegisterCommands(commands, isFocused);
 
@@ -142,12 +150,12 @@ export function LogPanel({ rpc }: LogPanelProps): React.JSX.Element {
       if (key.pageUp || key.pageDown || key.home || key.end) return;
       if (key.ctrl || key.meta) return;
       if (key.backspace || key.delete) {
-        log.backspaceFilter();
+        backspaceFilter();
         setSelectedIdx(0);
         return;
       }
       if (input.length >= 1) {
-        log.appendFilterChar(input);
+        appendFilterChar(input);
         setSelectedIdx(0);
       }
     },

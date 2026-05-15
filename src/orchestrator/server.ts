@@ -78,7 +78,11 @@ import type {
   AutoMergeBroker,
   AutoMergeDispatcherHandle,
 } from './auto-merge-types.js';
-import { SqliteAuditStore } from '../state/sqlite-audit-store.js';
+import {
+  SqliteAuditStore,
+  clampAuditLimit,
+  clampAuditOffset,
+} from '../state/sqlite-audit-store.js';
 import type {
   AuditAppendInput,
   AuditEntry,
@@ -1100,28 +1104,34 @@ function auditQuestionAnswered(logger: AuditLogger, record: QuestionRecord): voi
   }, { rawKeys: ['urgency'] });
 }
 
-const AUTOMERGE_KIND_TO_AUDIT: Record<AutoMergeEvent['kind'], AuditKind> = {
+// Audit M3: `asked` is NOT audited here. It's the question-enqueued
+// precursor of an `ask`-mode merge; `questionStore.onQuestionEnqueued`
+// already writes a `question_asked` row for the exact same user-facing
+// event. Aliasing `asked → merge_ready` double-logged AND was
+// semantically wrong (`merge_ready` is the `never`-mode "branch left
+// for manual review" state). Map only the four real merge outcomes.
+const AUTOMERGE_KIND_TO_AUDIT: Partial<Record<AutoMergeEvent['kind'], AuditKind>> = {
   merged: 'merge_performed',
   declined: 'merge_declined',
   failed: 'merge_failed',
   ready: 'merge_ready',
-  asked: 'merge_ready', // 'asked' is the question-enqueued precursor; closest analog
 };
 
-const AUTOMERGE_KIND_SEVERITY: Record<AutoMergeEvent['kind'], AuditSeverity> = {
+const AUTOMERGE_KIND_SEVERITY: Partial<Record<AutoMergeEvent['kind'], AuditSeverity>> = {
   merged: 'info',
   declined: 'info',
   failed: 'error',
   ready: 'info',
-  asked: 'info',
 };
 
 function auditAutoMergeEvent(logger: AuditLogger, event: AutoMergeEvent): void {
+  const kind = AUTOMERGE_KIND_TO_AUDIT[event.kind];
+  if (kind === undefined) return; // 'asked' — covered by question_asked
   logger.append(
     {
       ts: event.ts,
-      kind: AUTOMERGE_KIND_TO_AUDIT[event.kind],
-      severity: AUTOMERGE_KIND_SEVERITY[event.kind],
+      kind,
+      severity: AUTOMERGE_KIND_SEVERITY[event.kind] ?? 'info',
       workerId: event.workerId,
       headline: event.headline,
       payload: {
@@ -1184,9 +1194,12 @@ function createMemoryAuditStore(): AuditStore {
       if (filter.untilTs !== undefined) {
         out = out.filter((r) => r.ts <= filter.untilTs!);
       }
-      const limit = filter.limit ?? 200;
-      const offset = filter.offset ?? 0;
-      return out.slice(offset, offset + Math.min(limit, 1000));
+      // Audit M4 — identical clamp semantics to SqliteAuditStore so the
+      // test/no-db oracle never diverges (negative/non-finite limit must
+      // NOT slice(0,-N); offset coerced the same way).
+      const limit = clampAuditLimit(filter.limit);
+      const offset = clampAuditOffset(filter.offset);
+      return out.slice(offset, offset + limit);
     },
     count(filter = {}) {
       return this.list({ ...filter, limit: 1_000_000, offset: 0 }).length;

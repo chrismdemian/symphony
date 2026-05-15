@@ -16,26 +16,68 @@ import type {
 } from './types.js';
 import { formatAuditLine } from './file-sink.js';
 
+// Audit M1/M2: bound recursion (cycle guard + depth cap) and reject
+// non-plain objects. The logger is the documented defense-in-depth
+// sanitizer; a future caller passing a live object (cyclic `cause`
+// chain, Buffer, Date) must NOT blow the stack or balloon a SQLite row.
+const MAX_SANITIZE_DEPTH = 8;
+
 function sanitizeValue(
   value: unknown,
   key: string | null,
   rawKeySet: ReadonlySet<string>,
+  seen: WeakSet<object>,
+  depth: number,
 ): unknown {
   if (typeof value === 'string') {
     if (key !== null && rawKeySet.has(key)) return value;
     return sanitize(value);
   }
-  if (Array.isArray(value)) {
-    return value.map((v) => sanitizeValue(v, key, rawKeySet));
+  if (
+    value === null ||
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    typeof value === 'undefined'
+  ) {
+    return value;
   }
-  if (value !== null && typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = sanitizeValue(v, k, rawKeySet);
+  // Non-plain objects: stringify to a bounded, sanitized scalar rather
+  // than walking their (often non-enumerable) internals. `Object.entries`
+  // on a Date/Error yields `{}` (data loss) and on a Buffer yields a
+  // per-byte map (size explosion) — both worse than a labelled string.
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? '[Invalid Date]' : value.toISOString();
+  }
+  if (typeof Buffer !== 'undefined' && Buffer.isBuffer(value)) {
+    return `[Buffer ${value.length} bytes]`;
+  }
+  if (value instanceof Error) {
+    return sanitize(`${value.name}: ${value.message}`);
+  }
+  if (value instanceof Map || value instanceof Set) {
+    return `[${value.constructor.name} size=${value.size}]`;
+  }
+  if (depth >= MAX_SANITIZE_DEPTH) return '[too deep]';
+  if (typeof value === 'object') {
+    if (seen.has(value)) return '[Circular]';
+    seen.add(value);
+    try {
+      if (Array.isArray(value)) {
+        return value.map((v) => sanitizeValue(v, key, rawKeySet, seen, depth + 1));
+      }
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        out[k] = sanitizeValue(v, k, rawKeySet, seen, depth + 1);
+      }
+      return out;
+    } finally {
+      // Allow the same object to appear as a SIBLING (DAG, not cycle)
+      // — only the ancestor chain must stay in `seen`.
+      seen.delete(value);
     }
-    return out;
   }
-  return value;
+  // Functions, symbols, bigint — not JSON-serializable; label them.
+  return `[${typeof value}]`;
 }
 
 function sanitizePayload(
@@ -43,9 +85,10 @@ function sanitizePayload(
   rawKeys: readonly string[],
 ): Record<string, unknown> {
   const rawKeySet = new Set(rawKeys);
+  const seen = new WeakSet<object>();
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(payload)) {
-    out[k] = sanitizeValue(v, k, rawKeySet);
+    out[k] = sanitizeValue(v, k, rawKeySet, seen, 0);
   }
   return out;
 }

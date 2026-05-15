@@ -1205,6 +1205,15 @@ const AUDIT_SEVERITY_SET: ReadonlySet<string> = new Set<string>(AUDIT_SEVERITIES
  * are clamped by `SqliteAuditStore` itself, so we only reject
  * non-finite junk here.
  */
+// Audit m3 — apply the same drop-silently philosophy as kinds/severity
+// to timestamps. A garbage `sinceTs` like "banana" forwarded to SQL
+// `ts >= 'banana'` yields a wrong-but-non-crashing lexicographic
+// result; reject anything that doesn't parse as a real date. The TUI
+// always sends `new Date().toISOString()`, so valid input is unaffected.
+function isValidIsoish(value: string): boolean {
+  return !Number.isNaN(Date.parse(value));
+}
+
 function coerceAuditFilter(args: AuditListArgs | undefined): AuditListFilter {
   if (args === undefined) return {};
   const kinds =
@@ -1224,10 +1233,14 @@ function coerceAuditFilter(args: AuditListArgs | undefined): AuditListFilter {
     ...(typeof args.workerId === 'string' && args.workerId.length > 0
       ? { workerId: args.workerId }
       : {}),
-    ...(typeof args.sinceTs === 'string' && args.sinceTs.length > 0
+    ...(typeof args.sinceTs === 'string' &&
+    args.sinceTs.length > 0 &&
+    isValidIsoish(args.sinceTs)
       ? { sinceTs: args.sinceTs }
       : {}),
-    ...(typeof args.untilTs === 'string' && args.untilTs.length > 0
+    ...(typeof args.untilTs === 'string' &&
+    args.untilTs.length > 0 &&
+    isValidIsoish(args.untilTs)
       ? { untilTs: args.untilTs }
       : {}),
     ...(typeof args.limit === 'number' && Number.isFinite(args.limit)

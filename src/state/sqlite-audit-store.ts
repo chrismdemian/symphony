@@ -26,10 +26,27 @@ interface AuditRow {
 
 const KINDS_SET: ReadonlySet<string> = new Set<string>(AUDIT_KINDS);
 
-function clampLimit(raw: number | undefined): number {
+/**
+ * Shared limit clamp — exported so the in-memory fallback store
+ * (`createMemoryAuditStore`) stays behaviorally identical (audit M4:
+ * the AuditLogger + RPC explicitly don't branch on the backing store,
+ * so a divergent oracle hides bugs). Non-positive / non-finite → the
+ * 200 default; otherwise floored + capped at 1000.
+ */
+export function clampAuditLimit(raw: number | undefined): number {
   if (raw === undefined) return AUDIT_LIST_DEFAULT_LIMIT;
   if (!Number.isFinite(raw) || raw <= 0) return AUDIT_LIST_DEFAULT_LIMIT;
   return Math.min(Math.floor(raw), AUDIT_LIST_MAX_LIMIT);
+}
+
+/** Shared offset coercion — negative / non-finite → 0, else floored. */
+export function clampAuditOffset(raw: number | undefined): number {
+  if (raw === undefined || !Number.isFinite(raw) || raw <= 0) return 0;
+  return Math.floor(raw);
+}
+
+function clampLimit(raw: number | undefined): number {
+  return clampAuditLimit(raw);
 }
 
 function decodePayload(raw: string): Readonly<Record<string, unknown>> {

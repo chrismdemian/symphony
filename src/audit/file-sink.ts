@@ -44,14 +44,16 @@ function formatField(key: string, value: string | number | null | undefined): st
  */
 export function formatAuditLine(entry: AuditEntry): string {
   const headline = entry.headline.replace(/[\r\n]+/g, ' ').trim();
-  const parts =
+  const head =
     `${entry.ts}  ${entry.kind}  ${entry.severity}` +
     formatField('project', entry.projectId) +
     formatField('worker', entry.workerId) +
     formatField('task', entry.taskId) +
-    formatField('tool', entry.toolName) +
-    `  "${headline.replace(/"/g, '\\"')}"`;
-  return parts;
+    formatField('tool', entry.toolName);
+  // Audit m1 — omit the quoted field entirely for an empty headline
+  // rather than emitting a noisy trailing `""` (keeps `tail | awk`
+  // column count honest for the no-headline edge).
+  return headline.length > 0 ? `${head}  "${headline.replace(/"/g, '\\"')}"` : head;
 }
 
 export interface AuditFileSinkOptions {
