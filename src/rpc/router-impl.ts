@@ -80,7 +80,15 @@ export interface RouterDeps {
    */
   readonly workerLifecycle?: Pick<
     WorkerLifecycleHandle,
-    'listPendingGlobal' | 'cancelQueued' | 'reorderQueued'
+    | 'listPendingGlobal'
+    | 'cancelQueued'
+    | 'reorderQueued'
+    // Phase 3T — composed by `runtime.interrupt`. Same shape as 3L's
+    // `cancelQueued` / `listPendingGlobal` — just exposing the
+    // existing-since-3T batch helpers here so the RPC dependency
+    // surface is honest about what `runtime.interrupt` needs.
+    | 'killAllRunning'
+    | 'cancelAllQueued'
   >;
   /**
    * Phase 3M — optional. When omitted, the `runtime.setAwayMode` RPC
@@ -98,6 +106,19 @@ export interface RouterDeps {
    * a context cursor — the RPC echoes back the requested tier.
    */
   readonly setDispatchAutonomyTier?: (tier: AutonomyTier) => void;
+  /**
+   * Phase 3T — flips an `interruptPending` flag on the dispatch context
+   * cursor. While true, the dispatch shim short-circuits ACT-scope tool
+   * calls so Maestro's still-streaming turn can't spawn fresh workers
+   * between the `runtime.interrupt` RPC and `turn_completed`. Cleared
+   * by `MaestroProcess.sendUserMessage` after wrapping the user's next
+   * message with the `[INTERRUPT NOTICE]` envelope.
+   *
+   * Best-effort like `setDispatchAwayMode` — legacy test rigs without a
+   * dispatch cursor can leave it omitted; the `runtime.interrupt` RPC
+   * still composes the three mutations correctly.
+   */
+  readonly setInterruptPending?: (pending: boolean) => void;
   /**
    * Phase 3N.2 — ISO timestamp stamped at orchestrator boot. Used by the
    * `stats.session` aggregator to filter out crash-recovered workers
@@ -254,6 +275,17 @@ export interface RuntimeSetAutonomyTierArgs {
 
 export interface RuntimeSetAutonomyTierResult {
   readonly tier: AutonomyTier;
+}
+
+// Phase 3T — interrupt RPC (no args; idempotent).
+
+export interface RuntimeInterruptResult {
+  /** WorkerIDs killed (status was non-terminal at call time). */
+  readonly workersKilled: readonly string[];
+  /** RecordIDs of queued spawns drained. */
+  readonly queuedCancelled: readonly string[];
+  /** TaskIDs flipped pending → cancelled. */
+  readonly tasksCancelled: readonly string[];
 }
 
 // ── Queue argument shapes (Phase 3L) ─────────────────────────────────
@@ -752,6 +784,38 @@ export function createSymphonyRouter(deps: RouterDeps) {
       }
       deps.setDispatchAutonomyTier?.(args.tier);
       return { tier: args.tier };
+    },
+    /**
+     * Phase 3T — atomic pivot. Composes:
+     *   1. lifecycle.killAllRunning() — SIGTERM every non-terminal
+     *      worker with intent='interrupt'.
+     *   2. lifecycle.cancelAllQueued() — drain every pending queued
+     *      spawn (QueueCancelledError to each caller).
+     *   3. taskStore.cancelAllPending() — flip every pending task
+     *      `cancelled`.
+     *   4. setInterruptPending(true) — gate any ACT-scope tool calls
+     *      from Maestro's still-streaming turn until its next user
+     *      message clears the flag.
+     *
+     * Idempotent: a second call returns three empty arrays (every
+     * mutation already settled).
+     *
+     * The mutations are sequenced but NOT transactional across stores —
+     * worker SQL and task SQL are independent; the RPC just calls
+     * each helper in turn. Per the audit on Commit 3, this is safe
+     * (no cross-store invariants to violate).
+     */
+    async interrupt(): Promise<RuntimeInterruptResult> {
+      const lifecycle = deps.workerLifecycle;
+      const killed = lifecycle?.killAllRunning() ?? { killedIds: [] };
+      const queued = lifecycle?.cancelAllQueued() ?? { cancelledIds: [] };
+      const tasks = deps.taskStore.cancelAllPending();
+      deps.setInterruptPending?.(true);
+      return {
+        workersKilled: killed.killedIds,
+        queuedCancelled: queued.cancelledIds,
+        tasksCancelled: tasks.cancelledIds,
+      };
     },
   });
 

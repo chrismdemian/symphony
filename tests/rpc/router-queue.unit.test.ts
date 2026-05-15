@@ -19,7 +19,11 @@ import type {
 
 function makeRouter(workerLifecycle?: Pick<
   WorkerLifecycleHandle,
-  'listPendingGlobal' | 'cancelQueued' | 'reorderQueued'
+  | 'listPendingGlobal'
+  | 'cancelQueued'
+  | 'reorderQueued'
+  | 'killAllRunning'
+  | 'cancelAllQueued'
 >) {
   const projectStore = new ProjectRegistry();
   return createSymphonyRouter({
@@ -39,7 +43,11 @@ function fakeLifecycle(overrides: Partial<{
   reorder: (id: string, dir: 'up' | 'down') => { moved: boolean; reason?: string };
 }> = {}): Pick<
   WorkerLifecycleHandle,
-  'listPendingGlobal' | 'cancelQueued' | 'reorderQueued'
+  | 'listPendingGlobal'
+  | 'cancelQueued'
+  | 'reorderQueued'
+  | 'killAllRunning'
+  | 'cancelAllQueued'
 > & { calls: { list: number; cancel: Array<{ id: string }>; reorder: Array<{ id: string; dir: 'up' | 'down' }> } } {
   const calls = {
     list: 0,
@@ -60,6 +68,8 @@ function fakeLifecycle(overrides: Partial<{
       calls.reorder.push({ id: recordId, dir: direction });
       return overrides.reorder?.(recordId, direction) ?? { moved: true };
     },
+    killAllRunning: () => ({ killedIds: [] }),
+    cancelAllQueued: () => ({ cancelledIds: [] }),
   };
 }
 

@@ -729,6 +729,16 @@ export async function startOrchestratorServer(
         context = { ...context, tier: value };
         capabilityEvaluator.resetFirstUseTracker();
       },
+      // Phase 3T — bridge the runtime.interrupt RPC's pivot-pending flag
+      // into the live dispatch context. The shim reads
+      // `ctx.interruptPending` and short-circuits ACT-scope tool calls
+      // while it's true (Maestro's still-streaming turn cannot spawn
+      // fresh workers between the RPC firing and `turn_completed`).
+      // Cleared by `MaestroProcess.sendUserMessage` AFTER it wraps the
+      // user's next message with the [INTERRUPT NOTICE] envelope.
+      setInterruptPending: (value) => {
+        context = { ...context, interruptPending: value };
+      },
       // Phase 3N.2 — stamp orchestrator boot so the stats aggregator
       // can filter crash-recovered workers (their createdAt predates
       // this) out of the "this session" tally. Stamped once per

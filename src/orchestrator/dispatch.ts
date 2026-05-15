@@ -100,6 +100,28 @@ export function wrapToolHandler<TArgs extends Record<string, unknown>>(
       return errorResult(`tool '${name}' is not available in ${ctx.mode} mode`);
     }
 
+    // Phase 3T — short-circuit ACT-scope tools while an interrupt pivot is
+    // pending. Maestro's still-streaming turn (from before the pivot) can
+    // try to spawn fresh workers via tool calls; without this gate, those
+    // calls race the `setInterruptPending(true)` write and slip through.
+    //
+    // The flag is cleared by `MaestroProcess.sendUserMessage` after it
+    // wraps the user's NEXT message with the `[INTERRUPT NOTICE]`
+    // envelope — so a tool returning this error during the pivoted turn
+    // is exactly the intended outcome (Maestro sees the error, finishes
+    // the turn briefly, awaits the user's new direction).
+    //
+    // Plan-scope tools (read-only: `list_workers`, `get_worker_output`,
+    // `list_tasks`) are NOT gated — Maestro may need to inspect state
+    // while drafting its acknowledgement. `'both'`-scope tools are
+    // treated like plan (read-leaning by convention; the few `'both'`
+    // tools today are status/lookup operations).
+    if (ctx.interruptPending === true && scope === 'act') {
+      return errorResult(
+        `tool '${name}' blocked: user pivoted previous turn — workers killed, queue cleared, await new direction`,
+      );
+    }
+
     // Phase 3S — pass `name` so the evaluator can key its first-use
     // tracker per (flag, tool) pair. Existing call sites that don't pass
     // a name (e.g. unit tests against the evaluator alone) get the

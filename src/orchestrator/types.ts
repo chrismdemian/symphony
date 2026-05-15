@@ -27,6 +27,17 @@ export interface DispatchContext {
   tier: AutonomyTier;
   awayMode: boolean;
   automationContext: boolean;
+  /**
+   * Phase 3T — set true by `runtime.interrupt` RPC, cleared by
+   * `MaestroProcess.sendUserMessage` after wrapping the user's next
+   * message with the `[INTERRUPT NOTICE]` envelope. While true, the
+   * dispatch shim short-circuits every ACT-scope tool with a
+   * structured error so Maestro's still-streaming turn can't spawn
+   * fresh workers between the RPC firing and `turn_completed`.
+   * Defaults false; legacy contexts may omit the field (treated as
+   * false by the shim).
+   */
+  interruptPending?: boolean;
   /** Abort signal from the SDK's request-handler controller. Handlers should observe it for cooperative cancellation. */
   signal?: AbortSignal;
 }
