@@ -394,9 +394,13 @@ export function buildGlobalCommands(
     // useRef<number> with `lastInterruptAt`. A second Ctrl+C within
     // 2s calls `handlers.requestExit()` instead of pivoting. Esc never
     // escalates (it's never a kill switch anywhere else).
-    ...(state?.pivotEligible === false
-      ? [] // disabled — fall through to app.exit on Ctrl+C, no-op on Esc
-      : [
+    // Default OFF — only register when state explicitly says
+    // pivotEligible=true. If state is undefined (legacy callsites that
+    // don't pass the new field) or pivotEligible is false, both
+    // bindings are omitted so popup Esc stays popup-Esc and global
+    // Ctrl+C stays the kill switch.
+    ...(state?.pivotEligible === true
+      ? [
           {
             id: 'app.interrupt.esc',
             title: 'interrupt (pivot)',
@@ -417,6 +421,7 @@ export function buildGlobalCommands(
               handlers.pivotInterruptCtrlC?.() ??
               handlers.showLeaderToast?.('Interrupt — handler not wired.'),
           },
-        ]),
+        ]
+      : []),
   ];
 }
