@@ -118,7 +118,7 @@ const SCENARIOS: readonly Scenario[] = [
     kind: 'bar',
     name: '03-bar-interrupted-implementer',
     description:
-      'PipelineBar at role=implementer + status=interrupted. Stage 3 (current) cell is muted gray (workerPaused theme key). Prior stages remain gold (done), future stages muted.',
+      'PipelineBar at role=implementer + status=interrupted. Stage index 2 (the implementer’s current cell, zero-indexed per src/ui/panels/workers/stage.ts) is muted gray (workerPaused theme key). Prior cells (0,1) remain gold (done); future cells (3,4) are muted (textMuted).',
     role: 'implementer',
     status: 'interrupted',
   },

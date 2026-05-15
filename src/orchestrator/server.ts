@@ -734,8 +734,10 @@ export async function startOrchestratorServer(
       // `ctx.interruptPending` and short-circuits ACT-scope tool calls
       // while it's true (Maestro's still-streaming turn cannot spawn
       // fresh workers between the RPC firing and `turn_completed`).
-      // Cleared by `MaestroProcess.sendUserMessage` AFTER it wraps the
-      // user's next message with the [INTERRUPT NOTICE] envelope.
+      // Cleared via the TUI's explicit `runtime.clearInterruptPending`
+      // RPC after `MaestroDataController.sendUserMessage` wraps + sends
+      // the user's next message with the [INTERRUPT NOTICE] envelope.
+      // Cross-process limitation documented in dispatch.ts + types.ts.
       setInterruptPending: (value) => {
         context = { ...context, interruptPending: value };
       },

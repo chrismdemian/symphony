@@ -114,7 +114,7 @@ function AppShell(props: AppProps): React.JSX.Element {
   const sessionTotalsResult = useSessionTotals(props.rpc);
   const { mode } = useMode(props.rpc);
   const questionsResult = useQuestions(props.rpc);
-  const { sessionId, pushSystem, turn, markInterrupted } = useMaestroData();
+  const { sessionId, pushSystem, turn, markInterrupted, interruptPending } = useMaestroData();
 
   // Phase 3K — subscribe to the orchestrator's `completions.events`
   // topic and forward each summary into the chat panel as a system
@@ -462,6 +462,27 @@ function AppShell(props: AppProps): React.JSX.Element {
     if (queueResult.pending.length > 0) return true;
     return false;
   }, [turn.inFlight, workersResult.workers, queueResult.pending]);
+
+  // Phase 3T audit Major #1 — server-side `interruptPending` flag has
+  // no automatic clear path. The TUI's local flag clears inside
+  // `sendUserMessage` after the wrap; observe the edge here and fire
+  // `runtime.clearInterruptPending` so the calling server's
+  // dispatch-context cursor returns to false too. Without this, any
+  // future ACT-scope tool dispatched through THAT server would be
+  // blocked for the life of the process. Best-effort: swallow errors
+  // so a transient RPC hiccup doesn't poison subsequent renders.
+  const prevInterruptPendingRef = useRef(false);
+  useEffect(() => {
+    const prev = prevInterruptPendingRef.current;
+    prevInterruptPendingRef.current = interruptPending;
+    if (prev === true && interruptPending === false) {
+      void rpc.call.runtime.clearInterruptPending().catch(() => {
+        // Idempotent on the server; a missed clear leaves the flag
+        // stale on server #1, but server #2 (where Maestro's tools
+        // run) is unaffected per the cross-process limitation.
+      });
+    }
+  }, [interruptPending, rpc]);
 
   const appActions = useMemo(
     () => ({

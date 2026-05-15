@@ -28,12 +28,19 @@ export interface DispatchContext {
   awayMode: boolean;
   automationContext: boolean;
   /**
-   * Phase 3T — set true by `runtime.interrupt` RPC, cleared by
-   * `MaestroProcess.sendUserMessage` after wrapping the user's next
-   * message with the `[INTERRUPT NOTICE]` envelope. While true, the
-   * dispatch shim short-circuits every ACT-scope tool with a
-   * structured error so Maestro's still-streaming turn can't spawn
-   * fresh workers between the RPC firing and `turn_completed`.
+   * Phase 3T — set true by `runtime.interrupt` RPC, cleared by the
+   * TUI's explicit `runtime.clearInterruptPending` RPC AFTER it wraps
+   * + sends the user's next message via
+   * `MaestroDataController.sendUserMessage`. While true, the dispatch
+   * shim short-circuits every ACT-scope tool with a structured error.
+   *
+   * **Cross-process limitation:** flips only on the server that
+   * received the RPC. Maestro's MCP child server (per
+   * `maestro/mcp-config.ts:70`) has its own context cursor and never
+   * sees this flag in production. The envelope wrap in the TUI is the
+   * load-bearing signal that crosses the process boundary; this flag
+   * is belt-and-suspenders on single-process test rigs.
+   *
    * Defaults false; legacy contexts may omit the field (treated as
    * false by the shim).
    */

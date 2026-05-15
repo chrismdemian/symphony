@@ -886,10 +886,9 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
       if (TERMINAL_STATUSES.has(record.status)) continue;
       try {
         // Pass intent='interrupt' so WorkerImpl.kill stamps stopIntent
-        // accordingly (precedence-aware — see Phase 3T commit 2). Stub
-        // workers (recovered, post-reboot) implement kill() as a no-op;
-        // their status was never non-terminal in the first place per the
-        // TERMINAL_STATUSES guard above, so they never reach this branch.
+        // accordingly (precedence-aware — see Phase 3T commit 2).
+        // Recovered stubs have terminal status and are filtered out
+        // by the TERMINAL_STATUSES guard above.
         record.worker.kill('SIGTERM', 'interrupt');
         killedIds.push(record.id);
       } catch {

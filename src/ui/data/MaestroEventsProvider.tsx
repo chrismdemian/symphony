@@ -8,6 +8,7 @@ import React, {
   useRef,
   type ReactNode,
 } from 'react';
+import { randomUUID } from 'node:crypto';
 import {
   MaestroTurnInFlightError,
   type MaestroEvent,
@@ -313,8 +314,13 @@ export function MaestroEventsProvider({
         );
       }
       const detail = total === 0 ? 'nothing in flight' : parts.join(' · ');
+      // Audit Minor #1: use `crypto.randomUUID()` rather than
+      // `interrupt-${nowRef.current()}` so a double-pivot within the
+      // same millisecond doesn't collide on synthetic workerId. Inert
+      // today (chat reducer keys by `nextTurnId`, not workerId), but
+      // cheap insurance — mirrors 3M's away-digest posture.
       const summary: SystemSummary = {
-        workerId: `interrupt-${nowRef.current()}`,
+        workerId: `interrupt-${randomUUID()}`,
         workerName: 'Symphony',
         projectName: '',
         statusKind: 'interrupted',

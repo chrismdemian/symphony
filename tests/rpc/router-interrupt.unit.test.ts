@@ -116,6 +116,33 @@ describe('runtime.interrupt (3T)', () => {
     expect(harness.setInterruptCalls).toEqual([true, true]);
   });
 
+  it('clearInterruptPending RPC fires setInterruptPending(false)', async () => {
+    const harness = makeRouterWithLifecycle(0, 0);
+    await harness.router.runtime.interrupt();
+    expect(harness.setInterruptCalls).toEqual([true]);
+
+    const result = await harness.router.runtime.clearInterruptPending();
+    expect(result.cleared).toBe(true);
+    expect(harness.setInterruptCalls).toEqual([true, false]);
+  });
+
+  it('clearInterruptPending is idempotent (legacy test rig without setter still resolves)', async () => {
+    const projectStore = new ProjectRegistry();
+    projectStore.register({ id: 'p1', name: 'p1', path: '/tmp/p1', createdAt: '' });
+    const router = createSymphonyRouter({
+      projectStore,
+      taskStore: new TaskRegistry({ projectStore }),
+      questionStore: new QuestionRegistry(),
+      waveStore: new WaveRegistry(),
+      workerRegistry: new WorkerRegistry(),
+      modeController: new ModeController({ initial: 'plan' }),
+    });
+    const first = await router.runtime.clearInterruptPending();
+    const second = await router.runtime.clearInterruptPending();
+    expect(first.cleared).toBe(true);
+    expect(second.cleared).toBe(true);
+  });
+
   it('works without a workerLifecycle (legacy test rig — task cancellation still fires)', async () => {
     const projectStore = new ProjectRegistry();
     projectStore.register({ id: 'p1', name: 'p1', path: '/tmp/p1', createdAt: '' });

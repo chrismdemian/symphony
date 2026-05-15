@@ -111,8 +111,14 @@ export interface RouterDeps {
    * cursor. While true, the dispatch shim short-circuits ACT-scope tool
    * calls so Maestro's still-streaming turn can't spawn fresh workers
    * between the `runtime.interrupt` RPC and `turn_completed`. Cleared
-   * by `MaestroProcess.sendUserMessage` after wrapping the user's next
-   * message with the `[INTERRUPT NOTICE]` envelope.
+   * by the TUI's explicit `runtime.clearInterruptPending` RPC AFTER it
+   * sends the user's next message (which carries the `[INTERRUPT
+   * NOTICE]` envelope wrap).
+   *
+   * Cross-process limitation: flips only on the server that received
+   * the RPC. Maestro's MCP child server is a separate process; see
+   * `dispatch.ts` for the limitation note and `types.ts` for the
+   * canonical doc.
    *
    * Best-effort like `setDispatchAwayMode` — legacy test rigs without a
    * dispatch cursor can leave it omitted; the `runtime.interrupt` RPC
@@ -794,16 +800,21 @@ export function createSymphonyRouter(deps: RouterDeps) {
      *   3. taskStore.cancelAllPending() — flip every pending task
      *      `cancelled`.
      *   4. setInterruptPending(true) — gate any ACT-scope tool calls
-     *      from Maestro's still-streaming turn until its next user
-     *      message clears the flag.
+     *      from Maestro's still-streaming turn until the caller fires
+     *      `runtime.clearInterruptPending` once it has wrapped + sent
+     *      the user's next message.
      *
      * Idempotent: a second call returns three empty arrays (every
      * mutation already settled).
      *
-     * The mutations are sequenced but NOT transactional across stores —
-     * worker SQL and task SQL are independent; the RPC just calls
-     * each helper in turn. Per the audit on Commit 3, this is safe
-     * (no cross-store invariants to violate).
+     * Cross-process limitation (audit 3T Major #2): the dispatch-shim
+     * gate fires only on the server that received this RPC. Maestro's
+     * MCP child is a separate process (per `maestro/mcp-config.ts:70`)
+     * with its own dispatch-context cursor; that server's
+     * `interruptPending` stays false. The envelope-wrap in the TUI's
+     * `sendUserMessage` is the load-bearing signal that crosses the
+     * process boundary; the dispatch shim is belt-and-suspenders only
+     * on single-process test rigs.
      */
     async interrupt(): Promise<RuntimeInterruptResult> {
       const lifecycle = deps.workerLifecycle;
@@ -816,6 +827,23 @@ export function createSymphonyRouter(deps: RouterDeps) {
         queuedCancelled: queued.cancelledIds,
         tasksCancelled: tasks.cancelledIds,
       };
+    },
+    /**
+     * Phase 3T audit Major #1 — explicit server-side clear. The TUI
+     * calls this after `MaestroDataController.sendUserMessage` returns
+     * ok with the wrapped `[INTERRUPT NOTICE]` envelope. Without it,
+     * the calling server's `context.interruptPending` would stay true
+     * forever and any future ACT-scope tool dispatch on THAT server
+     * would be blocked. (See cross-process note on `interrupt()` above —
+     * server #2's cursor is unaffected either way, so this is server-
+     * #1 bookkeeping.)
+     *
+     * Idempotent; legacy test rigs without a `setInterruptPending`
+     * closure still receive a no-op.
+     */
+    async clearInterruptPending(): Promise<{ readonly cleared: true }> {
+      deps.setInterruptPending?.(false);
+      return { cleared: true };
     },
   });
 
