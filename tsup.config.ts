@@ -40,5 +40,13 @@ export default defineConfig({
       path.resolve('dist/prompts'),
       (f) => f.endsWith('.md'),
     );
+    // Phase 4D.1 — the generated fragment subtree. `copyTree` is not
+    // recursive (it skips subdirs), so the `fragments/` dir needs its
+    // own copy pass alongside the flat v1 artifacts.
+    copyTree(
+      path.resolve('research/prompts/fragments'),
+      path.resolve('dist/prompts/fragments'),
+      (f) => f.endsWith('.md'),
+    );
   },
 });

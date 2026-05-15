@@ -24,6 +24,7 @@
     "test:watch": "vitest",
     "test:scenarios": "vitest run --config vitest.scenarios.config.ts",
     "verify": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:scenarios && pnpm build",
+    "gen:fragments": "tsx scripts/gen-prompt-fragments.ts",
     "format": "prettier --write .",
     "visual:3b1": "node tests/visual/run.mjs tests/visual/3b1-frames.tsx",
     "visual:3b2": "node tests/visual/run.mjs tests/visual/3b2-frames.tsx",
