@@ -78,6 +78,22 @@ import type {
   AutoMergeBroker,
   AutoMergeDispatcherHandle,
 } from './auto-merge-types.js';
+import { SqliteAuditStore } from '../state/sqlite-audit-store.js';
+import type {
+  AuditAppendInput,
+  AuditEntry,
+  AuditKind,
+  AuditSeverity,
+  AuditStore,
+} from '../state/audit-store.js';
+import { createAuditLogger } from '../audit/logger.js';
+import { createAuditFileSink } from '../audit/file-sink.js';
+import type { AuditLogger } from '../audit/types.js';
+import type { ToolAuditRecord, ToolAuditSink } from './dispatch.js';
+import type { WorkerStatus } from '../workers/types.js';
+import type { WorkerRecord } from './worker-registry.js';
+import type { QuestionRecord } from '../state/question-registry.js';
+import type { AutoMergeEvent } from './auto-merge-types.js';
 import type {
   TaskReadyBroker,
   TaskReadyDispatcherHandle,
@@ -174,6 +190,24 @@ export interface OrchestratorServerOptions {
    * Phase 3P — override the task-ready dispatcher. Test seam.
    */
   taskReadyDispatcher?: TaskReadyDispatcherHandle;
+  /**
+   * Phase 3R — override the audit store. Test seam: pass an in-memory
+   * fake to assert audit rows without touching SQLite. Defaults to a
+   * SqliteAuditStore when `database` is provided.
+   */
+  auditStore?: AuditStore;
+  /**
+   * Phase 3R — override the audit logger. Test seam: pass a stub
+   * `AuditLogger` to bypass file IO entirely. Defaults to a real logger
+   * wrapping `auditStore` + a flat-file sink at `~/.symphony/audit.log`.
+   */
+  auditLogger?: AuditLogger;
+  /**
+   * Phase 3R — override the file path for the flat-file audit log
+   * mirror. Test seam: tests pass a tmp path to keep ~/.symphony
+   * untouched. Defaults to `~/.symphony/audit.log`.
+   */
+  auditFilePath?: string;
 }
 
 export interface RpcOptions {
@@ -217,6 +251,10 @@ export interface OrchestratorServerHandle {
   taskReadyBroker: TaskReadyBroker;
   /** Phase 3P — exposed for tests that need to wait on shutdown drain. */
   taskReadyDispatcher: TaskReadyDispatcherHandle;
+  /** Phase 3R — exposed for tests + the RPC layer's `audit.list`. */
+  auditLogger: AuditLogger;
+  /** Phase 3R — exposed for tests + the RPC layer's `audit.list`. */
+  auditStore: AuditStore;
   defaultProjectPath: string;
   resolveProjectPath: (project?: string) => string;
   setContext: (partial: Partial<DispatchContext>) => void;
@@ -268,6 +306,69 @@ export async function startOrchestratorServer(
       );
     }
   };
+
+  // Phase 3R — audit infrastructure. SQLite-backed when `database` is
+  // provided, in-memory otherwise (test fakes). The logger sanitizes
+  // payloads + fans to an optional flat-file sink. File sink is
+  // opt-out via explicit `options.auditLogger` (in which case the
+  // caller wires their own sinks).
+  const auditStore: AuditStore =
+    options.auditStore ??
+    (options.database ? new SqliteAuditStore(options.database.db) : createMemoryAuditStore());
+  const auditLogger: AuditLogger =
+    options.auditLogger ??
+    createAuditLogger({
+      store: auditStore,
+      fileSink: createAuditFileSink(
+        options.auditFilePath !== undefined ? { filePath: options.auditFilePath } : {},
+      ),
+    });
+
+  // Phase 3R — translate `wrapToolHandler`'s ToolAuditRecord into the
+  // generic AuditAppendInput. The args payload is passed through the
+  // logger's sanitizer (defense in depth — args may carry secrets
+  // even though tools should never accept them by design). `outcome`
+  // maps to one of three AuditKind values.
+  const toolAuditSink: ToolAuditSink = (record: ToolAuditRecord): void => {
+    const kind: AuditKind =
+      record.outcome === 'ok'
+        ? 'tool_called'
+        : record.outcome === 'denied'
+          ? 'tool_denied'
+          : 'tool_error';
+    const severity: AuditSeverity =
+      record.outcome === 'ok' ? 'info' : record.outcome === 'denied' ? 'warn' : 'error';
+    const argsJson = JSON.stringify(record.args);
+    const truncatedArgs = argsJson.length > 1024 ? argsJson.slice(0, 1024) + '…' : argsJson;
+    const headline =
+      record.outcome === 'ok'
+        ? `tool ${record.name} · tier ${record.tier} · ok`
+        : record.outcome === 'denied'
+          ? `tool ${record.name} · tier ${record.tier} · denied (${record.reason ?? 'no reason'})`
+          : `tool ${record.name} · tier ${record.tier} · error (${record.reason ?? 'unknown'})`;
+    auditLogger.append(
+      {
+        ts: new Date().toISOString(),
+        kind,
+        severity,
+        toolName: record.name,
+        headline,
+        payload: {
+          scope: record.scope,
+          capabilities: record.capabilities,
+          tier: record.tier,
+          mode: record.mode,
+          args: truncatedArgs,
+          ...(record.reason !== undefined ? { reason: record.reason } : {}),
+        },
+      },
+      {
+        // Public protocol metadata — keep readable.
+        rawKeys: ['scope', 'mode', 'tier', 'capabilities', 'reason'],
+      },
+    );
+  };
+
   const registry = new ToolRegistry({
     server,
     mode,
@@ -275,6 +376,7 @@ export async function startOrchestratorServer(
     capabilityEvaluator,
     getContext: () => context,
     noticeSink,
+    auditSink: toolAuditSink,
   });
 
   const defaultProjectPath = path.resolve(options.defaultProjectPath ?? process.cwd());
@@ -380,14 +482,24 @@ export async function startOrchestratorServer(
     options.questionStore ??
     (options.database
       ? new SqliteQuestionStore(options.database.db, {
-          onQuestionEnqueued: (record) => notificationDispatcher.onQuestion(record),
-          onQuestionAnswered: (record) =>
-            autoMergeDispatcherRef.current?.onQuestionAnswered(record),
+          onQuestionEnqueued: (record) => {
+            notificationDispatcher.onQuestion(record);
+            auditQuestionAsked(auditLogger, record);
+          },
+          onQuestionAnswered: (record) => {
+            autoMergeDispatcherRef.current?.onQuestionAnswered(record);
+            auditQuestionAnswered(auditLogger, record);
+          },
         })
       : new QuestionRegistry({
-          onQuestionEnqueued: (record) => notificationDispatcher.onQuestion(record),
-          onQuestionAnswered: (record) =>
-            autoMergeDispatcherRef.current?.onQuestionAnswered(record),
+          onQuestionEnqueued: (record) => {
+            notificationDispatcher.onQuestion(record);
+            auditQuestionAsked(auditLogger, record);
+          },
+          onQuestionAnswered: (record) => {
+            autoMergeDispatcherRef.current?.onQuestionAnswered(record);
+            auditQuestionAnswered(auditLogger, record);
+          },
         }));
   const waveStore: WaveStore =
     options.waveStore ??
@@ -442,6 +554,12 @@ export async function startOrchestratorServer(
       },
     });
   autoMergeDispatcherRef.current = autoMergeDispatcher;
+
+  // Phase 3R — audit every auto-merge event. Single subscriber, no
+  // unsubscribe needed (broker is cleared on server close).
+  autoMergeBroker.subscribe((event: AutoMergeEvent) => {
+    auditAutoMergeEvent(auditLogger, event);
+  });
 
   // Phase 3P — task-ready broker + dispatcher. Construct AFTER
   // `taskStore` (the dispatcher needs `.list` + `.snapshot`) and AFTER
@@ -581,6 +699,7 @@ export async function startOrchestratorServer(
       onWorkerStatusChange: (record, totalRunning) => {
         notificationDispatcher.onWorkerExit(record, totalRunning);
         completionSummarizer.onWorkerExit(record);
+        auditWorkerExit(auditLogger, record);
       },
     });
   // Late-bind the broker callback so it works whether the lifecycle was
@@ -717,7 +836,17 @@ export async function startOrchestratorServer(
       // `ctx.awayMode` per tool call; without this seam the field would
       // stay at the boot-time value for the life of the process.
       setDispatchAwayMode: (value) => {
+        const prev = context.awayMode;
         context = { ...context, awayMode: value };
+        if (prev !== value) {
+          auditLogger.append({
+            ts: new Date().toISOString(),
+            kind: 'away_mode_changed',
+            severity: 'info',
+            headline: `away mode ${value ? 'enabled' : 'disabled'}`,
+            payload: { from: prev, to: value },
+          }, { rawKeys: ['from', 'to'] });
+        }
       },
       // Phase 3S — same shape as setDispatchAwayMode but for the tier
       // cursor. The closure ALSO clears the capability evaluator's
@@ -726,8 +855,18 @@ export async function startOrchestratorServer(
       // shouldn't silently suppress notices after the user dialed up to
       // tier-3-then-back. Symphony 6-site rule reference impl.
       setDispatchAutonomyTier: (value) => {
+        const prev = context.tier;
         context = { ...context, tier: value };
         capabilityEvaluator.resetFirstUseTracker();
+        if (prev !== value) {
+          auditLogger.append({
+            ts: new Date().toISOString(),
+            kind: 'tier_changed',
+            severity: 'info',
+            headline: `autonomy tier ${prev} → ${value}`,
+            payload: { from: prev, to: value },
+          }, { rawKeys: ['from', 'to'] });
+        }
       },
       // Phase 3T — bridge the runtime.interrupt RPC's pivot-pending flag
       // into the live dispatch context. The shim reads
@@ -838,6 +977,10 @@ export async function startOrchestratorServer(
     } catch {
       // already closed
     }
+    // Phase 3R — drain auditLogger LAST so teardown errors from the
+    // dispatchers above land in the audit log. Sets the disposed flag
+    // + awaits file-sink flush.
+    await auditLogger.shutdown().catch(() => {});
   };
 
   return {
@@ -862,6 +1005,8 @@ export async function startOrchestratorServer(
     autoMergeDispatcher,
     taskReadyBroker,
     taskReadyDispatcher,
+    auditLogger,
+    auditStore,
     defaultProjectPath,
     resolveProjectPath,
     setContext: (partial) => {
@@ -870,6 +1015,180 @@ export async function startOrchestratorServer(
     getContext: () => context,
     ...(rpcHandle !== undefined ? { rpc: rpcHandle } : {}),
     close,
+  };
+}
+
+// ===== Phase 3R audit helpers =====
+
+const WORKER_STATUS_TO_AUDIT: Partial<Record<WorkerStatus, AuditKind>> = {
+  completed: 'worker_completed',
+  failed: 'worker_failed',
+  crashed: 'worker_crashed',
+  timeout: 'worker_timeout',
+  killed: 'worker_killed',
+  interrupted: 'worker_interrupted',
+};
+
+const WORKER_STATUS_SEVERITY: Partial<Record<WorkerStatus, AuditSeverity>> = {
+  completed: 'info',
+  failed: 'error',
+  crashed: 'error',
+  timeout: 'warn',
+  killed: 'info',
+  interrupted: 'info',
+};
+
+function auditWorkerExit(logger: AuditLogger, record: WorkerRecord): void {
+  const kind = WORKER_STATUS_TO_AUDIT[record.status];
+  if (kind === undefined) return; // not a terminal status we audit
+  const severity = WORKER_STATUS_SEVERITY[record.status] ?? 'info';
+  const intent = record.featureIntent || record.taskDescription || record.id;
+  const verb = kind.replace('worker_', '');
+  logger.append(
+    {
+      ts: new Date().toISOString(),
+      kind,
+      severity,
+      projectId: record.projectId,
+      workerId: record.id,
+      taskId: record.taskId ?? null,
+      headline: `${verb}: ${intent}`,
+      payload: {
+        role: record.role,
+        status: record.status,
+        ...(record.exitInfo?.exitCode != null ? { exitCode: record.exitInfo.exitCode } : {}),
+        ...(record.exitInfo?.signal != null ? { exitSignal: record.exitInfo.signal } : {}),
+        ...(record.costUsd !== undefined ? { costUsd: record.costUsd } : {}),
+      },
+    },
+    { rawKeys: ['role', 'status', 'exitCode', 'exitSignal', 'costUsd'] },
+  );
+}
+
+function auditQuestionAsked(logger: AuditLogger, record: QuestionRecord): void {
+  logger.append({
+    ts: new Date().toISOString(),
+    kind: 'question_asked',
+    severity: 'info',
+    projectId: record.projectId ?? null,
+    workerId: record.workerId ?? null,
+    headline: `question asked: ${record.question.slice(0, 80)}`,
+    payload: {
+      urgency: record.urgency,
+      // question text is sanitized by AuditLogger.append by default
+      question: record.question,
+    },
+  }, { rawKeys: ['urgency'] });
+}
+
+function auditQuestionAnswered(logger: AuditLogger, record: QuestionRecord): void {
+  logger.append({
+    ts: new Date().toISOString(),
+    kind: 'question_answered',
+    severity: 'info',
+    projectId: record.projectId ?? null,
+    workerId: record.workerId ?? null,
+    headline: `question answered: ${record.question.slice(0, 80)}`,
+    // answer + question both sanitized; answers can carry copy-pasted secrets
+    payload: {
+      urgency: record.urgency,
+      question: record.question,
+      answer: record.answer ?? '',
+    },
+  }, { rawKeys: ['urgency'] });
+}
+
+const AUTOMERGE_KIND_TO_AUDIT: Record<AutoMergeEvent['kind'], AuditKind> = {
+  merged: 'merge_performed',
+  declined: 'merge_declined',
+  failed: 'merge_failed',
+  ready: 'merge_ready',
+  asked: 'merge_ready', // 'asked' is the question-enqueued precursor; closest analog
+};
+
+const AUTOMERGE_KIND_SEVERITY: Record<AutoMergeEvent['kind'], AuditSeverity> = {
+  merged: 'info',
+  declined: 'info',
+  failed: 'error',
+  ready: 'info',
+  asked: 'info',
+};
+
+function auditAutoMergeEvent(logger: AuditLogger, event: AutoMergeEvent): void {
+  logger.append(
+    {
+      ts: event.ts,
+      kind: AUTOMERGE_KIND_TO_AUDIT[event.kind],
+      severity: AUTOMERGE_KIND_SEVERITY[event.kind],
+      workerId: event.workerId,
+      headline: event.headline,
+      payload: {
+        branch: event.branch,
+        projectName: event.projectName,
+        mergeTo: event.mergeTo,
+        ...(event.mergeSha !== undefined ? { mergeSha: event.mergeSha } : {}),
+        ...(event.reason !== undefined ? { reason: event.reason } : {}),
+        ...(event.cleanupWarning !== undefined ? { cleanupWarning: event.cleanupWarning } : {}),
+      },
+    },
+    { rawKeys: ['branch', 'projectName', 'mergeTo', 'mergeSha'] },
+  );
+}
+
+/**
+ * Phase 3R — minimal in-memory AuditStore for tests / no-database mode.
+ * Implements the same shape as `SqliteAuditStore` so the AuditLogger and
+ * RPC layer don't branch on the backing store.
+ */
+function createMemoryAuditStore(): AuditStore {
+  const rows: AuditEntry[] = [];
+  let nextId = 1;
+  return {
+    append(input: AuditAppendInput) {
+      const entry: AuditEntry = {
+        id: nextId++,
+        ts: input.ts,
+        kind: input.kind,
+        severity: input.severity ?? 'info',
+        projectId: input.projectId ?? null,
+        workerId: input.workerId ?? null,
+        taskId: input.taskId ?? null,
+        toolName: input.toolName ?? null,
+        headline: input.headline,
+        payload: Object.freeze({ ...(input.payload ?? {}) }),
+      };
+      rows.push(entry);
+      if (rows.length > 10_000) rows.shift();
+      return entry;
+    },
+    list(filter = {}) {
+      let out = [...rows].reverse();
+      if (filter.projectId !== undefined) {
+        out = out.filter((r) => r.projectId === filter.projectId);
+      }
+      if (filter.severity !== undefined) {
+        out = out.filter((r) => r.severity === filter.severity);
+      }
+      if (filter.workerId !== undefined) {
+        out = out.filter((r) => r.workerId === filter.workerId);
+      }
+      if (filter.kinds !== undefined && filter.kinds.length > 0) {
+        const set = new Set<AuditKind>(filter.kinds);
+        out = out.filter((r) => set.has(r.kind));
+      }
+      if (filter.sinceTs !== undefined) {
+        out = out.filter((r) => r.ts >= filter.sinceTs!);
+      }
+      if (filter.untilTs !== undefined) {
+        out = out.filter((r) => r.ts <= filter.untilTs!);
+      }
+      const limit = filter.limit ?? 200;
+      const offset = filter.offset ?? 0;
+      return out.slice(offset, offset + Math.min(limit, 1000));
+    },
+    count(filter = {}) {
+      return this.list({ ...filter, limit: 1_000_000, offset: 0 }).length;
+    },
   };
 }
 

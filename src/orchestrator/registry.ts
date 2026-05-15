@@ -2,7 +2,7 @@ import type { McpServer, RegisteredTool } from '@modelcontextprotocol/sdk/server
 import type { CallToolResult, ToolAnnotations } from '@modelcontextprotocol/sdk/types.js';
 import type { z } from 'zod';
 import type { CapabilityEvaluator } from './capabilities.js';
-import { wrapToolHandler } from './dispatch.js';
+import { wrapToolHandler, type ToolAuditSink } from './dispatch.js';
 import type { ModeController } from './mode.js';
 import type { AgentSafetyGuard } from './safety.js';
 import type { CapabilityFlag, CapabilityNotice, DispatchContext, ToolScope } from './types.js';
@@ -43,6 +43,12 @@ export interface ToolRegistryOptions {
    * Test rigs can omit it.
    */
   noticeSink?: (notice: CapabilityNotice) => void;
+  /**
+   * Phase 3R — optional audit sink forwarded to every wrapped tool
+   * handler. The server wires this to `AuditLogger.append`. Sink
+   * failures are swallowed by `wrapToolHandler` — dispatch never blocks.
+   */
+  auditSink?: ToolAuditSink;
 }
 
 interface TrackedTool {
@@ -68,6 +74,7 @@ export class ToolRegistry {
   private readonly capabilityEvaluator: CapabilityEvaluator;
   private readonly getContext: () => DispatchContext;
   private readonly noticeSink?: (notice: CapabilityNotice) => void;
+  private readonly auditSink?: ToolAuditSink;
   private readonly tracked: TrackedTool[] = [];
   private readonly byName = new Map<string, TrackedTool>();
   private readonly offModeChange: () => void;
@@ -79,6 +86,7 @@ export class ToolRegistry {
     this.capabilityEvaluator = opts.capabilityEvaluator;
     this.getContext = opts.getContext;
     this.noticeSink = opts.noticeSink;
+    this.auditSink = opts.auditSink;
     this.offModeChange = this.mode.onChange(() => this.applyMode());
   }
 
@@ -95,6 +103,7 @@ export class ToolRegistry {
       capabilityEvaluator: this.capabilityEvaluator,
       getContext: this.getContext,
       ...(this.noticeSink !== undefined ? { noticeSink: this.noticeSink } : {}),
+      ...(this.auditSink !== undefined ? { auditSink: this.auditSink } : {}),
       handler: (args, ctx) =>
         reg.handler(
           args as TShape extends z.ZodRawShape ? { [K in keyof TShape]: z.infer<TShape[K]> } : Record<string, never>,
