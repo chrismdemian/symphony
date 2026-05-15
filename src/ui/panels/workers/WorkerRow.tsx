@@ -81,6 +81,9 @@ export function WorkerRow({
         <Text color={theme['text']}> {stageLabel} </Text>
       </Box>
       <Text color={theme['text']}>{featureIntentDisplay}</Text>
+      {worker.status === 'interrupted' ? (
+        <Text color={theme['textMuted']}> — awaiting new direction</Text>
+      ) : null}
       <Box flexGrow={1} />
       {/* Phase 3S — render a small `T3` chip when the worker is at
           explicit Tier 3 (Confirm). Only Tier-3 to keep the visual

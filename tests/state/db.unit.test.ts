@@ -189,6 +189,54 @@ describe('SymphonyDatabase', () => {
     }
   });
 
+  it('migration 0005 extends workers.status CHECK to include interrupted (3T)', () => {
+    const svc = SymphonyDatabase.open({ filePath: ':memory:' });
+    try {
+      // `'interrupted'` is accepted post-0005.
+      svc.db
+        .prepare(
+          `INSERT INTO workers (id, worktree_path, status, role, feature_intent, task_description, created_at)
+           VALUES ('w-int', '/tmp/wt', 'interrupted', 'implementer', 'fi', 'td', '2026-01-01T00:00:00Z')`,
+        )
+        .run();
+      const row = svc.db
+        .prepare(`SELECT status FROM workers WHERE id = 'w-int'`)
+        .get() as { status: string };
+      expect(row.status).toBe('interrupted');
+
+      // Still rejects unknown values — 0005 widened the set without
+      // removing the gate.
+      expect(() =>
+        svc.db
+          .prepare(
+            `INSERT INTO workers (id, worktree_path, status, role, feature_intent, task_description, created_at)
+             VALUES ('w-bogus', '/tmp/wt', 'something-new', 'implementer', 'fi', 'td', '2026-01-01T00:00:00Z')`,
+          )
+          .run(),
+      ).toThrow(/CHECK constraint failed/);
+
+      // 0004's token columns survived the 0005 swap-rebuild.
+      svc.db
+        .prepare(
+          `UPDATE workers SET input_tokens = 100, output_tokens = 200,
+             cache_read_tokens = 10, cache_write_tokens = 20 WHERE id = 'w-int'`,
+        )
+        .run();
+      const tokens = svc.db
+        .prepare(
+          `SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+             FROM workers WHERE id = 'w-int'`,
+        )
+        .get() as { input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_write_tokens: number };
+      expect(tokens.input_tokens).toBe(100);
+      expect(tokens.output_tokens).toBe(200);
+      expect(tokens.cache_read_tokens).toBe(10);
+      expect(tokens.cache_write_tokens).toBe(20);
+    } finally {
+      svc.close();
+    }
+  });
+
   it('SYMPHONY_DB_FILE=:memory: short-circuits path resolution (2B.1 m2)', () => {
     process.env.SYMPHONY_DB_FILE = ':memory:';
     expect(resolveDatabasePath()).toBe(':memory:');

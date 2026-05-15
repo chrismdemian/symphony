@@ -23,7 +23,7 @@ import type { CreateWorktreeOptions, WorktreeInfo } from '../../src/worktree/typ
 class ScriptedWorker implements Worker {
   readonly id: string;
   sessionId: string | undefined = undefined;
-  status: 'spawning' | 'running' | 'completed' | 'failed' | 'killed' | 'timeout' | 'crashed' =
+  status: 'spawning' | 'running' | 'completed' | 'failed' | 'killed' | 'timeout' | 'crashed' | 'interrupted' =
     'running';
   private resolveExit: ((info: WorkerExitInfo) => void) | null = null;
   private readonly exitPromise: Promise<WorkerExitInfo>;

@@ -22,9 +22,15 @@ import type { WorkerRecord } from './worker-registry.js';
 import type { WorkerStatus } from '../workers/types.js';
 
 /**
- * Status kinds that produce a summary. `killed` is filtered out by
- * `onWorkerExit` (matches the notification dispatcher's silent-on-kill
- * policy — user-initiated SIGTERM doesn't need a self-report).
+ * Status kinds that may appear on a chat SystemSummary row. `killed` is
+ * excluded because user-initiated single-worker SIGTERM is silent per
+ * the 3H.3 dispatcher policy.
+ *
+ * Phase 3T: `interrupted` IS allowed here even though per-worker
+ * `classifyStatusForSummary` filters it to null (no duplicate per-worker
+ * row). The synthetic pivot row pushed by the interrupt action uses
+ * `statusKind: 'interrupted'` so the chat carries the gray ⏸ glyph
+ * consistent with the worker panel's interrupted indicator.
  */
 export type CompletionStatusKind = Exclude<WorkerStatus, 'spawning' | 'running' | 'killed'>;
 

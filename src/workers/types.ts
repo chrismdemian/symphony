@@ -128,7 +128,8 @@ export type WorkerStatus =
   | 'failed'
   | 'killed'
   | 'timeout'
-  | 'crashed';
+  | 'crashed'
+  | 'interrupted';
 
 export type KillSignal = 'SIGTERM' | 'SIGKILL';
 

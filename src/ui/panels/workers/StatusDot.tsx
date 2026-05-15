@@ -43,6 +43,8 @@ function visualForStatus(status: WorkerStatus): StatusVisual {
       return { symbol: '✗', themeKey: 'workerFailed' };
     case 'killed':
       return { symbol: '⊘', themeKey: 'workerPaused' };
+    case 'interrupted':
+      return { symbol: '⏸', themeKey: 'workerPaused' };
     case 'timeout':
       return { symbol: '⏱', themeKey: 'warning' };
   }
