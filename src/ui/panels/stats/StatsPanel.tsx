@@ -89,6 +89,8 @@ function statusGlyphFor(status: string): StatusGlyph {
       return { glyph: '⏱', tone: 'warning' };
     case 'killed':
       return { glyph: '⊘', tone: 'muted' };
+    case 'interrupted':
+      return { glyph: '⏸', tone: 'muted' };
     default:
       return { glyph: '·', tone: 'muted' };
   }

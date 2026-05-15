@@ -84,6 +84,10 @@ export class SqliteTaskStore implements TaskStore {
      * guard: two concurrent callers race here, only the first wins.
      */
     claim: Statement;
+    /** Phase 3T — selectors + bulk-cancel statement for `cancelAllPending`. */
+    selectPendingIds: Statement;
+    selectPendingIdsByProject: Statement;
+    cancelPending: Statement;
   };
   private readonly now: () => number;
   private readonly genId: () => string;
@@ -134,6 +138,26 @@ export class SqliteTaskStore implements TaskStore {
            status = 'in_progress',
            worker_id = @worker_id,
            updated_at = @updated_at
+         WHERE id = @id AND status = 'pending'`,
+      ),
+      // Phase 3T — batch cancel. Two prepared variants (global vs
+      // project-scoped) so the WHERE clause stays statically prepared.
+      // SQLite's `RETURNING` exposes the cancelled ids in a single
+      // round-trip, but better-sqlite3 prefers iterate+update for
+      // multi-row mutations — keep it simple with SELECT-then-update
+      // per row, mirroring the existing transition semantics
+      // (one onTaskStatusChange fire per task).
+      selectPendingIds: db.prepare(
+        `SELECT id FROM tasks WHERE status = 'pending'`,
+      ),
+      selectPendingIdsByProject: db.prepare(
+        `SELECT id FROM tasks WHERE status = 'pending' AND project_id = @project_id`,
+      ),
+      cancelPending: db.prepare(
+        `UPDATE tasks SET
+           status = 'cancelled',
+           updated_at = @updated_at,
+           completed_at = COALESCE(completed_at, @updated_at)
          WHERE id = @id AND status = 'pending'`,
       ),
     };
@@ -312,6 +336,43 @@ export class SqliteTaskStore implements TaskStore {
       }
     }
     return record;
+  }
+
+  /**
+   * Phase 3T — batch-cancel every pending task (optionally scoped to a
+   * single project). SELECT-then-UPDATE per row inside a transaction so
+   * the cancellation is atomic with respect to concurrent SQL callers
+   * (claim, update) — without the txn, a `cancelAllPending` could race a
+   * `claim` and leave one task stamped `cancelled` AFTER the claim
+   * stamped `in_progress`. Fires `onTaskStatusChange` once per
+   * transitioning task AFTER the txn commits (consumers must see
+   * post-commit state).
+   */
+  cancelAllPending(projectId?: string): { cancelledIds: readonly string[] } {
+    const iso = new Date(this.now()).toISOString();
+    const cancelledIds: string[] = [];
+    const txn = this.db.transaction(() => {
+      const rows = (projectId !== undefined
+        ? this.stmts.selectPendingIdsByProject.all({ project_id: projectId })
+        : this.stmts.selectPendingIds.all()) as { id: string }[];
+      for (const row of rows) {
+        const result = this.stmts.cancelPending.run({ id: row.id, updated_at: iso });
+        if (result.changes > 0) cancelledIds.push(row.id);
+      }
+    });
+    txn();
+    if (this.onTaskStatusChange !== undefined) {
+      for (const id of cancelledIds) {
+        const record = this.get(id);
+        if (record === undefined) continue;
+        try {
+          this.onTaskStatusChange(toTaskSnapshot({ ...record, notes: record.notes.slice() }));
+        } catch {
+          // downstream consumer must not poison the batch path
+        }
+      }
+    }
+    return { cancelledIds };
   }
 
   snapshot(id: string): TaskSnapshot | undefined {

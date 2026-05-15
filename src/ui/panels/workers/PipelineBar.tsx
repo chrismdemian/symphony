@@ -74,6 +74,7 @@ function cellThemeKey(
     case 'timeout':
       return 'workerFailed';
     case 'killed':
+    case 'interrupted':
       return 'workerPaused';
   }
 }

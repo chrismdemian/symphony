@@ -467,6 +467,7 @@ export const TERMINAL_WORKER_STATUSES: ReadonlySet<WorkerStatus> = new Set<Worke
   'killed',
   'timeout',
   'crashed',
+  'interrupted',
 ]);
 
 const TERMINAL_STATUSES = TERMINAL_WORKER_STATUSES;

@@ -22,7 +22,7 @@ import type { CreateWorktreeOptions, WorktreeInfo } from '../../src/worktree/typ
 class StubWorker implements Worker {
   readonly id: string;
   sessionId: string | undefined = undefined;
-  status: 'spawning' | 'running' | 'completed' | 'failed' | 'killed' | 'timeout' | 'crashed' =
+  status: 'spawning' | 'running' | 'completed' | 'failed' | 'killed' | 'timeout' | 'crashed' | 'interrupted' =
     'running';
   events: AsyncIterable<StreamEvent> = (async function* () {})();
   constructor(id: string) {

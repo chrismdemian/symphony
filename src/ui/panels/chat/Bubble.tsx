@@ -88,7 +88,7 @@ interface SystemBubbleProps {
 
 interface StatusGlyph {
   readonly icon: string;
-  readonly token: 'success' | 'error' | 'warning';
+  readonly token: 'success' | 'error' | 'warning' | 'textMuted';
 }
 
 function statusGlyph(kind: CompletionStatusKind): StatusGlyph {
@@ -100,6 +100,8 @@ function statusGlyph(kind: CompletionStatusKind): StatusGlyph {
       return { icon: '✗', token: 'error' };
     case 'timeout':
       return { icon: '⏱', token: 'warning' };
+    case 'interrupted':
+      return { icon: '⏸', token: 'textMuted' };
   }
 }
 

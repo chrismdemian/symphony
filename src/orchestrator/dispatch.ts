@@ -100,6 +100,35 @@ export function wrapToolHandler<TArgs extends Record<string, unknown>>(
       return errorResult(`tool '${name}' is not available in ${ctx.mode} mode`);
     }
 
+    // Phase 3T — short-circuit ACT-scope tools while an interrupt pivot
+    // is pending on THIS server. Maestro's still-streaming turn (from
+    // before the pivot) can try to spawn fresh workers via tool calls;
+    // without this gate, those calls race the `setInterruptPending(true)`
+    // write and slip through. The flag is cleared by the TUI's explicit
+    // `runtime.clearInterruptPending` RPC AFTER it wraps + sends the
+    // user's next message via `MaestroDataController.sendUserMessage`.
+    //
+    // **Cross-process limitation (audit 3T Major #2):** this gate fires
+    // only on the server that received `runtime.interrupt`. Maestro's
+    // MCP child runs in a SEPARATE process (`maestro/mcp-config.ts:70`)
+    // with its own dispatch-context cursor; tool calls Maestro emits
+    // from its still-streaming turn dispatch through THAT server,
+    // whose `interruptPending` stays false. The user-facing protection
+    // that crosses the process boundary is the `[INTERRUPT NOTICE]`
+    // envelope wrap (TUI-side); this server-side shim is belt-and-
+    // suspenders only on single-process test rigs. Phase 5/8 cross-
+    // process IPC will close the gap.
+    //
+    // Plan-scope + `'both'`-scope tools (read-only: `list_workers`,
+    // `get_worker_output`, `list_tasks`, `global_status`) are NOT
+    // gated — Maestro may need to inspect state while drafting its
+    // acknowledgement.
+    if (ctx.interruptPending === true && scope === 'act') {
+      return errorResult(
+        `tool '${name}' blocked: user pivoted previous turn — workers killed, queue cleared, await new direction`,
+      );
+    }
+
     // Phase 3S — pass `name` so the evaluator can key its first-use
     // tracker per (flag, tool) pair. Existing call sites that don't pass
     // a name (e.g. unit tests against the evaluator alone) get the

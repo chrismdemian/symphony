@@ -80,7 +80,15 @@ export interface RouterDeps {
    */
   readonly workerLifecycle?: Pick<
     WorkerLifecycleHandle,
-    'listPendingGlobal' | 'cancelQueued' | 'reorderQueued'
+    | 'listPendingGlobal'
+    | 'cancelQueued'
+    | 'reorderQueued'
+    // Phase 3T — composed by `runtime.interrupt`. Same shape as 3L's
+    // `cancelQueued` / `listPendingGlobal` — just exposing the
+    // existing-since-3T batch helpers here so the RPC dependency
+    // surface is honest about what `runtime.interrupt` needs.
+    | 'killAllRunning'
+    | 'cancelAllQueued'
   >;
   /**
    * Phase 3M — optional. When omitted, the `runtime.setAwayMode` RPC
@@ -98,6 +106,25 @@ export interface RouterDeps {
    * a context cursor — the RPC echoes back the requested tier.
    */
   readonly setDispatchAutonomyTier?: (tier: AutonomyTier) => void;
+  /**
+   * Phase 3T — flips an `interruptPending` flag on the dispatch context
+   * cursor. While true, the dispatch shim short-circuits ACT-scope tool
+   * calls so Maestro's still-streaming turn can't spawn fresh workers
+   * between the `runtime.interrupt` RPC and `turn_completed`. Cleared
+   * by the TUI's explicit `runtime.clearInterruptPending` RPC AFTER it
+   * sends the user's next message (which carries the `[INTERRUPT
+   * NOTICE]` envelope wrap).
+   *
+   * Cross-process limitation: flips only on the server that received
+   * the RPC. Maestro's MCP child server is a separate process; see
+   * `dispatch.ts` for the limitation note and `types.ts` for the
+   * canonical doc.
+   *
+   * Best-effort like `setDispatchAwayMode` — legacy test rigs without a
+   * dispatch cursor can leave it omitted; the `runtime.interrupt` RPC
+   * still composes the three mutations correctly.
+   */
+  readonly setInterruptPending?: (pending: boolean) => void;
   /**
    * Phase 3N.2 — ISO timestamp stamped at orchestrator boot. Used by the
    * `stats.session` aggregator to filter out crash-recovered workers
@@ -254,6 +281,17 @@ export interface RuntimeSetAutonomyTierArgs {
 
 export interface RuntimeSetAutonomyTierResult {
   readonly tier: AutonomyTier;
+}
+
+// Phase 3T — interrupt RPC (no args; idempotent).
+
+export interface RuntimeInterruptResult {
+  /** WorkerIDs killed (status was non-terminal at call time). */
+  readonly workersKilled: readonly string[];
+  /** RecordIDs of queued spawns drained. */
+  readonly queuedCancelled: readonly string[];
+  /** TaskIDs flipped pending → cancelled. */
+  readonly tasksCancelled: readonly string[];
 }
 
 // ── Queue argument shapes (Phase 3L) ─────────────────────────────────
@@ -752,6 +790,60 @@ export function createSymphonyRouter(deps: RouterDeps) {
       }
       deps.setDispatchAutonomyTier?.(args.tier);
       return { tier: args.tier };
+    },
+    /**
+     * Phase 3T — atomic pivot. Composes:
+     *   1. lifecycle.killAllRunning() — SIGTERM every non-terminal
+     *      worker with intent='interrupt'.
+     *   2. lifecycle.cancelAllQueued() — drain every pending queued
+     *      spawn (QueueCancelledError to each caller).
+     *   3. taskStore.cancelAllPending() — flip every pending task
+     *      `cancelled`.
+     *   4. setInterruptPending(true) — gate any ACT-scope tool calls
+     *      from Maestro's still-streaming turn until the caller fires
+     *      `runtime.clearInterruptPending` once it has wrapped + sent
+     *      the user's next message.
+     *
+     * Idempotent: a second call returns three empty arrays (every
+     * mutation already settled).
+     *
+     * Cross-process limitation (audit 3T Major #2): the dispatch-shim
+     * gate fires only on the server that received this RPC. Maestro's
+     * MCP child is a separate process (per `maestro/mcp-config.ts:70`)
+     * with its own dispatch-context cursor; that server's
+     * `interruptPending` stays false. The envelope-wrap in the TUI's
+     * `sendUserMessage` is the load-bearing signal that crosses the
+     * process boundary; the dispatch shim is belt-and-suspenders only
+     * on single-process test rigs.
+     */
+    async interrupt(): Promise<RuntimeInterruptResult> {
+      const lifecycle = deps.workerLifecycle;
+      const killed = lifecycle?.killAllRunning() ?? { killedIds: [] };
+      const queued = lifecycle?.cancelAllQueued() ?? { cancelledIds: [] };
+      const tasks = deps.taskStore.cancelAllPending();
+      deps.setInterruptPending?.(true);
+      return {
+        workersKilled: killed.killedIds,
+        queuedCancelled: queued.cancelledIds,
+        tasksCancelled: tasks.cancelledIds,
+      };
+    },
+    /**
+     * Phase 3T audit Major #1 — explicit server-side clear. The TUI
+     * calls this after `MaestroDataController.sendUserMessage` returns
+     * ok with the wrapped `[INTERRUPT NOTICE]` envelope. Without it,
+     * the calling server's `context.interruptPending` would stay true
+     * forever and any future ACT-scope tool dispatch on THAT server
+     * would be blocked. (See cross-process note on `interrupt()` above —
+     * server #2's cursor is unaffected either way, so this is server-
+     * #1 bookkeeping.)
+     *
+     * Idempotent; legacy test rigs without a `setInterruptPending`
+     * closure still receive a no-op.
+     */
+    async clearInterruptPending(): Promise<{ readonly cleared: true }> {
+      deps.setInterruptPending?.(false);
+      return { cleared: true };
     },
   });
 

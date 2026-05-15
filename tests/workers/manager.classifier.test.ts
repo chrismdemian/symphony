@@ -73,4 +73,12 @@ describe('classifyExit', () => {
       'failed',
     );
   });
+
+  it('stopIntent=interrupt → interrupted (Phase 3T)', () => {
+    expect(classifyExit(mk({ stopIntent: 'interrupt' }))).toBe('interrupted');
+    expect(classifyExit(mk({ stopIntent: 'interrupt', resultIsError: true }))).toBe('interrupted');
+    expect(classifyExit(mk({ stopIntent: 'interrupt', exitCode: null, signal: 'SIGTERM' }))).toBe(
+      'interrupted',
+    );
+  });
 });

@@ -239,6 +239,7 @@ function classifyStatusForSummary(status: WorkerStatus): CompletionStatusKind | 
     case 'timeout':
       return status;
     case 'killed':
+    case 'interrupted':
     case 'spawning':
     case 'running':
       return null;

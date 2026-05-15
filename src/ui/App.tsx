@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Box } from 'ink';
 import { ThemeProvider, useThemeController } from './theme/context.js';
 import { pickThemeJson } from './theme/theme.js';
@@ -114,7 +114,7 @@ function AppShell(props: AppProps): React.JSX.Element {
   const sessionTotalsResult = useSessionTotals(props.rpc);
   const { mode } = useMode(props.rpc);
   const questionsResult = useQuestions(props.rpc);
-  const { sessionId, pushSystem } = useMaestroData();
+  const { sessionId, pushSystem, turn, markInterrupted, interruptPending } = useMaestroData();
 
   // Phase 3K — subscribe to the orchestrator's `completions.events`
   // topic and forward each summary into the chat panel as a system
@@ -417,6 +417,73 @@ function AppShell(props: AppProps): React.JSX.Element {
     });
   }, [autonomyTier, rpc]);
 
+  // Phase 3T — interrupt pivot handlers. Two split entry points (Esc
+  // vs Ctrl+C) so the Ctrl+C path can implement the two-tap-to-exit
+  // escape hatch via a ref-tracked timer.
+  //
+  // The eligibility gate (turn in flight OR running workers OR pending
+  // queue) is computed below as `pivotEligible` and threaded into
+  // `buildGlobalCommands`. When false, both Esc + Ctrl+C bindings are
+  // omitted so Ctrl+C falls through to `app.exit` (the kill switch) and
+  // Esc no-ops at the dispatcher.
+  const onRequestExit = props.onRequestExit;
+  const performPivot = useCallback(async () => {
+    try {
+      const result = await rpc.call.runtime.interrupt();
+      markInterrupted({
+        workersKilled: result.workersKilled,
+        queuedCancelled: result.queuedCancelled,
+        tasksCancelled: result.tasksCancelled,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Interrupt failed: ${msg}`, { tone: 'error' });
+    }
+  }, [rpc, markInterrupted, showToast]);
+  const pivotInterruptEsc = performPivot;
+  const lastCtrlCAtRef = useRef(0);
+  const pivotInterruptCtrlC = useCallback(async () => {
+    const now = Date.now();
+    const since = now - lastCtrlCAtRef.current;
+    lastCtrlCAtRef.current = now;
+    if (since < 2_000) {
+      // Two-tap escape hatch: second Ctrl+C within 2s exits even mid-pivot.
+      onRequestExit();
+      return;
+    }
+    await performPivot();
+  }, [onRequestExit, performPivot]);
+
+  const pivotEligible = useMemo(() => {
+    if (turn.inFlight === true) return true;
+    if (workersResult.workers.some((w) => w.status === 'running' || w.status === 'spawning')) {
+      return true;
+    }
+    if (queueResult.pending.length > 0) return true;
+    return false;
+  }, [turn.inFlight, workersResult.workers, queueResult.pending]);
+
+  // Phase 3T audit Major #1 — server-side `interruptPending` flag has
+  // no automatic clear path. The TUI's local flag clears inside
+  // `sendUserMessage` after the wrap; observe the edge here and fire
+  // `runtime.clearInterruptPending` so the calling server's
+  // dispatch-context cursor returns to false too. Without this, any
+  // future ACT-scope tool dispatched through THAT server would be
+  // blocked for the life of the process. Best-effort: swallow errors
+  // so a transient RPC hiccup doesn't poison subsequent renders.
+  const prevInterruptPendingRef = useRef(false);
+  useEffect(() => {
+    const prev = prevInterruptPendingRef.current;
+    prevInterruptPendingRef.current = interruptPending;
+    if (prev === true && interruptPending === false) {
+      void rpc.call.runtime.clearInterruptPending().catch(() => {
+        // Idempotent on the server; a missed clear leaves the flag
+        // stale on server #1, but server #2 (where Maestro's tools
+        // run) is unaffected per the cross-process limitation.
+      });
+    }
+  }, [interruptPending, rpc]);
+
   const appActions = useMemo(
     () => ({
       onRequestExit: props.onRequestExit,
@@ -467,10 +534,14 @@ function AppShell(props: AppProps): React.JSX.Element {
           // Phase 3P — palette entry "show task dep graph". Slash
           // command `/deps` is wired in ChatPanel.
           openDeps: () => focus.pushPopup('deps'),
+          // Phase 3T — Esc + Ctrl+C handlers. Two-tap exit on Ctrl+C.
+          pivotInterruptEsc,
+          pivotInterruptCtrlC,
         },
         {
           questionsCount: questionsResult.count,
           workersCount: workersResult.workers.length,
+          pivotEligible,
         },
       ),
     [
@@ -485,6 +556,9 @@ function AppShell(props: AppProps): React.JSX.Element {
       toggleThemeFallback,
       toggleAwayMode,
       cycleAutonomyTier,
+      pivotInterruptEsc,
+      pivotInterruptCtrlC,
+      pivotEligible,
     ],
   );
 

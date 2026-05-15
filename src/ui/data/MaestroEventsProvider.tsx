@@ -8,6 +8,7 @@ import React, {
   useRef,
   type ReactNode,
 } from 'react';
+import { randomUUID } from 'node:crypto';
 import {
   MaestroTurnInFlightError,
   type MaestroEvent,
@@ -121,6 +122,12 @@ export interface MaestroDataController {
    * in flight), nothing is pushed and the error is surfaced via the
    * result. Phase 2C.1 audit M3 makes the synchronous throw on re-entry
    * the load-bearing signal.
+   *
+   * Phase 3T: when `interruptPending` is true (set via `markInterrupted`),
+   * the outgoing `text` is wrapped in an `[INTERRUPT NOTICE]` envelope
+   * before being sent to Maestro; the flag is then cleared. Maestro's
+   * prompt recognizes the envelope and treats the prior direction as
+   * fully discarded.
    */
   readonly sendUserMessage: (text: string) => SendUserMessageResult;
   /**
@@ -132,6 +139,22 @@ export interface MaestroDataController {
    * `pendingSystems` queue.
    */
   readonly pushSystem: (summary: SystemSummary) => void;
+  /**
+   * Phase 3T — after the keybind handler fires `rpc.call.runtime.interrupt()`
+   * successfully, it calls this method with the RPC result. The
+   * controller pushes a synthetic gray-⏸ system row to chat AND arms
+   * the envelope-wrap on the next `sendUserMessage`. Idempotent —
+   * calling twice without a sendUserMessage in between is a no-op for
+   * the flag (already set), but pushes another row each time so the
+   * chat reflects every pivot.
+   */
+  readonly markInterrupted: (info: {
+    readonly workersKilled: readonly string[];
+    readonly queuedCancelled: readonly string[];
+    readonly tasksCancelled: readonly string[];
+  }) => void;
+  /** Phase 3T — current interrupt-pending state (envelope is armed). Read-only. */
+  readonly interruptPending: boolean;
 }
 
 const MaestroDataContext = createContext<MaestroDataController | null>(null);
@@ -199,14 +222,35 @@ export function MaestroEventsProvider({
     dispatch({ kind: 'pushSystem', summary, ts: nowRef.current() });
   }, []);
 
+  // Phase 3T — envelope arming. Set by markInterrupted; consumed (and
+  // cleared) by the next sendUserMessage. Ref-mirrored so the latest
+  // value is read synchronously inside the sendUserMessage callback
+  // without triggering a re-render before the envelope wraps.
+  const interruptPendingRef = useRef(false);
+  const [interruptPending, setInterruptPending] = React.useState(false);
+
   const sendUserMessage = useCallback(
     (text: string): SendUserMessageResult => {
+      // Phase 3T — wrap with the [INTERRUPT NOTICE] envelope if armed.
+      // The wrap happens BEFORE the synchronous source.sendUserMessage
+      // call so a re-entry rejection (MaestroTurnInFlightError) sees
+      // the wrapped text and the flag still flips to false on success.
+      let outgoing = text;
+      if (interruptPendingRef.current) {
+        outgoing =
+          '[INTERRUPT NOTICE] The user pivoted on the previous turn. ' +
+          'Workers were killed, queued tasks cancelled. Treat the prior ' +
+          'direction as fully discarded. Respond fresh to the message ' +
+          'below.\n\n' +
+          text;
+      }
       try {
-        source.sendUserMessage(text);
+        source.sendUserMessage(outgoing);
       } catch (err) {
         if (err instanceof MaestroTurnInFlightError) {
           // Maestro rejected synchronously — no bytes on the wire,
-          // suppress the user push.
+          // suppress the user push. Leave the envelope flag set so
+          // the next attempt still wraps.
           return { ok: false, reason: 'turn_in_flight' };
         }
         // Audit C1: any OTHER throw may fire AFTER stdin write
@@ -216,11 +260,24 @@ export function MaestroEventsProvider({
         if (text.trim().length > 0) {
           dispatch({ kind: 'pushUser', text, ts: nowRef.current() });
         }
+        // Clear the flag — bytes likely landed on stdin already; we
+        // don't want to re-wrap on retry.
+        if (interruptPendingRef.current) {
+          interruptPendingRef.current = false;
+          setInterruptPending(false);
+        }
         return {
           ok: false,
           reason: 'send_failed',
           message: err instanceof Error ? err.message : String(err),
         };
+      }
+      // Successful send — clear the envelope flag (chat history shows
+      // the user's ORIGINAL text, not the wrapped envelope; Maestro's
+      // stdin got the wrapped form).
+      if (interruptPendingRef.current) {
+        interruptPendingRef.current = false;
+        setInterruptPending(false);
       }
       if (text.trim().length > 0) {
         dispatch({ kind: 'pushUser', text, ts: nowRef.current() });
@@ -228,6 +285,52 @@ export function MaestroEventsProvider({
       return { ok: true };
     },
     [source],
+  );
+
+  const markInterrupted = useCallback(
+    (info: {
+      readonly workersKilled: readonly string[];
+      readonly queuedCancelled: readonly string[];
+      readonly tasksCancelled: readonly string[];
+    }) => {
+      // Arm the envelope wrap for the next sendUserMessage.
+      interruptPendingRef.current = true;
+      setInterruptPending(true);
+      // Push a synthetic gray-⏸ system row summarizing the pivot.
+      const total =
+        info.workersKilled.length + info.queuedCancelled.length + info.tasksCancelled.length;
+      const parts: string[] = [];
+      if (info.workersKilled.length > 0) {
+        parts.push(`${info.workersKilled.length} worker${info.workersKilled.length === 1 ? '' : 's'} killed`);
+      }
+      if (info.queuedCancelled.length > 0) {
+        parts.push(
+          `${info.queuedCancelled.length} queued spawn${info.queuedCancelled.length === 1 ? '' : 's'} drained`,
+        );
+      }
+      if (info.tasksCancelled.length > 0) {
+        parts.push(
+          `${info.tasksCancelled.length} pending task${info.tasksCancelled.length === 1 ? '' : 's'} cancelled`,
+        );
+      }
+      const detail = total === 0 ? 'nothing in flight' : parts.join(' · ');
+      // Audit Minor #1: use `crypto.randomUUID()` rather than
+      // `interrupt-${nowRef.current()}` so a double-pivot within the
+      // same millisecond doesn't collide on synthetic workerId. Inert
+      // today (chat reducer keys by `nextTurnId`, not workerId), but
+      // cheap insurance — mirrors 3M's away-digest posture.
+      const summary: SystemSummary = {
+        workerId: `interrupt-${randomUUID()}`,
+        workerName: 'Symphony',
+        projectName: '',
+        statusKind: 'interrupted',
+        headline: `Interrupted — ${detail}. Awaiting new direction.`,
+        durationMs: null,
+        fallback: false,
+      };
+      dispatch({ kind: 'pushSystem', summary, ts: nowRef.current() });
+    },
+    [],
   );
 
   const controller = useMemo<MaestroDataController>(
@@ -238,8 +341,19 @@ export function MaestroEventsProvider({
       pushUserMessage,
       sendUserMessage,
       pushSystem,
+      markInterrupted,
+      interruptPending,
     }),
-    [state.sessionId, state.chat.turns, state.turn, pushUserMessage, sendUserMessage, pushSystem],
+    [
+      state.sessionId,
+      state.chat.turns,
+      state.turn,
+      pushUserMessage,
+      sendUserMessage,
+      pushSystem,
+      markInterrupted,
+      interruptPending,
+    ],
   );
 
   return (

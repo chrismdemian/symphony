@@ -112,6 +112,20 @@ export interface TaskStore {
    * check-then-set is naturally atomic.
    */
   claim(taskId: string, workerId: string): TaskRecord | null;
+  /**
+   * Phase 3T — flip every `pending` task to `cancelled` in one shot.
+   * Used by the `runtime.interrupt` RPC when the user pivots (Esc /
+   * Ctrl+C during Maestro streaming). Tasks NOT in `pending` are left
+   * alone — running tasks fall under the worker-kill path; terminal
+   * tasks are immutable.
+   *
+   * Fires `onTaskStatusChange` once per transitioning task.
+   * Idempotent — a second call returns an empty list.
+   *
+   * `projectId` (optional): scope cancellation to a single project. By
+   * default cancels globally (Maestro's queue spans every project).
+   */
+  cancelAllPending(projectId?: string): { cancelledIds: readonly string[] };
 }
 
 /** State machine — `Set` per origin status of valid target statuses. */

@@ -108,6 +108,8 @@ function makeRealWorktreeFakeSpawnLifecycle(args: {
     listPendingGlobal: () => [],
     cancelQueued: () => ({ cancelled: false, reason: 'not in queue' }),
     reorderQueued: () => ({ moved: false, reason: 'not in queue' }),
+    killAllRunning: () => ({ killedIds: [] }),
+    cancelAllQueued: () => ({ cancelledIds: [] }),
   };
 }
 
