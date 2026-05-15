@@ -187,9 +187,14 @@ describe('createWorkerLifecycle', () => {
     expect(spawnCalls[0]).toMatchObject({
       id: 'wk-unit',
       cwd: '/wt/wk-unit',
-      prompt: 'Refactor auth',
       keepStdinOpen: true,
     });
+    // Phase 4A — cfg.prompt is now the COMPOSED role prompt (role
+    // opener + common suffix + appended task), not the bare task.
+    const cfgPrompt = spawnCalls[0]?.prompt ?? '';
+    expect(cfgPrompt).toContain('## Your Role:');
+    expect(cfgPrompt).toContain('### Reporting Format — MANDATORY');
+    expect(cfgPrompt).toContain('# Your Task\n\nRefactor auth');
 
     // Allow the event tap microtask to drain
     await new Promise((r) => setImmediate(r));
