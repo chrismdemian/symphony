@@ -76,6 +76,12 @@ export interface SlashHandlers {
    * `/deps` is NOT registered (surfaces as "Unknown command: deps").
    */
   readonly openDeps?: () => void;
+  /**
+   * Phase 3R — `/log` opens the audit-log popup. Optional so tests
+   * building SlashHandlers without it keep working. When omitted,
+   * `/log` is NOT registered (surfaces as "Unknown command: log").
+   */
+  readonly openLog?: () => void;
 }
 
 export interface SlashTable {
@@ -101,6 +107,10 @@ export function buildSlashTable(handlers: SlashHandlers): SlashTable {
   if (handlers.openDeps !== undefined) {
     const open = handlers.openDeps;
     table['deps'] = () => open();
+  }
+  if (handlers.openLog !== undefined) {
+    const open = handlers.openLog;
+    table['log'] = () => open();
   }
   return table;
 }

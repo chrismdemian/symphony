@@ -8,6 +8,33 @@ import type {
 import type { CapabilityEvaluator } from './capabilities.js';
 import type { AgentSafetyGuard } from './safety.js';
 
+/**
+ * Phase 3R — `auditSink` payload for one tool dispatch. The shim emits
+ * exactly one record per call; `kind` reflects the outcome path so the
+ * /log filter can isolate denials and errors without scanning every
+ * tool_called row.
+ *
+ * Phase 7's "non-defeatable audit BEFORE dispatch" mandate is satisfied
+ * by the shim's central position: every tool — Symphony's MCP tools AND
+ * future Phase 7 plugin tools — flows through here. A plugin's
+ * additional pre-network audit emit (e.g. browser-tab open) is the
+ * plugin shim's responsibility on top of this baseline.
+ */
+export type ToolAuditOutcome = 'ok' | 'denied' | 'error';
+export interface ToolAuditRecord {
+  readonly name: string;
+  readonly scope: ToolScope;
+  readonly capabilities: readonly CapabilityFlag[];
+  readonly tier: number;
+  readonly mode: string;
+  readonly outcome: ToolAuditOutcome;
+  /** Truncated JSON of the args; sanitization is the sink's job. */
+  readonly args: Readonly<Record<string, unknown>>;
+  /** Populated for `denied` (capability reason) and `error` (message). */
+  readonly reason?: string;
+}
+export type ToolAuditSink = (record: ToolAuditRecord) => void;
+
 export interface ToolHandlerResult {
   content: Array<{ type: 'text'; text: string }>;
   structuredContent?: Record<string, unknown>;
@@ -43,6 +70,17 @@ export interface WrapToolHandlerOptions<TArgs extends Record<string, unknown>> {
    * mutation).
    */
   noticeSink?: (notice: CapabilityNotice) => void;
+  /**
+   * Phase 3R — optional sink for tool-dispatch audit records. Emits
+   * exactly one record per `wrapToolHandler` invocation regardless of
+   * outcome (ok / denied / error). Sink failures are swallowed — a
+   * misbehaving audit consumer must never block a tool from executing.
+   *
+   * Reaches an `AuditLogger.append({kind: 'tool_called'|'tool_denied'|
+   * 'tool_error', ...})` call wired in `server.ts`. Server is responsible
+   * for sanitizing `args` payload before writing to SQLite.
+   */
+  auditSink?: ToolAuditSink;
 }
 
 function isSafetyError(err: unknown): err is SafetyGuardError {
@@ -90,13 +128,38 @@ export function wrapToolHandler<TArgs extends Record<string, unknown>>(
     capabilityEvaluator,
     getContext,
     noticeSink,
+    auditSink,
   } = opts;
+
+  function emitAudit(
+    ctx: DispatchContext,
+    args: TArgs,
+    outcome: ToolAuditOutcome,
+    reason?: string,
+  ): void {
+    if (auditSink === undefined) return;
+    try {
+      auditSink({
+        name,
+        scope,
+        capabilities,
+        tier: ctx.tier,
+        mode: ctx.mode,
+        outcome,
+        args,
+        reason,
+      });
+    } catch {
+      // Audit sink failure must never block dispatch.
+    }
+  }
 
   return async (args: TArgs, signal?: AbortSignal): Promise<ToolHandlerResult> => {
     const base = getContext();
     const ctx: DispatchContext = signal ? { ...base, signal } : base;
 
     if (scope !== 'both' && scope !== ctx.mode) {
+      emitAudit(ctx, args, 'denied', `not available in ${ctx.mode} mode`);
       return errorResult(`tool '${name}' is not available in ${ctx.mode} mode`);
     }
 
@@ -124,6 +187,7 @@ export function wrapToolHandler<TArgs extends Record<string, unknown>>(
     // gated — Maestro may need to inspect state while drafting its
     // acknowledgement.
     if (ctx.interruptPending === true && scope === 'act') {
+      emitAudit(ctx, args, 'denied', 'interrupt pending — pivot pending new direction');
       return errorResult(
         `tool '${name}' blocked: user pivoted previous turn — workers killed, queue cleared, await new direction`,
       );
@@ -136,6 +200,7 @@ export function wrapToolHandler<TArgs extends Record<string, unknown>>(
     // first-use branch.
     const decision = capabilityEvaluator.evaluate(capabilities, ctx, name);
     if (!decision.allow) {
+      emitAudit(ctx, args, 'denied', `capability policy: ${decision.reason ?? 'unspecified'}`);
       return errorResult(`tool '${name}' denied by capability policy: ${decision.reason ?? 'unspecified'}`);
     }
     if (decision.notice !== undefined && noticeSink !== undefined) {
@@ -151,7 +216,10 @@ export function wrapToolHandler<TArgs extends Record<string, unknown>>(
     try {
       safety.validateToolCall(name, args as Readonly<Record<string, unknown>>);
     } catch (err) {
-      if (isSafetyError(err)) return errorResult(err.message);
+      if (isSafetyError(err)) {
+        emitAudit(ctx, args, 'denied', `safety: ${err.message}`);
+        return errorResult(err.message);
+      }
       throw err;
     }
 
@@ -159,11 +227,20 @@ export function wrapToolHandler<TArgs extends Record<string, unknown>>(
     try {
       result = await handler(args, ctx);
     } catch (err) {
-      if (isSafetyError(err)) return errorResult(err.message);
-      if (isCapabilityError(err)) return errorResult(err.message);
+      if (isSafetyError(err)) {
+        emitAudit(ctx, args, 'denied', `safety: ${err.message}`);
+        return errorResult(err.message);
+      }
+      if (isCapabilityError(err)) {
+        emitAudit(ctx, args, 'denied', `capability: ${err.message}`);
+        return errorResult(err.message);
+      }
       const message = err instanceof Error ? err.message : String(err);
+      emitAudit(ctx, args, 'error', message);
       return errorResult(`tool '${name}' raised: ${message}`);
     }
+
+    emitAudit(ctx, args, result.isError === true ? 'error' : 'ok', undefined);
 
     // Safety token budget tracks content the model will receive.
     // isError results are the shim's own protocol metadata, not model input — don't charge them.

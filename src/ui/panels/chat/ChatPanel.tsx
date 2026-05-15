@@ -68,6 +68,8 @@ export function ChatPanel(): React.JSX.Element {
         openStats: () => focus.pushPopup('stats'),
         // Phase 3P — `/deps` opens the dep-graph popup.
         openDeps: () => focus.pushPopup('deps'),
+        // Phase 3R — `/log` opens the audit-log popup.
+        openLog: () => focus.pushPopup('log'),
       }),
     [actions.onRequestExit, actions.toggleAwayMode, focus.pushPopup],
   );

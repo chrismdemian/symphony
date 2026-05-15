@@ -114,6 +114,11 @@ export interface GlobalCommandHandlers {
    */
   openDeps?(): void;
   /**
+   * Phase 3R — `/log` slash + `app.openLog` palette entry push the
+   * audit-log popup. Optional during 3R transition.
+   */
+  openLog?(): void;
+  /**
    * Phase 3S — Ctrl+Y cycles the global autonomy tier (1 → 2 → 3 → 1).
    * Calls `setConfig` with a function-patch (race-safe per 3H.2 audit
    * C2), surfaces a toast naming the new tier, and the AppShell's
@@ -362,6 +367,17 @@ export function buildGlobalCommands(
       scope: 'global',
       displayOnScreen: false,
       onSelect: handlers.openDeps ?? (() => undefined),
+    },
+    // Phase 3R — palette-only entry into the audit-log popup. No hotkey;
+    // `/log` slash is the keystroke surface. Listed so users browsing
+    // for "audit"/"history"/"log" find it without memorizing the slash.
+    {
+      id: 'app.log',
+      title: 'show audit log',
+      key: { kind: 'none' },
+      scope: 'global',
+      displayOnScreen: false,
+      onSelect: handlers.openLog ?? (() => undefined),
     },
     // Phase 3S — Ctrl+Y cycles autonomy tier. `scope: 'global'` matches
     // app.exit / focus.cycle / palette.open so the chord fires from
