@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto';
 import {
   assertSafeSkillId,
   claudeCommandsDir,
+  SkillIdError,
   SKILL_MANIFEST,
   skillsDir,
 } from './paths.js';
@@ -162,8 +163,24 @@ export async function installSkillFromPath(opts: {
     content = await fsp.readFile(source, 'utf8');
     derivedId = path.basename(source).replace(/\.md$/i, '');
   }
+  // Audit 4D Minor 1: when the id is DERIVED from the source basename
+  // (not user-supplied), surface a source-aware message instead of the
+  // opaque "unsafe skill id '..'" from the downstream guard.
+  const finalId = opts.id ?? derivedId;
+  try {
+    assertSafeSkillId(finalId);
+  } catch (err) {
+    if (err instanceof SkillIdError && opts.id === undefined) {
+      throw new SkillInstallError(
+        `cannot derive a safe skill id from source '${source}' ` +
+          `(got '${derivedId}'); pass --id explicitly.`,
+        err,
+      );
+    }
+    throw err;
+  }
   return installSkill({
-    id: opts.id ?? derivedId,
+    id: finalId,
     content,
     ...(opts.home !== undefined ? { home: opts.home } : {}),
   });
