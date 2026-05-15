@@ -38,6 +38,15 @@ import {
   refExists,
 } from '../orchestrator/git-ops.js';
 import { getCurrentSignal } from './dispatcher.js';
+import {
+  AUDIT_KINDS,
+  AUDIT_SEVERITIES,
+  type AuditEntry,
+  type AuditKind,
+  type AuditListFilter,
+  type AuditSeverity,
+  type AuditStore,
+} from '../state/audit-store.js';
 
 /**
  * Symphony WS-RPC router definition — Phase 2B.2.
@@ -141,6 +150,13 @@ export interface RouterDeps {
    * the caller has no recovery to report (legacy test rigs).
    */
   readonly recoveryReport?: RecoveryReportResult;
+  /**
+   * Phase 3R — optional. When omitted, the `audit.list` / `audit.count`
+   * RPC procedures resolve to empty results so legacy test rigs that
+   * don't construct an audit store keep working. The CLI server always
+   * wires the real store (SQLite-backed, or in-memory for no-db mode).
+   */
+  readonly auditStore?: AuditStore;
 }
 
 // ── Argument shapes (validated at the boundary) ──────────────────────
@@ -172,6 +188,23 @@ export interface TasksListArgs {
 export interface TasksUpdateArgs {
   readonly id: string;
   readonly patch: TaskPatch;
+}
+
+/**
+ * Phase 3R — `/log` filter args. The TUI's `parseFilters.ts` resolves
+ * `--last 1h` → `sinceTs` and `--project <name>` → `projectId` BEFORE
+ * the RPC call. All fields optional; unknown kinds / severities are
+ * dropped (not an error) so a stale TUI filter doesn't hard-fail.
+ */
+export interface AuditListArgs {
+  readonly projectId?: string;
+  readonly kinds?: readonly string[];
+  readonly severity?: string;
+  readonly workerId?: string;
+  readonly sinceTs?: string;
+  readonly untilTs?: string;
+  readonly limit?: number;
+  readonly offset?: number;
 }
 
 export interface WorkersListArgs {
@@ -1029,6 +1062,24 @@ export function createSymphonyRouter(deps: RouterDeps) {
     },
   });
 
+  /**
+   * Phase 3R — read-only audit log surface for the `/log` popup. Thin
+   * pass-through to `auditStore`; the TUI's `parseFilters.ts` converts
+   * `--last 1h` into a concrete `sinceTs` ISO string before the call,
+   * so the RPC validates structured args only (no duration parsing
+   * server-side). Returns `[]` / `0` when no store is wired.
+   */
+  const audit = createRPCController({
+    list(args?: AuditListArgs): AuditEntry[] {
+      if (deps.auditStore === undefined) return [];
+      return deps.auditStore.list(coerceAuditFilter(args));
+    },
+    count(args?: AuditListArgs): number {
+      if (deps.auditStore === undefined) return 0;
+      return deps.auditStore.count(coerceAuditFilter(args));
+    },
+  });
+
   return createRPCRouter({
     projects,
     tasks,
@@ -1041,6 +1092,7 @@ export function createSymphonyRouter(deps: RouterDeps) {
     runtime,
     stats,
     recovery,
+    audit,
   });
 }
 
@@ -1139,6 +1191,51 @@ function coerceTaskFilter(args: TasksListArgs | undefined): TaskListFilter {
     ...(args.projectId !== undefined ? { projectId: args.projectId } : {}),
     ...(args.status !== undefined ? { status: args.status } : {}),
     ...(args.readyOnly !== undefined ? { readyOnly: args.readyOnly } : {}),
+  };
+  return filter;
+}
+
+const AUDIT_KIND_SET: ReadonlySet<string> = new Set<string>(AUDIT_KINDS);
+const AUDIT_SEVERITY_SET: ReadonlySet<string> = new Set<string>(AUDIT_SEVERITIES);
+
+/**
+ * Phase 3R — validate + narrow untrusted filter args into an
+ * `AuditListFilter`. Unknown kinds / severities are dropped silently
+ * (a stale TUI must not hard-fail the whole list). `limit` / `offset`
+ * are clamped by `SqliteAuditStore` itself, so we only reject
+ * non-finite junk here.
+ */
+function coerceAuditFilter(args: AuditListArgs | undefined): AuditListFilter {
+  if (args === undefined) return {};
+  const kinds =
+    Array.isArray(args.kinds)
+      ? args.kinds.filter((k): k is AuditKind => typeof k === 'string' && AUDIT_KIND_SET.has(k))
+      : undefined;
+  const severity =
+    typeof args.severity === 'string' && AUDIT_SEVERITY_SET.has(args.severity)
+      ? (args.severity as AuditSeverity)
+      : undefined;
+  const filter: AuditListFilter = {
+    ...(typeof args.projectId === 'string' && args.projectId.length > 0
+      ? { projectId: args.projectId }
+      : {}),
+    ...(kinds !== undefined && kinds.length > 0 ? { kinds } : {}),
+    ...(severity !== undefined ? { severity } : {}),
+    ...(typeof args.workerId === 'string' && args.workerId.length > 0
+      ? { workerId: args.workerId }
+      : {}),
+    ...(typeof args.sinceTs === 'string' && args.sinceTs.length > 0
+      ? { sinceTs: args.sinceTs }
+      : {}),
+    ...(typeof args.untilTs === 'string' && args.untilTs.length > 0
+      ? { untilTs: args.untilTs }
+      : {}),
+    ...(typeof args.limit === 'number' && Number.isFinite(args.limit)
+      ? { limit: args.limit }
+      : {}),
+    ...(typeof args.offset === 'number' && Number.isFinite(args.offset)
+      ? { offset: args.offset }
+      : {}),
   };
   return filter;
 }

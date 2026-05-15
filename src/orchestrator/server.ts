@@ -889,6 +889,8 @@ export async function startOrchestratorServer(
       // banner. Captured above before this server was even constructed,
       // so RPC clients see a stable value from the first call.
       recoveryReport,
+      // Phase 3R — read-only audit surface for the `/log` popup.
+      auditStore,
     });
     const handle = await startRpcServer({
       router: router as unknown as Parameters<typeof startRpcServer>[0]['router'],
