@@ -127,6 +127,23 @@ export interface GlobalCommandHandlers {
    * Optional during 3S transition; falls back to a toast when omitted.
    */
   cycleAutonomyTier?(): Promise<void> | void;
+  /**
+   * Phase 3T — Esc during Maestro streaming = pivot signal. Handler:
+   *   - calls `rpc.call.runtime.interrupt()`
+   *   - calls `data.markInterrupted(result)` (chat row + envelope arm)
+   *   - shows a toast on RPC failure
+   *
+   * Optional during 3T transition; falls back to a toast when omitted.
+   */
+  pivotInterruptEsc?(): Promise<void> | void;
+  /**
+   * Phase 3T — Ctrl+C during Maestro streaming = pivot signal. Same as
+   * `pivotInterruptEsc`, but with two-tap escape hatch: a second Ctrl+C
+   * within 2s of the first calls `handlers.requestExit()` so the user
+   * never loses the kill switch. The handler implementation in
+   * AppShell tracks the timer.
+   */
+  pivotInterruptCtrlC?(): Promise<void> | void;
 }
 
 export interface GlobalCommandState {
@@ -134,6 +151,17 @@ export interface GlobalCommandState {
   readonly questionsCount?: number;
   /** Phase 3F.1 — total worker count. Used to disable Ctrl+W when zero. */
   readonly workersCount?: number;
+  /**
+   * Phase 3T — combined gate for `app.interrupt`. The command is enabled
+   * when ANY of these is true:
+   *   - Maestro's turn is in flight
+   *   - There are running workers
+   *   - There are pending tasks or queued spawns
+   *
+   * When all are false the command is disabled — Ctrl+C then falls
+   * through to `app.exit` (per dispatcher.tsx:247) and Esc no-ops.
+   */
+  readonly pivotEligible?: boolean;
 }
 
 export function buildGlobalCommands(
@@ -352,5 +380,43 @@ export function buildGlobalCommands(
         handlers.cycleAutonomyTier?.() ??
         handlers.showLeaderToast?.('Autonomy tier cycle — handler not wired.'),
     },
+    // Phase 3T — interrupt pivot. Two parallel commands so Esc AND
+    // Ctrl+C both fire the same handler.
+    //
+    // Scope is `'main'` (chat/workers/output, silent in popups) so the
+    // 3F.1 specificity rule lets Ctrl+C-as-pivot win over `app.exit`'s
+    // global Ctrl+C kill-switch WHEN the disabledReason is unset (a
+    // pivot is eligible). When all of "turn in flight / workers running
+    // / pending queue" are false, this command is disabled, and the
+    // dispatcher falls through to `app.exit` (dispatcher.tsx:247).
+    //
+    // Two-tap exit: the handler implementation (AppShell) tracks a
+    // useRef<number> with `lastInterruptAt`. A second Ctrl+C within
+    // 2s calls `handlers.requestExit()` instead of pivoting. Esc never
+    // escalates (it's never a kill switch anywhere else).
+    ...(state?.pivotEligible === false
+      ? [] // disabled — fall through to app.exit on Ctrl+C, no-op on Esc
+      : [
+          {
+            id: 'app.interrupt.esc',
+            title: 'interrupt (pivot)',
+            key: { kind: 'escape' as const },
+            scope: 'main' as const,
+            displayOnScreen: false,
+            onSelect: () =>
+              handlers.pivotInterruptEsc?.() ??
+              handlers.showLeaderToast?.('Interrupt — handler not wired.'),
+          },
+          {
+            id: 'app.interrupt.ctrlc',
+            title: 'interrupt (pivot)',
+            key: { kind: 'ctrl' as const, char: 'c' },
+            scope: 'main' as const,
+            displayOnScreen: false,
+            onSelect: () =>
+              handlers.pivotInterruptCtrlC?.() ??
+              handlers.showLeaderToast?.('Interrupt — handler not wired.'),
+          },
+        ]),
   ];
 }
