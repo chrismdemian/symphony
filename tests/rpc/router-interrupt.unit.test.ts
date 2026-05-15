@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { createSymphonyRouter } from '../../src/rpc/router-impl.js';
 import { ProjectRegistry } from '../../src/projects/registry.js';
 import { TaskRegistry } from '../../src/state/task-registry.js';
@@ -6,10 +6,7 @@ import { QuestionRegistry } from '../../src/state/question-registry.js';
 import { WaveRegistry } from '../../src/orchestrator/research-wave-registry.js';
 import { WorkerRegistry } from '../../src/orchestrator/worker-registry.js';
 import { ModeController } from '../../src/orchestrator/mode.js';
-import type {
-  PendingSpawnSnapshot,
-  WorkerLifecycleHandle,
-} from '../../src/orchestrator/worker-lifecycle.js';
+import type { WorkerLifecycleHandle } from '../../src/orchestrator/worker-lifecycle.js';
 
 /**
  * Phase 3T — `runtime.interrupt` RPC. Composes three orthogonal

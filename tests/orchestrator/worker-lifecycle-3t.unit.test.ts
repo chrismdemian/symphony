@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 import { createWorkerLifecycle } from '../../src/orchestrator/worker-lifecycle.js';
 import { WorkerRegistry } from '../../src/orchestrator/worker-registry.js';
 import type { WorkerManager } from '../../src/workers/manager.js';
@@ -153,7 +153,6 @@ describe('WorkerLifecycle — 3T batch primitives', () => {
   it('cancelAllQueued rejects every pending queued spawn with QueueCancelledError', async () => {
     // Force every spawn to queue by setting the cap to 1, then enqueueing 3.
     const workersBySpawn: ScriptedWorker[] = [];
-    let nextSlot: ((w: ScriptedWorker) => void) | null = null;
     const manager = makeManager(async (cfg) => {
       const w = new ScriptedWorker(cfg.id);
       workersBySpawn.push(w);
