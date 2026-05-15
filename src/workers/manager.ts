@@ -62,7 +62,7 @@ export interface WorkerManagerOptions {
 export type ClassifierInput = {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
-  stopIntent: 'none' | 'kill' | 'timeout';
+  stopIntent: 'none' | 'kill' | 'timeout' | 'interrupt';
   resultSeen: boolean;
   resultIsError: boolean;
 };
@@ -70,6 +70,10 @@ export type ClassifierInput = {
 export function classifyExit(input: ClassifierInput): WorkerStatus {
   if (input.stopIntent === 'timeout') return 'timeout';
   if (input.stopIntent === 'kill') return 'killed';
+  // Phase 3T: user-pivot SIGTERM (Esc/Ctrl+C during Maestro streaming)
+  // is a distinct terminal status so `list_workers` can re-dispatch and
+  // the notifications dispatcher stays silent (like `killed`).
+  if (input.stopIntent === 'interrupt') return 'interrupted';
   // Signaled death without stop-intent means the OS killed us (OOM, SIGSEGV,
   // SIGKILL from outside). Distinct retry policy: crashed workers should not
   // be retried on the same environment.
@@ -78,6 +82,38 @@ export function classifyExit(input: ClassifierInput): WorkerStatus {
   if (input.exitCode === 0 && input.resultSeen) return 'completed';
   if (input.exitCode === 0 && !input.resultSeen) return 'failed';
   return 'failed';
+}
+
+/**
+ * StopIntent precedence (Phase 3T): a later, higher-priority intent
+ * MUST overwrite an earlier lower-priority one. Without this rule, a
+ * user who pivots (`interrupt`) then immediately exits (`kill` via
+ * `lifecycle.shutdown`) would see workers classified `interrupted`
+ * post-mortem when shutdown semantically should win.
+ */
+const STOP_INTENT_PRIORITY: Record<'none' | 'kill' | 'timeout' | 'interrupt', number> = {
+  none: 0,
+  interrupt: 1,
+  kill: 2,
+  timeout: 3,
+};
+
+/**
+ * Exported for white-box unit tests of the precedence ladder. Production
+ * callers use this through `WorkerImpl.kill()` / `WorkerImpl.cancel()`.
+ */
+export function _stopIntentTakesPrecedence(
+  next: 'kill' | 'timeout' | 'interrupt',
+  current: 'none' | 'kill' | 'timeout' | 'interrupt',
+): boolean {
+  return STOP_INTENT_PRIORITY[next] > STOP_INTENT_PRIORITY[current];
+}
+
+function takesPrecedence(
+  next: 'kill' | 'timeout' | 'interrupt',
+  current: 'none' | 'kill' | 'timeout' | 'interrupt',
+): boolean {
+  return _stopIntentTakesPrecedence(next, current);
 }
 
 export class WorkerManager {
@@ -296,7 +332,7 @@ class WorkerImpl implements Worker {
   private exitPromise: Promise<WorkerExitInfo>;
   private timeoutHandle: NodeJS.Timeout | undefined;
   private killFollowup: NodeJS.Timeout | undefined;
-  private stopIntent: 'none' | 'kill' | 'timeout' = 'none';
+  private stopIntent: 'none' | 'kill' | 'timeout' | 'interrupt' = 'none';
   private readonly startTime = Date.now();
   private readonly onExit: WorkerImplOptions['onExit'];
   private readonly onStderr?: WorkerImplOptions['onStderr'];
@@ -384,10 +420,13 @@ class WorkerImpl implements Worker {
     }
   }
 
-  kill(signal: KillSignal = 'SIGTERM'): void {
+  kill(signal: KillSignal = 'SIGTERM', intent: 'kill' | 'timeout' | 'interrupt' = 'kill'): void {
     if (this.child.exitCode !== null || this.child.signalCode !== null) return;
     this.stopIntents.add(this.id);
-    if (this.stopIntent === 'none') this.stopIntent = 'kill';
+    // Phase 3T: honor precedence — a higher-priority intent overwrites a
+    // lower-priority earlier write, but lower-priority intents do not
+    // clobber a stronger reason already recorded.
+    if (takesPrecedence(intent, this.stopIntent)) this.stopIntent = intent;
     try {
       this.child.kill(signal);
     } catch {
@@ -428,9 +467,9 @@ class WorkerImpl implements Worker {
     }, ms);
   }
 
-  cancel(kind: 'kill' | 'timeout'): void {
+  cancel(kind: 'kill' | 'timeout' | 'interrupt'): void {
     this.stopIntents.add(this.id);
-    this.stopIntent = kind;
+    if (takesPrecedence(kind, this.stopIntent)) this.stopIntent = kind;
     try {
       this.child.kill('SIGTERM');
     } catch {

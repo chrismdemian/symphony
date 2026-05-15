@@ -133,6 +133,20 @@ export type WorkerStatus =
 
 export type KillSignal = 'SIGTERM' | 'SIGKILL';
 
+/**
+ * Why a worker is being stopped. Drives `classifyExit` mapping:
+ *   `kill`      → status `killed`
+ *   `timeout`   → status `timeout`
+ *   `interrupt` → status `interrupted`   (Phase 3T)
+ *
+ * Precedence (highest wins, regardless of write order):
+ *   `timeout` > `kill` > `interrupt`. Set higher-priority intents to
+ *   override earlier writes (e.g. `lifecycle.shutdown()` post-pivot
+ *   must override an earlier interrupt stamp so the final classification
+ *   reflects shutdown, not pivot).
+ */
+export type StopIntent = 'kill' | 'timeout' | 'interrupt';
+
 export interface WorkerConfig {
   id: string;
   cwd: string;
@@ -208,6 +222,15 @@ export interface Worker {
   sendFollowup(text: string): void;
   /** End stdin so claude can exit. Safe to call multiple times. */
   endInput(): void;
-  kill(signal?: KillSignal): void;
+  /**
+   * Stop the worker. Phase 3T extended this to accept an optional
+   * `intent` so callers can distinguish a user-initiated single kill
+   * from a pivot-driven interrupt. Default `intent='kill'` matches
+   * pre-3T semantics.
+   *
+   * Precedence is internal: a later higher-priority intent overrides an
+   * earlier lower-priority one. See `StopIntent` for the ordering.
+   */
+  kill(signal?: KillSignal, intent?: StopIntent): void;
   waitForExit(): Promise<WorkerExitInfo>;
 }
