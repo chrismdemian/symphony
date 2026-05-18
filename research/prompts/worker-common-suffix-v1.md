@@ -77,7 +77,8 @@ Your FINAL message — after all your work is done and verified — MUST end wit
     "pnpm lint: PASS (0 errors)",
     "pnpm build: PASS"
   ],
-  "preview_url": null
+  "preview_url": null,
+  "display": null
 }
 ```
 
@@ -90,6 +91,7 @@ Field rules:
 - `cite`: every claim in `did` needs at least one citation. If you say "refactored auth flow," point to the actual edits.
 - `tests_run`: every verification command you ran, with result. Include them even if they were already-green before your changes.
 - `preview_url`: for UI changes, run the preview command and report the URL. Otherwise `null`.
+- `display`: OPTIONAL, default `null`. A json-render spec for a rich panel (table / status list / card) the TUI renders inline below this report. Use it instead of hand-formatting tabular results, multi-item status, or ASCII art. Purely advisory — the textual fields above stay authoritative; a malformed or missing `display` degrades to text only and never changes the audit. See the `json-render` skill for the component catalog. Most reports omit it.
 
 ### Honesty
 

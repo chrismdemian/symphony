@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { ToolRegistration } from '../registry.js';
-import type { StreamEvent } from '../../workers/types.js';
+import type { StreamEvent, WorkerCompletionReport } from '../../workers/types.js';
 import type { WorkerRegistry } from '../worker-registry.js';
 
 const shape = {
@@ -16,6 +16,47 @@ const shape = {
 
 export interface GetWorkerOutputDeps {
   readonly registry: WorkerRegistry;
+}
+
+/** Cap list rendering so a worker that emits a 200-entry array can't
+ *  flood Maestro's context. The first 10 carry the signal; the rest is
+ *  summarized. */
+const COMPLETION_LIST_CAP = 10;
+
+function formatList(items: readonly string[]): string {
+  const clean = items
+    .map((s) => (typeof s === 'string' ? s.trim() : ''))
+    .filter((s) => s.length > 0);
+  if (clean.length === 0) return '';
+  const shown = clean.slice(0, COMPLETION_LIST_CAP);
+  const extra = clean.length - shown.length;
+  return shown.join(' | ') + (extra > 0 ? ` | …(+${extra} more)` : '');
+}
+
+/**
+ * Phase 4E — the full structured completion protocol, readable by
+ * Maestro via `get_worker_output` (Phase 1A shipped a counts-only
+ * stopgap). `open_questions` and `blockers` carry their CONTENT so
+ * Maestro can honor rule #7 (read open_questions, surface sparingly,
+ * never act) and rule #9 (iterate on blockers / audit FAIL) without
+ * resuming the worker. Bulk fields (`did`/`skipped`/`cite`) stay as
+ * counts — Maestro resumes for detail only when it needs it.
+ */
+function formatCompletion(report: WorkerCompletionReport): string {
+  const r = report;
+  const head =
+    `[completion] audit=${r.audit} did=${r.did.length} ` +
+    `skipped=${r.skipped.length} blockers=${r.blockers.length} ` +
+    `open_questions=${r.open_questions.length} tests=${r.tests_run.length} ` +
+    `preview=${r.preview_url !== null && r.preview_url.length > 0 ? r.preview_url : '-'}`;
+  const lines = [head];
+  const blockers = formatList(r.blockers);
+  if (blockers.length > 0) lines.push(`  blockers: ${blockers}`);
+  const openQs = formatList(r.open_questions);
+  if (openQs.length > 0) lines.push(`  open_questions: ${openQs}`);
+  const tests = formatList(r.tests_run);
+  if (tests.length > 0) lines.push(`  tests_run: ${tests}`);
+  return lines.join('\n');
 }
 
 function formatEvent(ev: StreamEvent): string {
@@ -35,7 +76,7 @@ function formatEvent(ev: StreamEvent): string {
     case 'log':
       return `[log:${ev.level}] ${ev.message}`;
     case 'structured_completion':
-      return `[completion] audit=${ev.report.audit} did=${ev.report.did.length}`;
+      return formatCompletion(ev.report);
     case 'parse_error':
       return `[parse_error] ${ev.reason}`;
     case 'system_api_retry':
