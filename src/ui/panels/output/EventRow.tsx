@@ -14,6 +14,11 @@ import { CodeBlock } from './CodeBlock.js';
  * Claude Code, lazygit, k9s. */
 const ELISION_MARKER_RE = /^… \d+ more lines?$/;
 
+/** Cap blocker lines in the completion summary so a worker that emits a
+ *  pathological 200-entry array can't flood the output panel. Mirrors
+ *  the 10-cap `get-worker-output` applies for Maestro (4E-m2). */
+const COMPLETION_BLOCKER_CAP = 10;
+
 /**
  * Phase 3D.1 — single-event renderer for the output panel.
  *
@@ -172,13 +177,53 @@ function EventRowImpl({ event }: EventRowProps): React.JSX.Element | null {
     }
 
     case 'structured_completion': {
-      // Phase 3D.1 ships a one-line summary. Inline json-render of
-      // `event.report.display` is Phase 3D.2's deliverable — it slots in
-      // here cleanly via the same EventRow without any caller changes.
+      // Phase 4E — the structured completion protocol surfaced in full.
+      // The textual fields are authoritative (audit gating never reads
+      // `display`); the optional `display` json-render spec renders
+      // below as advisory rich content. A malformed/absent `display`
+      // degrades to text only (handled inside `<JsonRenderBlock>`).
+      const r = event.report;
+      const passed = r.audit === 'PASS';
+      const auditColor = passed ? theme['success'] : theme['error'];
+      const blockerColor =
+        r.blockers.length > 0 ? theme['error'] : theme['textMuted'];
       return (
-        <Text color={theme['success']}>
-          completion — audit={event.report.audit}, did={event.report.did.length}
-        </Text>
+        <Box flexDirection="column">
+          <Text color={theme['textMuted']}>
+            completion{'  '}
+            <Text color={auditColor}>audit {r.audit}</Text>
+            {'  ·  '}did {r.did.length}
+            {'  ·  '}skipped {r.skipped.length}
+            {'  ·  '}
+            <Text color={blockerColor}>blockers {r.blockers.length}</Text>
+            {'  ·  '}questions {r.open_questions.length}
+            {'  ·  '}tests {r.tests_run.length}
+          </Text>
+          {r.blockers.slice(0, COMPLETION_BLOCKER_CAP).map((b, i) => (
+            <Text key={`blk-${i}`} color={theme['error']}>
+              {'  ↳ blocker: '}
+              {b}
+            </Text>
+          ))}
+          {r.blockers.length > COMPLETION_BLOCKER_CAP ? (
+            <Text color={theme['textMuted']}>
+              {`  ↳ …(+${r.blockers.length - COMPLETION_BLOCKER_CAP} more blockers)`}
+            </Text>
+          ) : null}
+          {r.preview_url !== null && r.preview_url.length > 0 ? (
+            <Text color={theme['textMuted']}>
+              {'  ↳ preview: '}
+              {r.preview_url}
+            </Text>
+          ) : null}
+          {/* `display` is `<spec> | null` per the worker contract; `null`
+              is the documented default (= "no display") and MUST render
+              nothing — `!= null` catches both null and undefined.
+              Non-null junk falls through to JsonRenderBlock's fallback
+              (correct: the worker tried to emit a spec and it's
+              malformed). 4E-C1. */}
+          {r.display != null ? <JsonRenderBlock spec={r.display} /> : null}
+        </Box>
       );
     }
   }

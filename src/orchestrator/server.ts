@@ -48,6 +48,7 @@ import { defaultOneShotRunner, type OneShotRunner } from './one-shot.js';
 import type { AutonomyTier, CapabilityNotice, DispatchContext, ToolMode } from './types.js';
 import { createWorkerLifecycle, type WorkerLifecycleHandle } from './worker-lifecycle.js';
 import { WorkerRegistry } from './worker-registry.js';
+import { routeWorkerOpenQuestions } from './open-questions-router.js';
 import { WorkerEventBroker } from '../rpc/event-broker.js';
 import {
   generateRpcToken,
@@ -731,6 +732,12 @@ export async function startOrchestratorServer(
         notificationDispatcher.onWorkerExit(record, totalRunning);
         completionSummarizer.onWorkerExit(record);
         auditWorkerExit(auditLogger, record);
+        // Phase 4E — route the worker's `open_questions` into the 3E
+        // question subsystem as advisory, auto-acknowledged entries
+        // (rule #7: surfaced in History on demand, never blocking).
+        // One-shot per terminal exit; resume clears the buffer so a
+        // re-run routes only its fresh questions.
+        routeWorkerOpenQuestions(record, questionStore);
       },
     });
   // Late-bind the broker callback so it works whether the lifecycle was

@@ -12,7 +12,7 @@ import {
 } from '../../../../src/ui/data/WorkerSelection.js';
 import { OutputPanel } from '../../../../src/ui/panels/output/OutputPanel.js';
 import type { TuiRpc } from '../../../../src/ui/runtime/rpc.js';
-import type { StreamEvent } from '../../../../src/workers/types.js';
+import type { StreamEvent, WorkerCompletionReport } from '../../../../src/workers/types.js';
 
 interface SubscriptionEntry {
   workerId: string;
@@ -297,6 +297,149 @@ describe('<OutputPanel/>', () => {
     expect(frame).toContain('preamble');
     expect(frame).toContain('json-render block failed');
     expect(frame).toContain('epilogue');
+    tree.unmount();
+  });
+
+  // Phase 4E — the structured completion protocol surfaced in the
+  // output panel: full textual summary (authoritative) + optional
+  // advisory `display` json-render block beneath it.
+  const completion = (
+    report: Partial<WorkerCompletionReport>,
+  ): StreamEvent => ({
+    type: 'structured_completion',
+    report: {
+      did: [],
+      skipped: [],
+      blockers: [],
+      open_questions: [],
+      audit: 'PASS',
+      cite: [],
+      tests_run: [],
+      preview_url: null,
+      ...report,
+    },
+    raw: '{}',
+  });
+
+  it('renders the full completion summary with field counts', async () => {
+    const { rpc } = makeFakeRpc({
+      tailEvents: [
+        completion({
+          did: ['a', 'b', 'c'],
+          skipped: ['x'],
+          open_questions: ['q1', 'q2'],
+          tests_run: ['pnpm test: PASS'],
+          audit: 'PASS',
+        }),
+      ],
+    });
+    const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
+    await flush();
+    await flush();
+    const frame = stripAnsi(tree.lastFrame() ?? '');
+    expect(frame).toContain('completion');
+    expect(frame).toContain('audit PASS');
+    expect(frame).toContain('did 3');
+    expect(frame).toContain('skipped 1');
+    expect(frame).toContain('blockers 0');
+    expect(frame).toContain('questions 2');
+    expect(frame).toContain('tests 1');
+    tree.unmount();
+  });
+
+  it('surfaces blockers and preview_url on their own lines', async () => {
+    const { rpc } = makeFakeRpc({
+      tailEvents: [
+        completion({
+          audit: 'FAIL',
+          blockers: ['migration 0007 conflicts with 0006'],
+          preview_url: 'http://localhost:3000',
+        }),
+      ],
+    });
+    const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
+    await flush();
+    await flush();
+    const frame = stripAnsi(tree.lastFrame() ?? '');
+    expect(frame).toContain('audit FAIL');
+    expect(frame).toContain('blocker: migration 0007 conflicts with 0006');
+    expect(frame).toContain('preview: http://localhost:3000');
+    tree.unmount();
+  });
+
+  it('renders an advisory `display` json-render block below the summary', async () => {
+    const { rpc } = makeFakeRpc({
+      tailEvents: [
+        completion({
+          did: ['shipped'],
+          display: {
+            root: 'card-1',
+            elements: {
+              'card-1': {
+                type: 'Card',
+                props: { title: 'Run Summary' },
+                children: ['t-1'],
+              },
+              't-1': { type: 'Text', props: { text: '3 files changed' } },
+            },
+          },
+        }),
+      ],
+    });
+    const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
+    await flush();
+    await flush();
+    const ansi = tree.lastFrame() ?? '';
+    const frame = stripAnsi(ansi);
+    // Authoritative textual summary still present…
+    expect(frame).toContain('audit PASS');
+    expect(frame).toContain('did 1');
+    // …and the advisory display renders beneath it (themed violet border
+    // proves it went through the shimmed JsonRenderBlock stack).
+    expect(frame).toContain('Run Summary');
+    expect(frame).toContain('3 files changed');
+    expect(ansi).toContain('\x1b[38;2;124;111;235m');
+    tree.unmount();
+  });
+
+  it('renders NO json-render block when `display` is null (documented contract default — 4E-C1 regression)', async () => {
+    // worker-common-suffix documents `"display": null` as the default.
+    // The real parser keeps it `null` (key present), so the EventRow
+    // guard MUST treat null === absent. A spurious `⚠ json-render block
+    // failed` on every normal completion is the C1 regression this locks.
+    const { rpc } = makeFakeRpc({
+      tailEvents: [completion({ did: ['shipped'], display: null })],
+    });
+    const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
+    await flush();
+    await flush();
+    const frame = stripAnsi(tree.lastFrame() ?? '');
+    expect(frame).toContain('audit PASS');
+    expect(frame).toContain('did 1');
+    expect(frame).not.toContain('json-render block failed');
+    expect(frame).not.toContain('spec must be a json object');
+    tree.unmount();
+  });
+
+  it('degrades a malformed `display` to a fallback row without affecting the audit summary', async () => {
+    const { rpc } = makeFakeRpc({
+      tailEvents: [
+        completion({
+          audit: 'PASS',
+          did: ['ok'],
+          display: 'this is not a json-render spec',
+        }),
+      ],
+    });
+    const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
+    await flush();
+    await flush();
+    const frame = stripAnsi(tree.lastFrame() ?? '');
+    // Advisory rule: the textual fields stay authoritative and intact…
+    expect(frame).toContain('audit PASS');
+    expect(frame).toContain('did 1');
+    // …while the bad display degrades to the fallback row, never a crash.
+    expect(frame).toContain('json-render block failed');
     tree.unmount();
   });
 });

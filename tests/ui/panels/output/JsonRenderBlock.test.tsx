@@ -7,6 +7,7 @@ import {
   JsonRenderBlock,
   FallbackPlainText,
   JsonRenderErrorBoundary,
+  NoopFocusProvider,
 } from '../../../../src/ui/panels/output/JsonRenderBlock.js';
 import { symphonyTheme } from '../../../../src/ui/theme/theme.js';
 
@@ -159,6 +160,84 @@ describe('JsonRenderErrorBoundary (direct)', () => {
     );
     const frame = plainFrame(lastFrame);
     expect(frame).toContain('this is the child rendering normally');
+  });
+});
+
+// Phase 4E focus shim: json-render's `<JSONUIProvider>` hardwires an
+// internal `<FocusProvider>` that registers an Ink `useInput` Tab
+// handler. The output panel can mount N `<JsonRenderBlock>` at once
+// (one per worker completion `display`); Ink fans every keypress to
+// every mounted handler, so N FocusProviders would rival Symphony's
+// `KeybindProvider` Tab cycle. We substitute `<NoopFocusProvider>` and
+// compose the other four providers by hand. The definitive observable
+// proof — Tab still drives Symphony's panel cycle with display blocks
+// mounted — is `pnpm smoke:4e` (real PTY; keystroke/focus behavior is
+// mock-fragile under ink-testing-library + React 19 per the 3J/3E
+// gotchas). These unit tests lock the structural invariant.
+describe('NoopFocusProvider / focus shim (Phase 4E)', () => {
+  it('is a transparent passthrough (renders children verbatim)', () => {
+    const { lastFrame } = render(
+      wrap(
+        <NoopFocusProvider>
+          <FallbackPlainText reason="child renders" raw="" />
+        </NoopFocusProvider>,
+      ),
+    );
+    expect(plainFrame(lastFrame)).toContain('child renders');
+  });
+
+  it('renders multiple concurrent JsonRenderBlock instances without error', () => {
+    // The multi-instance case 4E introduces (one display per completed
+    // worker). With json-render's FocusProvider this mounted N rival
+    // Tab `useInput` handlers; with the shim it mounts zero.
+    const mk = (n: number) => ({
+      root: `c${n}`,
+      elements: {
+        [`c${n}`]: {
+          type: 'Card',
+          props: { title: `Worker ${n}` },
+          children: [`t${n}`],
+        },
+        [`t${n}`]: { type: 'Text', props: { text: `did ${n} things` } },
+      },
+    });
+    const { lastFrame } = render(
+      wrap(
+        <>
+          <JsonRenderBlock spec={mk(1)} />
+          <JsonRenderBlock spec={mk(2)} />
+          <JsonRenderBlock spec={mk(3)} />
+        </>,
+      ),
+    );
+    const frame = plainFrame(lastFrame);
+    expect(frame).toContain('Worker 1');
+    expect(frame).toContain('did 1 things');
+    expect(frame).toContain('Worker 3');
+    expect(frame).toContain('did 3 things');
+  });
+
+  it('a Tab keypress with display blocks mounted neither throws nor mutates output', () => {
+    const spec = {
+      root: 'c',
+      elements: {
+        c: { type: 'Card', props: { title: 'Inert' }, children: ['t'] },
+        t: { type: 'Text', props: { text: 'no focus ring' } },
+      },
+    };
+    const { lastFrame, stdin } = render(
+      wrap(
+        <>
+          <JsonRenderBlock spec={spec} />
+          <JsonRenderBlock spec={spec} />
+        </>,
+      ),
+    );
+    const before = plainFrame(lastFrame);
+    stdin.write('\t');
+    const after = plainFrame(lastFrame);
+    expect(after).toBe(before);
+    expect(after).toContain('no focus ring');
   });
 });
 
