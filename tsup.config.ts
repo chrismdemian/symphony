@@ -3,7 +3,13 @@ import path from 'node:path';
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: ['src/index.ts'],
+  // Phase 4F.1 — `src/droids/fence-hook.ts` is a SECOND entry so it
+  // emits as a standalone `dist/droids/fence-hook.js` Claude Code can
+  // invoke as a PreToolUse hook. esbuild's outbase is the common
+  // ancestor (`src/`), so the two entries land at `dist/index.js` +
+  // `dist/droids/fence-hook.js` (resolver in `hook-command.ts` expects
+  // exactly that). `splitting: false` keeps each entry self-contained.
+  entry: ['src/index.ts', 'src/droids/fence-hook.ts'],
   format: ['esm'],
   target: 'node22',
   platform: 'node',

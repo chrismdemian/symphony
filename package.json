@@ -58,7 +58,8 @@
     "smoke:3b3": "node tests/smoke/3b3-pty-smoke.mjs",
     "smoke:3s": "node tests/smoke/3s-pty-smoke.mjs",
     "smoke:3r": "node tests/smoke/3r-pty-smoke.mjs",
-    "smoke:4e": "node tests/smoke/4e-pty-smoke.mjs"
+    "smoke:4e": "node tests/smoke/4e-pty-smoke.mjs",
+    "smoke:4f1": "node tests/smoke/4f1-fence-smoke.mjs"
   },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",

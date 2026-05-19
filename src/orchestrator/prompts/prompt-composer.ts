@@ -257,6 +257,57 @@ export class PromptComposer {
       this.composeWorkerTaskKickoff(taskDescription)
     );
   }
+
+  /**
+   * Phase 4F.1 — fast-fail seam for a CUSTOM DROID spawn. The droid
+   * body is already in memory (resolved from the registry in the
+   * spawn-worker handler), so the only fs-touching fragment is the
+   * common suffix. Called by `doSpawn` in the
+   * fast-fail-BEFORE-`worktreeManager.create()` region — same
+   * no-leaked-worktree invariant as {@link preflightWorker}, minus the
+   * role-opener file (a droid has none; its opener IS its body).
+   */
+  preflightCustomDroid(): void {
+    this.read(WORKER_COMMON_SUFFIX_FRAGMENT);
+  }
+
+  /**
+   * Phase 4F.1 — the worker "operating manual" for a custom droid:
+   * `<droid body>` substituted in place of a built-in role opener,
+   * followed by the SAME common suffix + the SAME `substituteWorkerVars`
+   * the built-in path uses. Reusing the suffix verbatim is deliberate:
+   * the Phase 4E structured-completion contract lives there, so a
+   * custom droid inherits it for free (Maestro reads its completion the
+   * same way it reads any worker's). Built-in composition is untouched
+   * — this is purely additive (byte-fidelity tests cover only the 5
+   * built-in roles + Maestro and are unaffected).
+   */
+  composeCustomDroidManual(
+    droidBody: string,
+    vars: WorkerPromptVars,
+  ): string {
+    const suffix = this.read(WORKER_COMMON_SUFFIX_FRAGMENT);
+    return substituteWorkerVars(`${droidBody}\n${suffix}`, vars);
+  }
+
+  /**
+   * Full monolithic custom-droid prompt (manual + separator + task
+   * kickoff). The stdin-fallback twin of {@link composeWorker} for the
+   * custom-droid path — used when `injectWorkerClaudeMd` can't place a
+   * worktree CLAUDE.md (project tracks its own / non-worktree / fs
+   * error), exactly mirroring the built-in fallback.
+   */
+  composeCustomDroidWorker(
+    droidBody: string,
+    taskDescription: string,
+    vars: WorkerPromptVars,
+  ): string {
+    return (
+      this.composeCustomDroidManual(droidBody, vars) +
+      MAESTRO_FRAGMENT_SEPARATOR +
+      this.composeWorkerTaskKickoff(taskDescription)
+    );
+  }
 }
 
 export interface GeneratedFragment {
