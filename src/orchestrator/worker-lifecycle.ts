@@ -25,6 +25,13 @@ import {
 } from './worker-registry.js';
 import type { PersistedWorkerRecord } from '../state/sqlite-worker-store.js';
 import type { AutonomyTier, WorkerRole } from './types.js';
+import type { DroidDefinition } from '../droids/types.js';
+import {
+  buildDroidFenceEnv,
+  buildDroidFenceHookCommand,
+  droidIsFenced,
+} from '../droids/hook-command.js';
+import { writeDroidFenceSettings } from '../droids/settings-writer.js';
 
 export interface SpawnWorkerInput {
   readonly projectPath: string;
@@ -41,6 +48,18 @@ export interface SpawnWorkerInput {
   readonly model?: string;
   readonly dependsOn?: readonly string[];
   readonly autonomyTier?: AutonomyTier;
+  /**
+   * Phase 4F.1 — when set, this spawn is a CUSTOM DROID (resolved from
+   * the project's `.symphony/droids/` by the spawn-worker handler).
+   * `doSpawn` composes the manual from the droid body, takes the
+   * droid's frontmatter `model` as a default (caller `model` still
+   * wins), and installs the PreToolUse fence + policy env when the
+   * droid declares a tool/write policy. `role` remains a valid built-in
+   * (the pipeline/SQL/snapshot baseline — `WorkerRole` is load-bearing
+   * across persistence + UI; widening it is deliberately out of scope,
+   * see `research/phase-reviews/4f1.md`).
+   */
+  readonly droid?: DroidDefinition;
   readonly id?: string;
   readonly featureIntent?: string;
   readonly timeoutMs?: number;
@@ -583,7 +602,14 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
       // unknown role throws `PromptFragmentLoadError` here, in the
       // fast-fail-before-fs region, so it never leaks a worktree per
       // spawn. Composition is var-dependent and happens post-create.
-      promptComposer.preflightWorker(input.role);
+      // Phase 4F.1 — a custom droid has no role-opener fragment (its
+      // body IS the opener, already in memory); preflight only the
+      // common suffix, same no-leaked-worktree invariant.
+      if (input.droid !== undefined) {
+        promptComposer.preflightCustomDroid();
+      } else {
+        promptComposer.preflightWorker(input.role);
+      }
       const featureIntent = input.featureIntent ?? deriveFeatureIntent(input.taskDescription);
       const worktree = await worktreeManager.create({
         projectPath: input.projectPath,
@@ -598,7 +624,10 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
       // server's `getDefaultModel` (driven by `modelMode`) supplies the
       // default. The resolved value is recorded on the WorkerRecord so
       // SQL persistence reflects the model the worker actually ran on.
-      const resolvedModel = input.model ?? opts.getDefaultModel?.();
+      // Phase 4F.1 — a custom droid's frontmatter `model` sits between
+      // an explicit caller override and the global default.
+      const resolvedModel =
+        input.model ?? input.droid?.model ?? opts.getDefaultModel?.();
 
       // Phase 3S tier resolution — hoisted above the WorkerRecord so the
       // Phase 4A prompt's `{autonomy_tier}` slot and the record's
@@ -646,21 +675,51 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         // No `previewCommand` on ProjectRecord until Phase 5.
         previewCmd: '',
       };
-      const workerManual = promptComposer.composeWorkerManual(
-        input.role,
-        promptVars,
-      );
+      const workerManual =
+        input.droid !== undefined
+          ? promptComposer.composeCustomDroidManual(
+              input.droid.body,
+              promptVars,
+            )
+          : promptComposer.composeWorkerManual(input.role, promptVars);
       const injection = await injectWorkerClaudeMd(worktree.path, workerManual);
+
+      // Phase 4F.1 — install the PreToolUse fence for a fenced custom
+      // droid. AFTER the worktree + CLAUDE.md exist, BEFORE the worker
+      // process starts. The policy rides env vars (exempted from the
+      // SYMPHONY_* blocklist via `allowExtraEnvKeys`) so the
+      // settings.local.json command is static. A write failure here
+      // THROWS — the try/finally releases the run slot and the worker
+      // is never spawned: a "fenced" droid running without its fence is
+      // a silent security failure ("full enforcement" decision), so
+      // fail closed.
+      let droidFenceEnv:
+        | { env: Record<string, string>; allowKeys: readonly string[] }
+        | undefined;
+      if (input.droid !== undefined && droidIsFenced(input.droid)) {
+        await writeDroidFenceSettings({
+          worktreePath: worktree.path,
+          fenceCommand: buildDroidFenceHookCommand(),
+        });
+        droidFenceEnv = buildDroidFenceEnv(input.droid, worktree.path);
+      }
+
       const composedPrompt =
         injection.mode === 'claude-md'
           ? promptComposer.composeWorkerTaskKickoff(input.taskDescription, {
               staleWorktree: injection.reused,
             })
-          : promptComposer.composeWorker(
-              input.role,
-              input.taskDescription,
-              promptVars,
-            );
+          : input.droid !== undefined
+            ? promptComposer.composeCustomDroidWorker(
+                input.droid.body,
+                input.taskDescription,
+                promptVars,
+              )
+            : promptComposer.composeWorker(
+                input.role,
+                input.taskDescription,
+                promptVars,
+              );
 
       const buffer = new CircularBuffer<StreamEvent>(bufferCap);
       const cfg: WorkerConfig = {
@@ -672,6 +731,16 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         ...(input.signal !== undefined ? { signal: input.signal } : {}),
         ...(resolvedModel !== undefined ? { model: resolvedModel } : {}),
         ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
+        // Phase 4F.1 — droid fence policy env (read by the PreToolUse
+        // hook). `allowExtraEnvKeys` exempts the SYMPHONY_*-prefixed
+        // keys from the worker env blocklist (`src/workers/env.ts`),
+        // exactly as Maestro does for its Stop-hook vars.
+        ...(droidFenceEnv !== undefined
+          ? {
+              extraEnv: droidFenceEnv.env,
+              allowExtraEnvKeys: droidFenceEnv.allowKeys,
+            }
+          : {}),
       };
 
       // Worktree is created before spawn. If workerManager.spawn throws, we

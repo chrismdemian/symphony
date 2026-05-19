@@ -1,7 +1,10 @@
+import path from 'node:path';
 import { z } from 'zod';
 import type { ProjectStore } from '../../projects/types.js';
 import type { ToolRegistration } from '../registry.js';
 import { WORKER_ROLES, type WorkerRole } from '../types.js';
+import { loadProjectDroids } from '../../droids/registry.js';
+import type { DroidDefinition } from '../../droids/types.js';
 import type { WorkerLifecycleHandle, SpawnWorkerInput } from '../worker-lifecycle.js';
 import { toSnapshot, type WorkerRegistry } from '../worker-registry.js';
 import { TaskNotReadyError, type TaskStore } from '../../state/types.js';
@@ -19,8 +22,13 @@ const shape = {
     .min(1)
     .describe('Full worker prompt — context, scope, definition of done.'),
   role: z
-    .enum(WORKER_ROLES as readonly [WorkerRole, ...WorkerRole[]])
-    .describe('implementer | researcher | reviewer | debugger | planner'),
+    .string()
+    .min(1)
+    .describe(
+      'A built-in role (implementer | researcher | reviewer | debugger | planner) ' +
+        'OR a project custom-droid name (a file in <project>/.symphony/droids/). ' +
+        'A custom droid whose name equals a built-in shadows the built-in.',
+    ),
   model: z.string().optional().describe('Optional model override (default: Symphony default).'),
   depends_on: z
     .array(z.string())
@@ -74,6 +82,72 @@ export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typ
     ) => {
       const projectPath = deps.resolveProjectPath(project);
       const projectId = resolveProjectId(deps.projectStore, project, projectPath);
+
+      // Phase 4F.1 — resolve the role. A project custom droid SHADOWS a
+      // built-in of the same name (PLAN.md §4F override rule).
+      // Discovered fresh per spawn so droid-file edits take effect
+      // without restarting Symphony. An unknown role fails HERE, before
+      // any Phase 3P task claim, so a bad role never strands a task
+      // in_progress.
+      const { droids, warnings: droidWarnings } =
+        await loadProjectDroids(projectPath);
+      const customDroid: DroidDefinition | undefined = droids.get(role);
+      let resolvedRole: WorkerRole;
+      if (customDroid !== undefined) {
+        // `WorkerRole` is load-bearing across pipeline/SQL/snapshot;
+        // a custom droid keeps a built-in baseline there and carries
+        // its identity via the prompt + fence + response text.
+        resolvedRole = 'implementer';
+      } else if ((WORKER_ROLES as readonly string[]).includes(role)) {
+        // 4F.1 audit C2 — if the USER authored a droid file at
+        // `<role>.md` INTENDING to shadow the built-in with their own
+        // restricted policy but the file failed to parse, DO NOT
+        // silently spawn the unrestricted built-in (which is the exact
+        // opposite of the user's intent). Fail closed.
+        const shadowed = droidWarnings.find(
+          (w) => path.basename(w.source) === `${role}.md`,
+        );
+        if (shadowed !== undefined) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  `Cannot spawn '${role}': a droid file at ${shadowed.source} ` +
+                  `is intended to shadow the built-in '${role}' but failed to parse — ` +
+                  `${shadowed.message}. Fix the droid file (or delete it to fall back ` +
+                  `to the built-in '${role}').`,
+              },
+            ],
+            isError: true,
+          };
+        }
+        resolvedRole = role as WorkerRole;
+      } else {
+        const droidNames = [...droids.keys()].sort();
+        const warnText =
+          droidWarnings.length > 0
+            ? ' Skipped malformed droid file(s): ' +
+              droidWarnings
+                .map((w) => `${w.source} — ${w.message}`)
+                .join('; ') +
+              '.'
+            : '';
+        return {
+          content: [
+            {
+              type: 'text',
+              text:
+                `Unknown role '${role}'. Built-in roles: ${WORKER_ROLES.join(
+                  ', ',
+                )}. Project droids: ${
+                  droidNames.length > 0 ? droidNames.join(', ') : '(none)'
+                }.${warnText}`,
+            },
+          ],
+          isError: true,
+        };
+      }
 
       // Phase 3P — when task_id is provided AND we have a taskStore,
       // CLAIM the task BEFORE spawning. The atomic claim primitive
@@ -151,7 +225,8 @@ export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typ
         projectPath,
         projectId,
         taskDescription: task_description,
-        role,
+        role: resolvedRole,
+        ...(customDroid !== undefined ? { droid: customDroid } : {}),
         ...(ctx.signal !== undefined ? { signal: ctx.signal } : {}),
         ...(model !== undefined ? { model } : {}),
         ...(depends_on !== undefined ? { dependsOn: depends_on } : {}),
@@ -203,11 +278,22 @@ export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typ
       }
 
       const snap = toSnapshot(record);
+      const roleLabel =
+        customDroid !== undefined
+          ? `droid: ${customDroid.name}`
+          : snap.role;
+      // Surface non-fatal droid load warnings so a malformed sibling
+      // droid isn't silently missing (rule #7: visible, not noisy).
+      const warnNote =
+        droidWarnings.length > 0
+          ? ` Note: ${droidWarnings.length} droid file(s) skipped — ` +
+            droidWarnings.map((w) => `${w.source} (${w.message})`).join('; ')
+          : '';
       return {
         content: [
           {
             type: 'text',
-            text: `Spawned worker ${snap.id} (${snap.role} / ${snap.featureIntent}) in ${snap.worktreePath}`,
+            text: `Spawned worker ${snap.id} (${roleLabel} / ${snap.featureIntent}) in ${snap.worktreePath}.${warnNote}`,
           },
         ],
         structuredContent: snap as unknown as Record<string, unknown>,
