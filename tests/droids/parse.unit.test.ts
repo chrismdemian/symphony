@@ -97,6 +97,10 @@ describe('parseDroidFile — rejections (strict)', () => {
     ['unknown tool token', '---\nname: x\ntools_allowed: [readz]\n---\nbody'],
     ['no policy declared', '---\nname: x\nmodel: opus\n---\nbody'],
     ['empty policy lists', '---\nname: x\ntools_allowed: []\ntools_denied: []\n---\nbody'],
+    // 4F.1 audit M4 — `tools_allowed: []` (explicit empty) is
+    // ambiguous; reject it even when `tools_denied` is non-empty.
+    ['explicit-empty tools_allowed', '---\nname: x\ntools_allowed: []\ntools_denied: [bash]\n---\nbody'],
+    ['explicit-empty tools_denied', '---\nname: x\ntools_allowed: [read]\ntools_denied: []\n---\nbody'],
     ['unsafe name', '---\nname: ../evil\ntools_denied: [bash]\n---\nbody'],
     [
       'absolute write_path',

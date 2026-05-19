@@ -39,12 +39,20 @@
  * (e.g. `Write`, `Bash`); the droid author writes the friendly token.
  * `edit` deliberately covers every file-mutation tool — a droid that
  * denies `edit` must not be able to slip through `MultiEdit` /
- * `NotebookEdit`.
+ * `NotebookEdit`. By the same rule (4F.1 audit C1), `task` covers
+ * BOTH `Task` (legacy) and `Agent` (Claude Code renamed the subagent
+ * tool — official docs: "Agent (previously Task) — Launches a new
+ * agent"); without the fanout, a droid that denies `task` would block
+ * the legacy name but ALLOW the current `Agent`, exactly the silent
+ * bypass the strict alias map exists to prevent.
  *
  * This map is the canonical, finite, security-relevant allow/deny
  * vocabulary. The parser rejects any token not present here (a typo'd
  * `tools_denied: [bashh]` silently denying nothing is a footgun in a
  * permission gate — fail loud instead).
+ *
+ * Aliases verified against Claude Code docs as of 2026-05-19. On every
+ * tool-name change in Claude Code, re-check this map.
  */
 export const DROID_TOOL_ALIASES = {
   read: ['Read'],
@@ -55,7 +63,7 @@ export const DROID_TOOL_ALIASES = {
   glob: ['Glob'],
   webfetch: ['WebFetch'],
   websearch: ['WebSearch'],
-  task: ['Task'],
+  task: ['Task', 'Agent'],
   todowrite: ['TodoWrite'],
 } as const satisfies Record<string, readonly string[]>;
 

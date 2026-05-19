@@ -141,6 +141,26 @@ export function parseDroidFile(
 
   const toolsAllowed = parseToolList(fields['tools_allowed'], 'tools_allowed', source);
   const toolsDenied = parseToolList(fields['tools_denied'], 'tools_denied', source);
+  // 4F.1 audit M4 — `tools_allowed: []` (explicitly empty) is
+  // ambiguous: it LOOKS like "allow nothing" but the fence treats an
+  // empty allowed list as "no allowlist applied" (only the deny list
+  // matters). Force the user to express intent: OMIT the key for "no
+  // allowlist", or list the allowed tools.
+  if (toolsAllowed !== undefined && toolsAllowed.length === 0) {
+    throw new DroidParseError(
+      "'tools_allowed' is present but empty — ambiguous intent. To declare " +
+        'NO allowlist (only deny rules apply), OMIT the key entirely. To allow ' +
+        'only specific tools, list them (e.g. [read, grep]).',
+      source,
+    );
+  }
+  if (toolsDenied !== undefined && toolsDenied.length === 0) {
+    throw new DroidParseError(
+      "'tools_denied' is present but empty — to declare NO denylist, OMIT " +
+        'the key entirely.',
+      source,
+    );
+  }
   if ((toolsAllowed?.length ?? 0) + (toolsDenied?.length ?? 0) === 0) {
     throw new DroidParseError(
       "a droid must declare a tool policy: at least one of 'tools_allowed' or " +

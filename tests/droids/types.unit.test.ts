@@ -71,6 +71,23 @@ describe('resolveDroidToolPolicy', () => {
     expect(p.allowed).toEqual(['Edit', 'MultiEdit', 'NotebookEdit', 'Write']);
   });
 
+  // 4F.1 audit C1 — `task` MUST fan out to both legacy (`Task`) and
+  // current (`Agent`) Claude Code subagent names; without the fanout, a
+  // droid denying `task` would still allow `Agent` — silent bypass of
+  // exactly the kind the strict alias map exists to prevent.
+  it('`task` fans out to both Task (legacy) and Agent (current name)', () => {
+    const denied = resolveDroidToolPolicy({
+      ...base,
+      toolsDenied: ['task'],
+    });
+    expect(denied.denied).toEqual(['Task', 'Agent']);
+    const allowed = resolveDroidToolPolicy({
+      ...base,
+      toolsAllowed: ['task'],
+    });
+    expect(allowed.allowed).toEqual(['Task', 'Agent']);
+  });
+
   it('absent lists yield empty arrays (no allowlist / no denylist)', () => {
     const p = resolveDroidToolPolicy(base);
     expect(p.allowed).toEqual([]);

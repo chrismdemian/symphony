@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { z } from 'zod';
 import type { ProjectStore } from '../../projects/types.js';
 import type { ToolRegistration } from '../registry.js';
@@ -98,6 +99,29 @@ export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typ
         // its identity via the prompt + fence + response text.
         resolvedRole = 'implementer';
       } else if ((WORKER_ROLES as readonly string[]).includes(role)) {
+        // 4F.1 audit C2 — if the USER authored a droid file at
+        // `<role>.md` INTENDING to shadow the built-in with their own
+        // restricted policy but the file failed to parse, DO NOT
+        // silently spawn the unrestricted built-in (which is the exact
+        // opposite of the user's intent). Fail closed.
+        const shadowed = droidWarnings.find(
+          (w) => path.basename(w.source) === `${role}.md`,
+        );
+        if (shadowed !== undefined) {
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  `Cannot spawn '${role}': a droid file at ${shadowed.source} ` +
+                  `is intended to shadow the built-in '${role}' but failed to parse — ` +
+                  `${shadowed.message}. Fix the droid file (or delete it to fall back ` +
+                  `to the built-in '${role}').`,
+              },
+            ],
+            isError: true,
+          };
+        }
         resolvedRole = role as WorkerRole;
       } else {
         const droidNames = [...droids.keys()].sort();

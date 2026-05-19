@@ -250,6 +250,24 @@ describe('Phase 4F.1 — custom droid spawn installs the PreToolUse fence', () =
     expect(text).toContain('locked-droid');
   });
 
+  // 4F.1 audit C2 — if the USER authors a droid file at `<builtin>.md`
+  // intending to shadow with restrictions but the file fails to parse,
+  // the spawn MUST fail closed, NOT silently fall through to the
+  // unrestricted built-in (that would be the exact opposite of intent).
+  it('malformed <builtin>.md droid file rejects the shadow spawn (fail closed)', async () => {
+    writeDroid('implementer', '---\nname: implementer\nbogus: 1\n---\nbody');
+    const { tool } = makeTool();
+    const res = await tool.handler(
+      args({ role: 'implementer' }) as never,
+      ctx(),
+    );
+    expect(res.isError).toBe(true);
+    const text = (res.content[0] as { text: string }).text;
+    expect(text).toContain("Cannot spawn 'implementer'");
+    expect(text).toContain('implementer.md');
+    expect(text).toContain('intended to shadow the built-in');
+  });
+
   it('a malformed sibling droid does not block a valid spawn; warning surfaced', async () => {
     writeDroid('locked-droid', droidFile('locked-droid'));
     writeDroid('broken', '---\nname: broken\nbogus: 1\n---\nbody');

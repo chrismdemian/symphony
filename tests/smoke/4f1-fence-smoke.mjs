@@ -7,7 +7,7 @@
 //
 // Run: `pnpm build && pnpm smoke:4f1`.
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -111,6 +111,54 @@ const cases = [
     stdin: payload('Read', path.join(wt, 'README.md')),
     expectExit: 2,
   },
+  // 4F.1 audit M3 — JSON.parse accepts `null`/`[]`/scalars but those
+  // disarm the toStrArr extraction. The fence must REJECT any
+  // parseable-but-wrong-shape policy env, not silently allow.
+  {
+    name: 'fail-closed: policy env is "null"',
+    env: { ...baseEnv, [FENCE_ENV]: 'null' },
+    stdin: payload('Bash'),
+    expectExit: 2,
+    expectStderrRe: /must be a JSON object/i,
+  },
+  {
+    name: 'fail-closed: policy env is "[]" (array, not object)',
+    env: { ...baseEnv, [FENCE_ENV]: '[]' },
+    stdin: payload('Bash'),
+    expectExit: 2,
+    expectStderrRe: /must be a JSON object/i,
+  },
+  {
+    name: 'fail-closed: policy env is a scalar "42"',
+    env: { ...baseEnv, [FENCE_ENV]: '42' },
+    stdin: payload('Bash'),
+    expectExit: 2,
+    expectStderrRe: /must be a JSON object/i,
+  },
+  // 4F.1 audit M1 — symlink-then-write must not slip past the fence.
+  // Create an EXISTING symlink (junction on Win32) inside the worktree
+  // pointing OUTSIDE; a Write to `<wt>/escape/x` is syntactically
+  // inside-worktree but realpath of the parent follows the symlink.
+  // Skip cleanly if the platform/permissions can't create the link.
+  ...(() => {
+    const escape = path.join(wt, 'escape');
+    const outside = path.resolve(tmpdir(), 'sym-smoke-4f1-outside');
+    try {
+      mkdirSync(outside, { recursive: true });
+      symlinkSync(outside, escape, process.platform === 'win32' ? 'junction' : 'dir');
+    } catch {
+      return [];
+    }
+    return [
+      {
+        name: 'deny: Write through an in-worktree symlink to outside (M1)',
+        env: baseEnv,
+        stdin: payload('Write', path.join(escape, 'pwned.txt')),
+        expectExit: 2,
+        expectStderrRe: /outside the worktree/i,
+      },
+    ];
+  })(),
   {
     name: 'pass-through: no policy env (not a fenced context)',
     env: (() => {

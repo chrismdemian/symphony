@@ -66,11 +66,7 @@ async function main(): Promise<void> {
     allow();
   }
 
-  let parsedPolicy: {
-    allowed?: unknown;
-    denied?: unknown;
-    writePaths?: unknown;
-  };
+  let parsedPolicy: unknown;
   try {
     parsedPolicy = JSON.parse(policyRaw as string);
   } catch (err) {
@@ -80,15 +76,47 @@ async function main(): Promise<void> {
       }) — blocking to fail safe.`,
     );
   }
+  // 4F.1 audit M3 — JSON.parse accepts `null`, `[]`, scalars, all of
+  // which would silently disarm the toStrArr-based extraction
+  // (resulting in {allowed: [], denied: [], writePaths: []} — i.e. no
+  // enforcement). Validate the shape before extracting.
+  if (
+    typeof parsedPolicy !== 'object' ||
+    parsedPolicy === null ||
+    Array.isArray(parsedPolicy)
+  ) {
+    block(
+      `Symphony droid fence: ${DROID_FENCE_ENV} must be a JSON object ` +
+        `({allowed, denied, writePaths}); got ${
+          parsedPolicy === null ? 'null' : Array.isArray(parsedPolicy) ? 'array' : typeof parsedPolicy
+        } — blocking to fail safe.`,
+    );
+  }
+  const policyObj = parsedPolicy as {
+    allowed?: unknown;
+    denied?: unknown;
+    writePaths?: unknown;
+  };
 
   const toStrArr = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
 
-  const worktreeRoot = process.env[DROID_WORKTREE_ENV] ?? '';
+  // 4F.1 audit M1 — realpath the worktree root so the worktree-
+  // containment check below isn't fooled by a symlink in the worktree
+  // path itself (e.g. /home/chris symlinked elsewhere).
+  const worktreeRootRaw = process.env[DROID_WORKTREE_ENV] ?? '';
+  let worktreeRoot = worktreeRootRaw;
+  if (worktreeRootRaw.length > 0) {
+    try {
+      worktreeRoot = fs.realpathSync(worktreeRootRaw);
+    } catch {
+      /* fall back to raw — fence still blocks any path that escapes */
+    }
+  }
   const policy: FencePolicy = {
-    allowed: toStrArr(parsedPolicy.allowed),
-    denied: toStrArr(parsedPolicy.denied),
-    writePaths: toStrArr(parsedPolicy.writePaths),
+    allowed: toStrArr(policyObj.allowed),
+    denied: toStrArr(policyObj.denied),
+    writePaths: toStrArr(policyObj.writePaths),
     worktreeRoot,
   };
 
@@ -127,9 +155,24 @@ async function main(): Promise<void> {
       // Claude Code normally passes an absolute file_path; resolve a
       // relative one against the payload cwd (the worktree) so the
       // fence's worktree-containment check is accurate.
-      filePath = path.isAbsolute(target)
+      const abs = path.isAbsolute(target)
         ? target
         : path.resolve(payload.cwd ?? process.cwd(), target);
+      // 4F.1 audit M1 — when the parent dir EXISTS, realpath it so a
+      // symlink (e.g. a bash-allowed droid does `ln -s /etc x` then
+      // `Write x/passwd`) doesn't slip a syntactically-inside path
+      // past the worktree-containment gate. When the parent does NOT
+      // exist, there is no symlink to follow — use the syntactic abs
+      // path and let `evaluateFence`'s `path.relative` check do its
+      // standard job. Exploiting the symlink path requires creating
+      // the symlink first (Bash, which is gated by the tool allow/
+      // deny lists), so this is layered defense over the tool gate.
+      try {
+        const parentReal = fs.realpathSync(path.dirname(abs));
+        filePath = path.join(parentReal, path.basename(abs));
+      } catch {
+        filePath = abs;
+      }
     }
   }
 
