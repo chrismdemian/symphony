@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import type { WorkerManager } from '../workers/manager.js';
 import type { WorkerPromptVars } from '../workers/prompt-composer.js';
@@ -32,6 +33,17 @@ import {
   droidIsFenced,
 } from '../droids/hook-command.js';
 import { writeDroidFenceSettings } from '../droids/settings-writer.js';
+
+/**
+ * Phase 4F.3 (audit M1) — the EXACT one-line nudge appended to a
+ * built-in `implementer` worker's kickoff when `<project>/DESIGN.md`
+ * exists. Exported + quoted VERBATIM in the Maestro v1 prompt's
+ * rule-#13 protocol so the prompt-vs-code wording can't drift; the
+ * integration test `tests/integration/4f3-design-md-autoload` and
+ * the Maestro prompt fragment both pin this exact string.
+ */
+export const DESIGN_MD_AUTO_LOAD_NOTE =
+  'Note: this project has a `DESIGN.md` at the repo root — read it before writing any UI.';
 
 export interface SpawnWorkerInput {
   readonly projectPath: string;
@@ -704,10 +716,34 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         droidFenceEnv = buildDroidFenceEnv(input.droid, worktree.path);
       }
 
+      // Phase 4F.3 — DESIGN.md auto-load (rule #13). When a BUILT-IN
+      // `implementer` spawns on a project that already has a
+      // `<project>/DESIGN.md`, append the canonical one-line read-it-
+      // first nudge (`DESIGN_MD_AUTO_LOAD_NOTE`) to the kickoff. The
+      // constant is exported + referenced VERBATIM in the Maestro v1
+      // prompt's rule-#13 protocol so the prompt-vs-code wording can't
+      // drift (4F.3 audit M1). Sync `fs.accessSync` matches 4D.2's
+      // `injectWorkerClaudeMd` posture (zero libuv macrotask in the
+      // tick-budgeted spawn region). Custom droids opt out — they have
+      // their own task contracts (design-researcher IS the writer).
+      let designMdNote: string | undefined;
+      if (input.droid === undefined && input.role === 'implementer') {
+        const designPath = path.join(input.projectPath, 'DESIGN.md');
+        try {
+          fs.accessSync(designPath);
+          designMdNote = DESIGN_MD_AUTO_LOAD_NOTE;
+        } catch {
+          /* no DESIGN.md → no note */
+        }
+      }
+
       const composedPrompt =
         injection.mode === 'claude-md'
           ? promptComposer.composeWorkerTaskKickoff(input.taskDescription, {
               staleWorktree: injection.reused,
+              ...(designMdNote !== undefined
+                ? { additionalNote: designMdNote }
+                : {}),
             })
           : input.droid !== undefined
             ? promptComposer.composeCustomDroidWorker(
@@ -719,6 +755,9 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
                 input.role,
                 input.taskDescription,
                 promptVars,
+                designMdNote !== undefined
+                  ? { additionalNote: designMdNote }
+                  : {},
               );
 
       const buffer = new CircularBuffer<StreamEvent>(bufferCap);
