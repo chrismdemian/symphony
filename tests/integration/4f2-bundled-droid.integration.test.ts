@@ -138,7 +138,7 @@ describe('Phase 4F.2 — bundled design-researcher droid integration', () => {
     const res = await tool.handler(args({}) as never, ctx());
     expect(res.isError).toBeFalsy();
     expect((res.content[0] as { text: string }).text).toContain(
-      'droid: design-researcher',
+      'droid:design-researcher',
     );
 
     const record = registry.list()[0]!;
@@ -165,6 +165,26 @@ describe('Phase 4F.2 — bundled design-researcher droid integration', () => {
     expect(policy.allowed).toContain('Write');
     // Model = opus per the droid frontmatter.
     expect(cfg.model).toBe('opus');
+  });
+
+  // 4F.2 audit C1 — malformed `design-researcher.md` (a BUNDLED droid
+  // name) must fail closed, NOT silently fall through to the less-
+  // restrictive bundled droid. Same security class as 4F.1 C2 but for
+  // the bundled tier; hoisted shadow-check covers both.
+  it('malformed <bundled>.md shadow rejects (fail closed, audit C1)', async () => {
+    const droidsDir = path.join(repoPath, '.symphony', 'droids');
+    mkdirSync(droidsDir, { recursive: true });
+    writeFileSync(
+      path.join(droidsDir, 'design-researcher.md'),
+      '---\nname: design-researcher\nbogus_key: 1\n---\nbody',
+    );
+    const { tool } = await setup();
+    const res = await tool.handler(args({}) as never, ctx());
+    expect(res.isError).toBe(true);
+    const text = (res.content[0] as { text: string }).text;
+    expect(text).toContain("Cannot spawn 'design-researcher'");
+    expect(text).toContain('intended to shadow the bundled');
+    expect(text).toContain('design-researcher.md');
   });
 
   it('project droid SHADOWS a bundled droid of the same name', async () => {

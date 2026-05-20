@@ -70,18 +70,60 @@ const defaultLogger: UpdateCatalogsLogger = {
   warn: (l) => process.stderr.write(`${l}\n`),
 };
 
+/**
+ * Quote a single argv element for Win32 cmd.exe via `spawn(...,
+ * {shell: true})`. With shell:true Node concatenates args WITHOUT
+ * quoting (DEP0190; 4F.2 audit M1) — so a `dest` arg containing a
+ * space (e.g. `C:\Users\Display Name\.symphony\design-catalog\x.md`)
+ * silently breaks. We quote ourselves and pass the assembled command
+ * as one string.
+ *
+ * Algorithm: standard Windows CreateProcess + cmd.exe escaping. Wrap
+ * in double quotes if the arg contains whitespace or any cmd-special
+ * (`&|<>^()%!`); escape internal `"` as `\"`; double the backslashes
+ * that immediately precede a quote (per CreateProcess argv parsing).
+ */
+export function quoteWinShellArg(arg: string): string {
+  if (arg === '') return '""';
+  if (!/[\s"&|<>^()%!]/.test(arg)) return arg;
+  let escaped = '';
+  let bs = 0;
+  for (const c of arg) {
+    if (c === '\\') {
+      bs += 1;
+      continue;
+    }
+    if (c === '"') {
+      escaped += '\\'.repeat(2 * bs + 1) + '"';
+      bs = 0;
+    } else {
+      escaped += '\\'.repeat(bs) + c;
+      bs = 0;
+    }
+  }
+  escaped += '\\'.repeat(2 * bs);
+  return `"${escaped}"`;
+}
+
 const defaultNpx: NpxRunner = (args, options) =>
   new Promise((resolve) => {
-    const child = spawn('npx', args as string[], {
+    let child;
+    const spawnOpts = {
       cwd: options.cwd,
       env: options.env ?? process.env,
       windowsHide: true,
-      // Shell-form on Windows: `npx` resolves via PATHEXT to `npx.cmd`,
-      // which Node refuses to spawn in exec-form (the known Win32
-      // `.cmd` shim gotcha from 1B). Shell-form delegates to cmd.exe
-      // / the user's shell, which handles `.cmd` correctly.
-      shell: process.platform === 'win32',
-    });
+    };
+    if (process.platform === 'win32') {
+      // 4F.2 audit M1 — pre-quote every argv element and assemble a
+      // single command string. Node's `spawn(cmd, args, {shell:true})`
+      // concatenates `args` WITHOUT quoting, which silently breaks
+      // dest paths that contain spaces (e.g. `C:\Users\Display Name`).
+      // npx itself resolves to `npx.cmd` via cmd.exe's PATHEXT.
+      const cmd = ['npx', ...args].map(quoteWinShellArg).join(' ');
+      child = spawn(cmd, { ...spawnOpts, shell: true });
+    } else {
+      child = spawn('npx', args as string[], { ...spawnOpts, shell: false });
+    }
     let stdout = '';
     let stderr = '';
     child.stdout?.on('data', (c) => (stdout += String(c)));

@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { ProjectStore } from '../../projects/types.js';
 import type { ToolRegistration } from '../registry.js';
 import { mergeLiveAndPersisted, type WorkerRegistry } from '../worker-registry.js';
+import { formatDroidLabel } from '../../droids/types.js';
 
 const shape = {
   project: z
@@ -47,11 +48,14 @@ export function makeListWorkersTool(deps: ListWorkersDeps): ToolRegistration<typ
         : snaps
             // Phase 4F.2 — when a custom/bundled droid is running,
             // surface its name so Maestro can distinguish it from a
-            // generic implementer baseline (audit M5 deferral).
+            // generic implementer baseline (audit M5 deferral). Format
+            // is centralized in `formatDroidLabel` (audit M2).
             .map(
               (s) =>
                 `- ${s.id} [${s.status}] ${
-                  s.droidName !== undefined ? `droid:${s.droidName}` : s.role
+                  s.droidName !== undefined
+                    ? formatDroidLabel(s.droidName)
+                    : s.role
                 }/${s.featureIntent} — ${s.worktreePath}`,
             )
             .join('\n');

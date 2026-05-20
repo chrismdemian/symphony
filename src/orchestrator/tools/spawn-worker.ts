@@ -4,7 +4,7 @@ import type { ProjectStore } from '../../projects/types.js';
 import type { ToolRegistration } from '../registry.js';
 import { WORKER_ROLES, type WorkerRole } from '../types.js';
 import { loadProjectDroids } from '../../droids/registry.js';
-import type { DroidDefinition } from '../../droids/types.js';
+import { formatDroidLabel, type DroidDefinition } from '../../droids/types.js';
 import type { WorkerLifecycleHandle, SpawnWorkerInput } from '../worker-lifecycle.js';
 import { toSnapshot, type WorkerRegistry } from '../worker-registry.js';
 import { TaskNotReadyError, type TaskStore } from '../../state/types.js';
@@ -100,9 +100,46 @@ export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typ
       // in_progress.
       const { droids, warnings: droidWarnings } =
         await loadProjectDroids(projectPath);
+      // 4F.1 audit C2 + 4F.2 audit C1 — if the USER authored a droid
+      // file at `<role>.md` INTENDING to shadow ANY downstream
+      // resolution (built-in role OR bundled droid) with their own
+      // restricted policy but the file failed to parse, DO NOT silently
+      // fall through (which would spawn the less-restrictive downstream
+      // tier — exact opposite of user intent). Fail closed. This check
+      // is HOISTED ABOVE the bundled/built-in resolution so it covers
+      // both shadow tiers, not just built-in (4F.2 C1 specifically
+      // caught the bundled-shadow case the 4F.1 C2 fix had missed).
+      const projectDroid = droids.get(role);
+      if (projectDroid === undefined) {
+        const shadowed = droidWarnings.find(
+          (w) => path.basename(w.source) === `${role}.md`,
+        );
+        if (shadowed !== undefined) {
+          // Name the tier the user was trying to shadow so the error is
+          // actionable. WORKER_ROLES = built-in; bundledDroids = bundled.
+          const tier = (WORKER_ROLES as readonly string[]).includes(role)
+            ? 'built-in'
+            : deps.bundledDroids?.has(role) === true
+              ? 'bundled'
+              : 'downstream';
+          return {
+            content: [
+              {
+                type: 'text',
+                text:
+                  `Cannot spawn '${role}': a droid file at ${shadowed.source} ` +
+                  `is intended to shadow the ${tier} '${role}' but failed to parse — ` +
+                  `${shadowed.message}. Fix the droid file (or delete it to fall ` +
+                  `back to the ${tier} '${role}').`,
+              },
+            ],
+            isError: true,
+          };
+        }
+      }
       // 4F.2 — precedence: project droid > bundled droid > built-in role.
       const customDroid: DroidDefinition | undefined =
-        droids.get(role) ?? deps.bundledDroids?.get(role);
+        projectDroid ?? deps.bundledDroids?.get(role);
       let resolvedRole: WorkerRole;
       if (customDroid !== undefined) {
         // `WorkerRole` is load-bearing across pipeline/SQL/snapshot;
@@ -110,29 +147,6 @@ export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typ
         // its identity via the prompt + fence + response text.
         resolvedRole = 'implementer';
       } else if ((WORKER_ROLES as readonly string[]).includes(role)) {
-        // 4F.1 audit C2 — if the USER authored a droid file at
-        // `<role>.md` INTENDING to shadow the built-in with their own
-        // restricted policy but the file failed to parse, DO NOT
-        // silently spawn the unrestricted built-in (which is the exact
-        // opposite of the user's intent). Fail closed.
-        const shadowed = droidWarnings.find(
-          (w) => path.basename(w.source) === `${role}.md`,
-        );
-        if (shadowed !== undefined) {
-          return {
-            content: [
-              {
-                type: 'text',
-                text:
-                  `Cannot spawn '${role}': a droid file at ${shadowed.source} ` +
-                  `is intended to shadow the built-in '${role}' but failed to parse — ` +
-                  `${shadowed.message}. Fix the droid file (or delete it to fall back ` +
-                  `to the built-in '${role}').`,
-              },
-            ],
-            isError: true,
-          };
-        }
         resolvedRole = role as WorkerRole;
       } else {
         const projectNames = [...droids.keys()].sort();
@@ -296,7 +310,7 @@ export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typ
       const snap = toSnapshot(record);
       const roleLabel =
         customDroid !== undefined
-          ? `droid: ${customDroid.name}`
+          ? formatDroidLabel(customDroid.name)
           : snap.role;
       // Surface non-fatal droid load warnings so a malformed sibling
       // droid isn't silently missing (rule #7: visible, not noisy).

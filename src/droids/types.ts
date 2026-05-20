@@ -148,6 +148,16 @@ export class DroidNameError extends Error {
 }
 
 /**
+ * Format a droid name for human-readable surfaces (chat row, list_workers
+ * row, spawn_worker response, log lines). One canonical format so future
+ * scrapers / fixtures can rely on it (4F.2 audit M2 — pre-fix the
+ * `droid: <name>` vs `droid:<name>` drift across surfaces).
+ */
+export function formatDroidLabel(name: string): string {
+  return `droid:${name}`;
+}
+
+/**
  * Reject droid names that could collide with shell/fs/control surfaces.
  * The name is interpolated into the `spawn_worker` role argument, the
  * `<project>/.symphony/droids/<name>.md` filename contract, and USER-

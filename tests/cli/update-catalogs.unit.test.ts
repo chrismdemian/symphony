@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   parseSlugList,
+  quoteWinShellArg,
   runUpdateCatalogs,
   type NpxRunner,
   type NpxRunResult,
@@ -24,6 +25,53 @@ afterEach(() => {
   } catch {
     /* ignore */
   }
+});
+
+// 4F.2 audit M1 — Win32 cmd.exe argv quoting. `shell:true` concatenates
+// args without quoting (Node DEP0190), so paths-with-spaces silently
+// break. This helper is the per-arg quoter the spawn path uses on Win32.
+describe('quoteWinShellArg', () => {
+  it('returns simple alphanumeric args unchanged', () => {
+    expect(quoteWinShellArg('npx')).toBe('npx');
+    expect(quoteWinShellArg('add')).toBe('add');
+    expect(quoteWinShellArg('raycast')).toBe('raycast');
+    expect(quoteWinShellArg('--force')).toBe('--force');
+  });
+
+  it('wraps args with spaces in double quotes', () => {
+    expect(quoteWinShellArg('C:\\Users\\Display Name\\x.md')).toBe(
+      '"C:\\Users\\Display Name\\x.md"',
+    );
+  });
+
+  it('escapes embedded quotes (CreateProcess argv rules)', () => {
+    expect(quoteWinShellArg('a "b" c')).toBe('"a \\"b\\" c"');
+  });
+
+  it('doubles backslashes that immediately precede a quote', () => {
+    // `foo\"bar` → backslash is doubled when followed by a quote.
+    expect(quoteWinShellArg('foo\\"bar')).toBe('"foo\\\\\\"bar"');
+  });
+
+  it('doubles trailing backslashes when arg ends in a backslash run', () => {
+    // `C:\path\` → wrapped becomes `"C:\path\\"` (trailing \ doubled
+    // because it would otherwise escape the closing quote).
+    expect(quoteWinShellArg('C:\\path with space\\')).toBe(
+      '"C:\\path with space\\\\"',
+    );
+  });
+
+  it.each(['&', '|', '<', '>', '^', '(', ')', '%', '!'])(
+    'wraps args containing cmd-metachar %s',
+    (mc) => {
+      const arg = `safe${mc}arg`;
+      expect(quoteWinShellArg(arg)).toBe(`"${arg}"`);
+    },
+  );
+
+  it('returns "" for an empty arg (cmd.exe requires explicit empty)', () => {
+    expect(quoteWinShellArg('')).toBe('""');
+  });
 });
 
 describe('parseSlugList', () => {
