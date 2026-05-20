@@ -301,6 +301,7 @@ describe('Phase 4G.2 — runVerifyUi', () => {
       .replace(/\\/g, '\\\\')
       .replace(/'/g, "\\'")
       .replace(/\n/g, '\\n')
+      // eslint-disable-next-line no-control-regex
       .replace(/\x1b/g, '\\x1b');
     const cmd =
       process.platform === 'win32'
