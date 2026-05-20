@@ -83,6 +83,7 @@ function makeRealWorktreeFakeSpawnLifecycle(args: {
         createdAt: new Date().toISOString(),
         worker: stubWorker(id),
         buffer: new CircularBuffer<StreamEvent>(10),
+        auditAttempts: 0,
         detach: () => {},
       };
       args.registry.register(record);

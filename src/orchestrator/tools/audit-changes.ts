@@ -35,6 +35,16 @@ export interface AuditResult {
   readonly truncated: boolean;
   readonly sessionId?: string;
   readonly durationMs: number;
+  /**
+   * Phase 4G.1 — cumulative count of `audit_changes` invocations for
+   * this worker, AFTER this call's bump. The server auto-bumps inside
+   * `runAudit` for PASS and FAIL alike; Maestro reads this number to
+   * apply the 3-FAIL-then-escalate cap defined in
+   * `audit-loop-constants.ts`. Undefined ONLY if the bump path failed
+   * (the bump is wrapped in try/catch so a store error doesn't break
+   * the audit — the audit result is still authoritative).
+   */
+  readonly auditAttempts?: number;
 }
 
 export interface RunAuditInput {
@@ -121,6 +131,17 @@ export async function runAudit(
     };
   }
 
+  // Phase 4G.1 — auto-bump the audit-attempts counter (PASS or FAIL).
+  // Wrapped in try/catch so a store error never invalidates the audit
+  // result; the audit verdict is authoritative regardless of bookkeeping.
+  // Bumped AFTER the audit so a runner-throw path doesn't burn a slot.
+  let auditAttempts: number | undefined;
+  try {
+    auditAttempts = deps.registry.bumpAuditAttempts(record.id);
+  } catch {
+    auditAttempts = undefined;
+  }
+
   return {
     ok: true,
     result: {
@@ -133,6 +154,7 @@ export async function runAudit(
       truncated: diff.truncated,
       ...(runnerResult.sessionId !== undefined ? { sessionId: runnerResult.sessionId } : {}),
       durationMs: Date.now() - start,
+      ...(auditAttempts !== undefined ? { auditAttempts } : {}),
     },
   };
 }
@@ -325,8 +347,11 @@ export function makeAuditChangesTool(
         : r.findings
             .map((f) => `- [${f.severity}] ${f.location || '(no location)'} — ${f.description}`)
             .join('\n');
+      const attemptsLine =
+        r.auditAttempts !== undefined ? `attempt: ${r.auditAttempts}` : null;
       const text = [
         `audit: ${r.verdict}`,
+        ...(attemptsLine !== null ? [attemptsLine] : []),
         '',
         r.summary,
         '',
@@ -346,6 +371,7 @@ export function makeAuditChangesTool(
           truncated: r.truncated,
           duration_ms: r.durationMs,
           ...(r.sessionId !== undefined ? { session_id: r.sessionId } : {}),
+          ...(r.auditAttempts !== undefined ? { audit_attempts: r.auditAttempts } : {}),
         },
         isError: r.verdict === 'FAIL',
       };

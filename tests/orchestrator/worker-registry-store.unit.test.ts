@@ -46,6 +46,7 @@ function makeRecord(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
     status: overrides.status ?? 'spawning',
     worker: overrides.worker ?? makeFakeWorker(overrides.id ?? 'wk-1'),
     buffer: overrides.buffer ?? new CircularBuffer<StreamEvent>(10),
+    auditAttempts: overrides.auditAttempts ?? 0,
     detach: overrides.detach ?? (() => {}),
     ...(overrides.sessionId !== undefined ? { sessionId: overrides.sessionId } : {}),
     ...(overrides.model !== undefined ? { model: overrides.model } : {}),
@@ -128,6 +129,16 @@ function makeSpyStore(): {
     },
     size() {
       return rows.size;
+    },
+    bumpAuditAttempts(id) {
+      const existing = rows.get(id);
+      if (!existing) return undefined;
+      const merged: { -readonly [K in keyof PersistedWorkerRecord]: PersistedWorkerRecord[K] } = {
+        ...existing,
+        auditAttempts: existing.auditAttempts + 1,
+      };
+      rows.set(id, merged);
+      return merged.auditAttempts;
     },
   };
   return { store, calls, rows };

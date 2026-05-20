@@ -59,6 +59,7 @@ function register(
     createdAt: new Date().toISOString(),
     worker: stubWorker(args.id),
     buffer: new CircularBuffer<StreamEvent>(10),
+    auditAttempts: 0,
     detach: () => {},
     ...(args.lastEventAt !== undefined ? { lastEventAt: args.lastEventAt } : {}),
   };

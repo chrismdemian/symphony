@@ -54,6 +54,7 @@ function makeRecord(overrides: Partial<WorkerRecord>): WorkerRecord {
     status: overrides.status ?? 'completed',
     worker: overrides.worker ?? makeFakeWorker(overrides.id ?? 'wk'),
     buffer: overrides.buffer ?? new CircularBuffer<StreamEvent>(10),
+    auditAttempts: overrides.auditAttempts ?? 0,
     detach: overrides.detach ?? (() => {}),
     ...(overrides.sessionId !== undefined ? { sessionId: overrides.sessionId } : {}),
     ...(overrides.model !== undefined ? { model: overrides.model } : {}),

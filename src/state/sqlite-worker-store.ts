@@ -38,6 +38,14 @@ export interface PersistedWorkerRecord {
    * no token data has been observed.
    */
   readonly sessionUsage?: TokenUsage;
+  /**
+   * Phase 4G.1 — number of times `audit_changes` has been called on this
+   * worker's diff. Auto-bumped server-side inside `runAudit`. Default 0;
+   * always present (NOT NULL DEFAULT 0 at the schema layer). Monotonic
+   * per worker; not reset on resume. Maestro reads it to apply the
+   * 3-FAIL-then-escalate cap (see `audit-loop-constants.ts`).
+   */
+  readonly auditAttempts: number;
 }
 
 export interface WorkerStoreListFilter {
@@ -58,6 +66,15 @@ export interface WorkerStore {
   get(id: string): PersistedWorkerRecord | undefined;
   list(filter?: WorkerStoreListFilter): PersistedWorkerRecord[];
   size(): number;
+  /**
+   * Phase 4G.1 — atomic +1 on `audit_attempts`. Used by `runAudit`'s
+   * auto-bump path. Returns the new value, or `undefined` if the worker
+   * row is not found (no-op on unknown id, mirroring `update`/`delete`).
+   * The bump is a single `UPDATE ... SET audit_attempts = audit_attempts + 1`
+   * statement, so it stays consistent under any concurrent writer that
+   * also touches the same row.
+   */
+  bumpAuditAttempts(id: string): number | undefined;
 }
 
 /**
@@ -82,6 +99,15 @@ export interface WorkerStoreUpdatePatch {
    * `T | null` semantics like the rest of the patch.
    */
   readonly sessionUsage?: TokenUsage | null;
+  /**
+   * Phase 4G.1 — explicit set of the audit-attempts counter. The common
+   * call path is `audit_changes` auto-bump via `bumpAuditAttempts` (an
+   * atomic +1 written through to SQL). This patch slot is for tests and
+   * future reset paths (e.g. on PASS — currently YAGNI). Absence
+   * preserves the column's current value; `null` is invalid (the column
+   * is NOT NULL) and is rejected at the store layer.
+   */
+  readonly auditAttempts?: number;
 }
 
 interface WorkerRow {
@@ -107,6 +133,7 @@ interface WorkerRow {
   output_tokens: number | null;
   cache_read_tokens: number | null;
   cache_write_tokens: number | null;
+  audit_attempts: number;
 }
 
 export interface SqliteWorkerStoreOptions {
@@ -136,6 +163,7 @@ export class SqliteWorkerStore implements WorkerStore {
     update: Statement;
     delete: Statement;
     count: Statement;
+    bumpAuditAttempts: Statement;
   };
   private readonly onCorruptRow: (err: CorruptRecordError) => void;
 
@@ -152,12 +180,14 @@ export class SqliteWorkerStore implements WorkerStore {
            (id, project_id, task_id, session_id, worktree_path, status, role,
             feature_intent, task_description, model, autonomy_tier, depends_on,
             created_at, completed_at, last_event_at, exit_code, exit_signal, cost_usd,
-            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
+            input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+            audit_attempts)
          VALUES
            (@id, @project_id, @task_id, @session_id, @worktree_path, @status, @role,
             @feature_intent, @task_description, @model, @autonomy_tier, @depends_on,
             @created_at, @completed_at, @last_event_at, @exit_code, @exit_signal, @cost_usd,
-            @input_tokens, @output_tokens, @cache_read_tokens, @cache_write_tokens)`,
+            @input_tokens, @output_tokens, @cache_read_tokens, @cache_write_tokens,
+            @audit_attempts)`,
       ),
       selectById: db.prepare(`SELECT * FROM workers WHERE id = ?`),
       listAll: db.prepare(`SELECT * FROM workers ORDER BY created_at ASC`),
@@ -173,11 +203,22 @@ export class SqliteWorkerStore implements WorkerStore {
            input_tokens = @input_tokens,
            output_tokens = @output_tokens,
            cache_read_tokens = @cache_read_tokens,
-           cache_write_tokens = @cache_write_tokens
+           cache_write_tokens = @cache_write_tokens,
+           audit_attempts = @audit_attempts
          WHERE id = @id`,
       ),
       delete: db.prepare(`DELETE FROM workers WHERE id = ?`),
       count: db.prepare(`SELECT COUNT(*) AS c FROM workers`),
+      // Phase 4G.1 — atomic increment-and-return. Single statement so a
+      // concurrent writer can't lose the bump. `RETURNING` keeps the read
+      // in the same transaction as the write — better-sqlite3 supports
+      // it under SQLite 3.35+ (bundled).
+      bumpAuditAttempts: db.prepare(
+        `UPDATE workers
+            SET audit_attempts = audit_attempts + 1
+          WHERE id = ?
+          RETURNING audit_attempts`,
+      ),
     };
   }
 
@@ -205,6 +246,7 @@ export class SqliteWorkerStore implements WorkerStore {
       output_tokens: record.sessionUsage?.outputTokens ?? null,
       cache_read_tokens: record.sessionUsage?.cacheReadTokens ?? null,
       cache_write_tokens: record.sessionUsage?.cacheWriteTokens ?? null,
+      audit_attempts: record.auditAttempts,
     });
   }
 
@@ -240,6 +282,12 @@ export class SqliteWorkerStore implements WorkerStore {
       cache_write_tokens: usagePassed
         ? (usage === null ? null : usage.cacheWriteTokens)
         : existing.cache_write_tokens,
+      // Phase 4G.1 — explicit-set path (tests, future reset). Auto-bump
+      // takes the dedicated `bumpAuditAttempts` statement so the +1 stays
+      // atomic; this fallthrough is preserve-or-set semantics matching the
+      // rest of the patch shape.
+      audit_attempts:
+        patch.auditAttempts !== undefined ? patch.auditAttempts : existing.audit_attempts,
     });
   }
 
@@ -282,6 +330,11 @@ export class SqliteWorkerStore implements WorkerStore {
     const row = this.stmts.count.get() as { c: number };
     return row.c;
   }
+
+  bumpAuditAttempts(id: string): number | undefined {
+    const row = this.stmts.bumpAuditAttempts.get(id) as { audit_attempts: number } | undefined;
+    return row?.audit_attempts;
+  }
 }
 
 function parseDependsOn(row: WorkerRow): string[] {
@@ -321,6 +374,7 @@ function rowToRecord(row: WorkerRow): PersistedWorkerRecord {
     dependsOn: parseDependsOn(row),
     status: row.status,
     createdAt: row.created_at,
+    auditAttempts: row.audit_attempts,
     ...(row.session_id !== null ? { sessionId: row.session_id } : {}),
     ...(row.model !== null ? { model: row.model } : {}),
     ...(row.completed_at !== null ? { completedAt: row.completed_at } : {}),

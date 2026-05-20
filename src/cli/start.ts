@@ -523,14 +523,26 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
     },
   });
 
+  // Phase 4G.1 — surface the default project's `verifyCommand` AND the
+  // sibling test/build/lint commands so the Maestro Finalize Protocol's
+  // verify + test/build/lint steps render the actual commands rather
+  // than `(none)` (audit-fix M1: pre-4G.1 the prompt used camelCase
+  // tokens that the substitution regex could not match, so Maestro saw
+  // literal `{testCommand}` etc.). Empty-string default falls through
+  // to the composer's `(none)` literal.
+  const defaultProject = projects.length > 0 ? projects[0] : undefined;
   const promptVars: MaestroPromptVars = {
-    projectName: projects.length > 0 ? projects[0]!.name : '(no project)',
+    projectName: defaultProject?.name ?? '(no project)',
     registeredProjects,
     workersInFlight: '(none)',
     currentMode: 'PLAN',
     autonomyDefault: '1',
     planModeRequired: false,
     previewCommand: '',
+    testCommand: defaultProject?.testCommand ?? '',
+    buildCommand: defaultProject?.buildCommand ?? '',
+    lintCommand: defaultProject?.lintCommand ?? '',
+    verifyCommand: defaultProject?.verifyCommand ?? '',
     availableTools: '',
     maestroWarmth: '',
     modelMode,

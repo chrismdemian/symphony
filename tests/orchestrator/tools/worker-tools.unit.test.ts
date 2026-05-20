@@ -67,6 +67,7 @@ function makeRecord(reg: WorkerRegistry, overrides: Partial<WorkerRecord> = {}):
     status: overrides.status ?? 'running',
     worker: overrides.worker ?? fakeWorker({ id: overrides.id ?? 'wk-1' }),
     buffer: overrides.buffer ?? new CircularBuffer<StreamEvent>(100),
+    auditAttempts: overrides.auditAttempts ?? 0,
     detach: overrides.detach ?? (() => {}),
     ...(overrides.sessionId !== undefined ? { sessionId: overrides.sessionId } : {}),
   };

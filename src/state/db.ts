@@ -142,6 +142,7 @@ export function validateSchemaContract(db: BetterSqlite3Database, dbPath: string
       'output_tokens',
       'cache_read_tokens',
       'cache_write_tokens',
+      'audit_attempts',
     ])
       requireColumn('workers', col);
   }
