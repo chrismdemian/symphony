@@ -1,4 +1,5 @@
 import path from 'node:path';
+import fs from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import type { WorkerManager } from '../workers/manager.js';
 import type { WorkerPromptVars } from '../workers/prompt-composer.js';
@@ -704,10 +705,32 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         droidFenceEnv = buildDroidFenceEnv(input.droid, worktree.path);
       }
 
+      // Phase 4F.3 — DESIGN.md auto-load (rule #13). When a BUILT-IN
+      // `implementer` spawns on a project that already has a
+      // `<project>/DESIGN.md`, append a one-line read-it-first nudge
+      // to the kickoff. Sync `fs.accessSync` matches 4D.2's
+      // `injectWorkerClaudeMd` posture (zero libuv macrotask in the
+      // tick-budgeted spawn region). Custom droids opt out — they have
+      // their own task contracts (design-researcher IS the writer).
+      let designMdNote: string | undefined;
+      if (input.droid === undefined && input.role === 'implementer') {
+        const designPath = path.join(input.projectPath, 'DESIGN.md');
+        try {
+          fs.accessSync(designPath);
+          designMdNote =
+            'Note: this project has a `DESIGN.md` at the repo root — read it before writing any UI.';
+        } catch {
+          /* no DESIGN.md → no note */
+        }
+      }
+
       const composedPrompt =
         injection.mode === 'claude-md'
           ? promptComposer.composeWorkerTaskKickoff(input.taskDescription, {
               staleWorktree: injection.reused,
+              ...(designMdNote !== undefined
+                ? { additionalNote: designMdNote }
+                : {}),
             })
           : input.droid !== undefined
             ? promptComposer.composeCustomDroidWorker(
@@ -719,6 +742,9 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
                 input.role,
                 input.taskDescription,
                 promptVars,
+                designMdNote !== undefined
+                  ? { additionalNote: designMdNote }
+                  : {},
               );
 
       const buffer = new CircularBuffer<StreamEvent>(bufferCap);

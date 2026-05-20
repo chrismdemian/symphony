@@ -232,9 +232,19 @@ export class PromptComposer {
    */
   composeWorkerTaskKickoff(
     taskDescription: string,
-    options: { staleWorktree?: boolean } = {},
+    options: { staleWorktree?: boolean; additionalNote?: string } = {},
   ): string {
-    const body = `${WORKER_TASK_HEADER}\n\n${taskDescription.trim()}\n`;
+    // Phase 4F.3 — `additionalNote` is the auto-load slot (rule #13:
+    // implementers on a project with DESIGN.md get a one-line nudge
+    // appended to the kickoff). NOT a fragment edit (byte-fidelity
+    // locked); per-spawn note that's invisible to non-implementer /
+    // non-DESIGN.md callers.
+    const note =
+      options.additionalNote !== undefined &&
+      options.additionalNote.trim().length > 0
+        ? `\n${options.additionalNote.trim()}\n`
+        : '';
+    const body = `${WORKER_TASK_HEADER}\n\n${taskDescription.trim()}\n${note}`;
     return options.staleWorktree === true
       ? `${NEW_TASK_GUARD}\n\n${body}`
       : body;
@@ -250,11 +260,20 @@ export class PromptComposer {
     role: WorkerRole,
     taskDescription: string,
     vars: WorkerPromptVars,
+    options: { additionalNote?: string } = {},
   ): string {
+    // `additionalNote` is forwarded to the kickoff (Phase 4F.3 DESIGN.md
+    // auto-load). The byte-equivalence test calls this with no
+    // additionalNote, so byte-identity with `composeWorkerPrompt`
+    // (the frozen 4A monolith) is preserved in that path.
+    const kickoffOpts =
+      options.additionalNote !== undefined
+        ? { additionalNote: options.additionalNote }
+        : {};
     return (
       this.composeWorkerManual(role, vars) +
       MAESTRO_FRAGMENT_SEPARATOR +
-      this.composeWorkerTaskKickoff(taskDescription)
+      this.composeWorkerTaskKickoff(taskDescription, kickoffOpts)
     );
   }
 
