@@ -3,10 +3,13 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 /**
- * The 10 template variables documented in `research/prompts/maestro-system-prompt-v1.md`.
+ * The 11 template variables documented in `research/prompts/maestro-system-prompt-v1.md`.
  *
- * Six are referenced in the prompt body today; three (`previewCommand`,
- * `availableTools`, `maestroWarmth`) are reserved for 4D fragment expansion;
+ * Several are referenced in the prompt body today; `previewCommand`,
+ * `availableTools`, `maestroWarmth` are reserved for 4D fragment expansion;
+ * `verifyCommand` (4G.1) is substituted into the Finalize Protocol's verify
+ * step so the prompt explicitly names the end-to-end smoke command
+ * (rule #1: "verify the actual product, not just the unit tests");
  * `modelMode` (Phase 3H.2) gates Maestro's per-task model selection — when
  * `'opus'`, Symphony forces every spawn to Opus; when `'mixed'`, Maestro
  * decides per task. Empty/null values render as the literal string `(none)`
@@ -20,6 +23,19 @@ export interface MaestroPromptVars {
   autonomyDefault: '1' | '2' | '3';
   planModeRequired: boolean;
   previewCommand: string;
+  /**
+   * Phase 4G.1 — sourced from the default project's `ProjectRecord`
+   * counterparts. Pre-4G.1 the prompt body referenced these as
+   * `{testCommand}` / `{buildCommand}` / `{lintCommand}` (camelCase),
+   * which the substitution regex `/\{([a-z_]+)\}/g` could NOT match —
+   * so Maestro saw literal `{testCommand}` in its system prompt
+   * (audit-fix M1). The tokens are now snake_case and these fields
+   * source them. Renders `(none)` when the project hasn't set one.
+   */
+  testCommand: string;
+  buildCommand: string;
+  lintCommand: string;
+  verifyCommand: string;
   availableTools: string;
   maestroWarmth: string;
   modelMode: 'opus' | 'mixed';
@@ -33,6 +49,10 @@ const TEMPLATE_KEY_TO_FIELD: Record<string, keyof MaestroPromptVars> = {
   autonomy_default: 'autonomyDefault',
   plan_mode_required: 'planModeRequired',
   preview_command: 'previewCommand',
+  test_command: 'testCommand',
+  build_command: 'buildCommand',
+  lint_command: 'lintCommand',
+  verify_command: 'verifyCommand',
   available_tools: 'availableTools',
   maestro_warmth: 'maestroWarmth',
   model_mode: 'modelMode',

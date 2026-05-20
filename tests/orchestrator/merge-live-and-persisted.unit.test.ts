@@ -43,6 +43,7 @@ function makeRecord(overrides: Partial<WorkerRecord> = {}): WorkerRecord {
     status: overrides.status ?? 'running',
     worker: overrides.worker ?? makeFakeWorker(overrides.id ?? 'wk-1'),
     buffer: overrides.buffer ?? new CircularBuffer<StreamEvent>(10),
+    auditAttempts: overrides.auditAttempts ?? 0,
     detach: overrides.detach ?? (() => {}),
   };
 }
@@ -79,6 +80,16 @@ function makeStore(initial: PersistedWorkerRecord[] = []): WorkerStore {
     size() {
       return rows.size;
     },
+    bumpAuditAttempts(id) {
+      const existing = rows.get(id);
+      if (!existing) return undefined;
+      const merged: { -readonly [K in keyof PersistedWorkerRecord]: PersistedWorkerRecord[K] } = {
+        ...existing,
+        auditAttempts: existing.auditAttempts + 1,
+      };
+      rows.set(id, merged);
+      return merged.auditAttempts;
+    },
   };
 }
 
@@ -96,6 +107,7 @@ function persistedRow(id: string, overrides: Partial<PersistedWorkerRecord> = {}
     status: 'crashed',
     createdAt: '2026-04-24T00:00:00.000Z',
     completedAt: '2026-04-24T00:01:00.000Z',
+    auditAttempts: 0,
     ...overrides,
   };
 }

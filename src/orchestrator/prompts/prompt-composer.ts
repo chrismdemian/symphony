@@ -68,6 +68,9 @@ export const MAESTRO_FRAGMENT_FILES = [
   'maestro-progress-ledger.md',
   'maestro-delegation-contract.md',
   'maestro-finalize.md',
+  // Phase 4G.1 — new audit-loop fragment (rule #9 iterate-in-place).
+  // Sits between finalize and escalation per the v1 ordering.
+  'maestro-audit-loop.md',
   'maestro-escalation.md',
   'maestro-interrupts.md',
   'maestro-context-hygiene.md',

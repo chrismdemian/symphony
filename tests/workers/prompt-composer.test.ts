@@ -81,6 +81,7 @@ const VARS: WorkerPromptVars = {
   buildCmd: 'pnpm build',
   lintCmd: 'pnpm lint',
   previewCmd: 'pnpm dev',
+  verifyCmd: 'pnpm verify',
 };
 
 beforeEach(() => {
@@ -265,6 +266,7 @@ describe('composeWorkerPrompt against real frozen artifacts', () => {
     buildCmd: 'pnpm build',
     lintCmd: 'pnpm lint',
     previewCmd: '',
+    verifyCmd: '',
   };
 
   it('produces a researcher prompt with the read-only fence + reporting contract', () => {

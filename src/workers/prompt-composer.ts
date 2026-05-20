@@ -24,10 +24,16 @@ import type { WorkerRole } from '../orchestrator/types.js';
  */
 
 /**
- * The 11 template variables documented in
+ * The 12 template variables documented in
  * `research/prompts/worker-common-suffix-v1.md`. Empty/blank values render
  * as the literal `(none)` so a worker never reads `undefined`. `autonomyTier`
  * is a string (`'1'|'2'|'3'`) mirroring `MaestroPromptVars.autonomyDefault`.
+ *
+ * Phase 4G.1 added `verifyCmd` (the end-to-end smoke that boots the
+ * built artifact — rule #1). It's now substituted into the reviewer
+ * role opener's "verify by running" list and the worker-common-suffix
+ * DoD block. Renders `(none)` for projects that haven't set a
+ * `verifyCommand`.
  */
 export interface WorkerPromptVars {
   projectName: string;
@@ -41,6 +47,7 @@ export interface WorkerPromptVars {
   buildCmd: string;
   lintCmd: string;
   previewCmd: string;
+  verifyCmd: string;
 }
 
 const WORKER_TEMPLATE_KEY_TO_FIELD: Record<string, keyof WorkerPromptVars> = {
@@ -55,6 +62,7 @@ const WORKER_TEMPLATE_KEY_TO_FIELD: Record<string, keyof WorkerPromptVars> = {
   build_cmd: 'buildCmd',
   lint_cmd: 'lintCmd',
   preview_cmd: 'previewCmd',
+  verify_cmd: 'verifyCmd',
 };
 
 /**

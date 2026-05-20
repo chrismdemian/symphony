@@ -81,6 +81,7 @@ function registerWorker(
     createdAt: new Date().toISOString(),
     worker: stubWorker(),
     buffer: new CircularBuffer<StreamEvent>(10),
+    auditAttempts: 0,
     detach: () => {},
   };
   reg.register(record);

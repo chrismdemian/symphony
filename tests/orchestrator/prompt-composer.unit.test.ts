@@ -52,6 +52,10 @@ const MAESTRO_VAR_MATRIX: readonly MaestroPromptVars[] = [
     autonomyDefault: '2',
     planModeRequired: true,
     previewCommand: 'pnpm dev',
+    testCommand: 'pnpm test',
+    buildCommand: 'pnpm build',
+    lintCommand: 'pnpm lint',
+    verifyCommand: 'pnpm verify',
     availableTools: 'spawn_worker, finalize',
     maestroWarmth: 'balanced',
     modelMode: 'mixed',
@@ -64,6 +68,10 @@ const MAESTRO_VAR_MATRIX: readonly MaestroPromptVars[] = [
     autonomyDefault: '1',
     planModeRequired: false,
     previewCommand: '',
+    testCommand: '',
+    buildCommand: '',
+    lintCommand: '',
+    verifyCommand: '',
     availableTools: '',
     maestroWarmth: '',
     modelMode: 'opus',
@@ -83,6 +91,7 @@ const WORKER_VAR_MATRIX: readonly WorkerPromptVars[] = [
     buildCmd: 'pnpm build',
     lintCmd: 'pnpm lint',
     previewCmd: 'pnpm dev',
+    verifyCmd: 'pnpm verify',
   },
   {
     projectName: '',
@@ -96,6 +105,7 @@ const WORKER_VAR_MATRIX: readonly WorkerPromptVars[] = [
     buildCmd: '',
     lintCmd: '',
     previewCmd: '',
+    verifyCmd: '',
   },
 ];
 

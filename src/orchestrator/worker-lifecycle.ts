@@ -159,7 +159,7 @@ export interface WorkerLifecycleOptions {
   readonly resolveProjectCommands?: (input: {
     readonly projectPath: string;
     readonly projectId: string | null;
-  }) => { test?: string; build?: string; lint?: string };
+  }) => { test?: string; build?: string; lint?: string; verify?: string };
   /**
    * Phase 3H.3 — fired whenever a worker transitions to a terminal
    * status (`completed` / `failed` / `killed` / `timeout` / `crashed`).
@@ -684,6 +684,10 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         testCmd: projectCmds?.test ?? '',
         buildCmd: projectCmds?.build ?? '',
         lintCmd: projectCmds?.lint ?? '',
+        // Phase 4G.1 — surface the project's verifyCommand into
+        // `{verify_cmd}` for the reviewer opener + worker-common-suffix
+        // DoD block. Renders `(none)` when the project hasn't set one.
+        verifyCmd: projectCmds?.verify ?? '',
         // No `previewCommand` on ProjectRecord until Phase 5.
         previewCmd: '',
       };
@@ -810,6 +814,9 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         dependsOn: input.dependsOn ?? [],
         status: 'spawning',
         createdAt: nowIso(now),
+        // Phase 4G.1 — counter starts at 0; `audit_changes` bumps it
+        // through `WorkerRegistry.bumpAuditAttempts`.
+        auditAttempts: 0,
         worker,
         buffer,
         detach: () => {},
@@ -1225,6 +1232,10 @@ function rehydrateRecord(
     dependsOn: persisted.dependsOn,
     status: persisted.status,
     createdAt: persisted.createdAt,
+    // Phase 4G.1 — restore the persisted counter on rehydrate so an
+    // audit loop survives a Symphony restart (rule #9 iterate-in-place
+    // continuity).
+    auditAttempts: persisted.auditAttempts,
     worker: stubWorker,
     buffer: new CircularBuffer<StreamEvent>(bufferCap),
     detach: () => {},

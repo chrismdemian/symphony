@@ -66,6 +66,7 @@ function makeRecord(reg: WorkerRegistry, id: string): WorkerRecord {
     status: 'running',
     worker: fakeWorker(id),
     buffer: new CircularBuffer<StreamEvent>(10),
+    auditAttempts: 0,
     detach: () => {},
   };
   reg.register(r);

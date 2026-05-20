@@ -147,6 +147,16 @@ function makeFakeStore(initial: PersistedWorkerRecord[] = []): {
     size() {
       return rows.size;
     },
+    bumpAuditAttempts(id) {
+      const existing = rows.get(id);
+      if (!existing) return undefined;
+      const merged: { -readonly [K in keyof PersistedWorkerRecord]: PersistedWorkerRecord[K] } = {
+        ...existing,
+        auditAttempts: existing.auditAttempts + 1,
+      };
+      rows.set(id, merged);
+      return merged.auditAttempts;
+    },
   };
   return { store, state: { rows } };
 }
@@ -168,6 +178,7 @@ function persistedRow(
     dependsOn: [],
     status,
     createdAt: '2026-04-25T00:00:00.000Z',
+    auditAttempts: 0,
     ...overrides,
   };
 }
@@ -237,6 +248,32 @@ describe('createWorkerLifecycle.recoverFromStore', () => {
     expect(store.get('wk-running')?.status).toBe('crashed');
     const second = lc.recoverFromStore();
     expect(second.crashedIds).toEqual([]);
+  });
+
+  // Phase 4G.1 audit m3 — rehydration must carry non-zero auditAttempts
+  // so an audit loop survives a Symphony restart. Maestro reads the
+  // counter via AuditResult.auditAttempts and applies its cap rule;
+  // losing the count on restart would let a 4th audit fire silently.
+  //
+  // `recoverFromStore` only rehydrates rows in 'spawning' / 'running'
+  // status (the survivors that need flipping to 'crashed'); a worker
+  // that was mid-audit-loop when the orchestrator died is by definition
+  // still 'running' / 'spawning' in SQL. The test seeds a running row
+  // with auditAttempts=2 and asserts the rehydrated in-memory record
+  // carries the count after the recovery flip.
+  it('rehydrates non-zero auditAttempts so the audit loop survives restart', () => {
+    const { store } = makeFakeStore([
+      persistedRow('wk-mid-loop', 'running', { auditAttempts: 2 }),
+    ]);
+    const registry = new WorkerRegistry({ store });
+    const lc = createWorkerLifecycle({
+      registry,
+      workerManager: stubWorkerManager([]),
+      worktreeManager: stubWorktreeManager(),
+      resolveProjectPath: () => '/wt-root',
+    });
+    lc.recoverFromStore();
+    expect(registry.get('wk-mid-loop')?.auditAttempts).toBe(2);
   });
 });
 

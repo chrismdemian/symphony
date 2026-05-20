@@ -719,6 +719,10 @@ export async function startOrchestratorServer(
           ...(rec?.testCommand !== undefined ? { test: rec.testCommand } : {}),
           ...(rec?.buildCommand !== undefined ? { build: rec.buildCommand } : {}),
           ...(rec?.lintCommand !== undefined ? { lint: rec.lintCommand } : {}),
+          // Phase 4G.1 — also surface verifyCommand so the reviewer
+          // opener + worker-common-suffix DoD block both render the real
+          // command instead of `(none)`.
+          ...(rec?.verifyCommand !== undefined ? { verify: rec.verifyCommand } : {}),
         };
       },
       // Phase 3H.3 — dispatcher receives the post-decrement total

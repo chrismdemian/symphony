@@ -31,6 +31,7 @@ function makeRecord(overrides: Partial<PersistedWorkerRecord> = {}): PersistedWo
     dependsOn: overrides.dependsOn ?? [],
     status: overrides.status ?? 'spawning',
     createdAt: overrides.createdAt ?? '2026-04-25T00:00:00.000Z',
+    auditAttempts: overrides.auditAttempts ?? 0,
     ...(overrides.model !== undefined ? { model: overrides.model } : {}),
     ...(overrides.sessionId !== undefined ? { sessionId: overrides.sessionId } : {}),
     ...(overrides.completedAt !== undefined ? { completedAt: overrides.completedAt } : {}),

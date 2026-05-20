@@ -2,7 +2,7 @@
 
 > Every worker prompt (regardless of role) ends with this suffix. Symphony writes it into the worker's worktree as the tail of its `CLAUDE.md`. Role-specific openings (implementer / researcher / reviewer / debugger / planner) prepend to this. Template variables resolved at spawn time.
 
-**Template variables**: `{project_name}`, `{worktree_path}`, `{feature_intent}`, `{autonomy_tier}`, `{sibling_workers}`, `{negative_constraints}`, `{definition_of_done}`, `{test_cmd}`, `{build_cmd}`, `{lint_cmd}`, `{preview_cmd}`.
+**Template variables**: `{project_name}`, `{worktree_path}`, `{feature_intent}`, `{autonomy_tier}`, `{sibling_workers}`, `{negative_constraints}`, `{definition_of_done}`, `{test_cmd}`, `{build_cmd}`, `{lint_cmd}`, `{preview_cmd}`, `{verify_cmd}`.
 
 ---
 
@@ -35,6 +35,7 @@ Not "when it works." Not "when it seems correct." Done means:
 - Project tests pass: `{test_cmd}`
 - Project builds: `{build_cmd}`
 - Project lints clean: `{lint_cmd}`
+- End-to-end smoke passes: `{verify_cmd}` — runs the actual product, not just the unit tests (per rule #1)
 - If this is a UI change, `{preview_cmd}` runs without errors
 
 ### Scope Clamp (VERBATIM — do not reinterpret)

@@ -61,6 +61,7 @@ function makeRecord(overrides: Partial<WorkerRecord>): WorkerRecord {
     createdAt: new Date().toISOString(),
     worker: stubWorker(),
     buffer: new CircularBuffer<StreamEvent>(10),
+    auditAttempts: 0,
     detach: () => {},
     ...overrides,
   };

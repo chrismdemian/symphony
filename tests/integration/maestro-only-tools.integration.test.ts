@@ -92,6 +92,7 @@ function makeFakeLifecycle(workerRegistry: WorkerRegistry): WorkerLifecycleHandl
         createdAt: new Date().toISOString(),
         worker: stubWorker(id),
         buffer: new CircularBuffer<StreamEvent>(10),
+        auditAttempts: 0,
         detach: () => {},
       };
       workerRegistry.register(record);

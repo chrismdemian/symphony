@@ -26,6 +26,7 @@ Not "when it works." Not "when it seems correct." Done means:
 - Project tests pass: `{test_cmd}`
 - Project builds: `{build_cmd}`
 - Project lints clean: `{lint_cmd}`
+- End-to-end smoke passes: `{verify_cmd}` — runs the actual product, not just the unit tests (per rule #1)
 - If this is a UI change, `{preview_cmd}` runs without errors
 
 ### Scope Clamp (VERBATIM — do not reinterpret)

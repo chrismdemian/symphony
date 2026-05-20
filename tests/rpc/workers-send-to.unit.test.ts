@@ -67,6 +67,7 @@ function makeRecord(
     createdAt: new Date().toISOString(),
     worker: overrides.worker ?? stubWorker(capture),
     buffer: new CircularBuffer<StreamEvent>(10),
+    auditAttempts: 0,
     detach: () => {},
   };
   return { record, capture };

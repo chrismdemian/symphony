@@ -70,6 +70,15 @@ export interface WorkerRecord {
    * cache_write}_tokens` columns. Phase 3N.1.
    */
   sessionUsage?: TokenUsage;
+  /**
+   * Phase 4G.1 — count of `audit_changes` invocations for this worker's
+   * diff. Bumped server-side inside `runAudit` (PASS or FAIL alike) via
+   * `WorkerStore.bumpAuditAttempts`. Monotonic per worker; not reset on
+   * resume. Default 0 at spawn. Surfaced in `AuditResult.auditAttempts`
+   * + `WorkerRecordSnapshot` so Maestro can read the count and apply
+   * the 3-FAIL-then-escalate cap defined in `audit-loop-constants.ts`.
+   */
+  auditAttempts: number;
   /** Unsubscribe callback for the event-tap consumer. Called on remove/shutdown. */
   detach: () => void;
 }
@@ -94,6 +103,14 @@ export interface WorkerRecordSnapshot {
   readonly costUsd?: number;
   /** Phase 3N.1 — see `WorkerRecord.sessionUsage`. */
   readonly sessionUsage?: TokenUsage;
+  /**
+   * Phase 4G.1 — see `WorkerRecord.auditAttempts`. Optional in the
+   * snapshot shape so TUI/scenario test fixtures that synthesize snapshots
+   * directly don't have to fill the field. The PRODUCTION sources
+   * (`toSnapshot` + `persistedToSnapshot`) ALWAYS set it; consumers that
+   * need the value should default to 0 if absent.
+   */
+  readonly auditAttempts?: number;
   readonly exitCode?: number | null;
   readonly exitSignal?: NodeJS.Signals | null;
 }
@@ -339,6 +356,38 @@ export class WorkerRegistry {
     record.sessionUsage = usage;
   }
 
+  /**
+   * Phase 4G.1 — atomic +1 on the audit-attempts counter, write-through
+   * to the store. Returns the new value, or `undefined` if the worker
+   * id is unknown (no-op, mirrors other registry methods). Called by
+   * `audit_changes`/`runAudit` AFTER the audit completes, regardless of
+   * PASS/FAIL. The store's `bumpAuditAttempts` uses a single
+   * `UPDATE ... RETURNING` so the +1 stays consistent under any
+   * concurrent same-row writer.
+   *
+   * When no store is configured (in-memory mode), the in-memory record's
+   * field is bumped directly and returned. The persistent-store path
+   * defers to SQL for the read-after-write so the registry doesn't
+   * cache a stale value if the store was bumped externally (defensive —
+   * not a likely path today).
+   */
+  bumpAuditAttempts(id: string): number | undefined {
+    const record = this.records.get(id);
+    if (!record) return undefined;
+    if (this.store) {
+      const updated = this.store.bumpAuditAttempts(id);
+      if (updated === undefined) {
+        // Row vanished between registry hit and SQL update — caller
+        // sees `undefined` (unknown id) the same way `update()` does.
+        return undefined;
+      }
+      record.auditAttempts = updated;
+      return updated;
+    }
+    record.auditAttempts += 1;
+    return record.auditAttempts;
+  }
+
   updateSessionId(id: string, sessionId: string): void {
     const record = this.records.get(id);
     if (!record) return;
@@ -421,6 +470,7 @@ export function toPersisted(record: WorkerRecord): PersistedWorkerRecord {
     dependsOn: record.dependsOn,
     status: record.status,
     createdAt: record.createdAt,
+    auditAttempts: record.auditAttempts,
     ...(record.model !== undefined ? { model: record.model } : {}),
     ...(record.sessionId !== undefined ? { sessionId: record.sessionId } : {}),
     ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
@@ -458,6 +508,7 @@ export function persistedToSnapshot(
     dependsOn: record.dependsOn,
     status: record.status,
     createdAt: record.createdAt,
+    auditAttempts: record.auditAttempts,
     ...(record.model !== undefined ? { model: record.model } : {}),
     ...(record.sessionId !== undefined ? { sessionId: record.sessionId } : {}),
     ...(record.completedAt !== undefined ? { completedAt: record.completedAt } : {}),
@@ -555,6 +606,7 @@ export function toSnapshot(r: WorkerRecord): WorkerRecordSnapshot {
     dependsOn: r.dependsOn,
     status: r.status,
     createdAt: r.createdAt,
+    auditAttempts: r.auditAttempts,
   } as const;
   return {
     ...base,
