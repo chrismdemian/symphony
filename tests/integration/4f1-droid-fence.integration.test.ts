@@ -164,7 +164,7 @@ describe('Phase 4F.1 — custom droid spawn installs the PreToolUse fence', () =
     );
     expect(res.isError).toBeFalsy();
     expect((res.content[0] as { text: string }).text).toContain(
-      'droid: locked-droid',
+      'droid:locked-droid',
     );
 
     const id = registry.list()[0]!.id;
@@ -227,7 +227,7 @@ describe('Phase 4F.1 — custom droid spawn installs the PreToolUse fence', () =
     );
     expect(res.isError).toBeFalsy();
     expect((res.content[0] as { text: string }).text).toContain(
-      'droid: implementer',
+      'droid:implementer',
     );
     const id = registry.list()[0]!.id;
     const wt = path.join(repoPath, '.symphony', 'worktrees', id);
@@ -278,7 +278,7 @@ describe('Phase 4F.1 — custom droid spawn installs the PreToolUse fence', () =
     );
     expect(res.isError).toBeFalsy();
     const text = (res.content[0] as { text: string }).text;
-    expect(text).toContain('droid: locked-droid');
+    expect(text).toContain('droid:locked-droid');
     expect(text).toMatch(/Note: 1 droid file\(s\) skipped/);
     expect(text).toContain('broken.md');
   });

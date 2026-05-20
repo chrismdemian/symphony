@@ -4,6 +4,7 @@ import {
   assertSafeDroidName,
   DROID_TOOL_ALIASES,
   DroidNameError,
+  formatDroidLabel,
   resolveDroidToolPolicy,
   type DroidDefinition,
 } from '../../src/droids/types.js';
@@ -45,6 +46,16 @@ describe('assertSafeDroidName', () => {
     ['too long', 'a'.repeat(65)],
   ])('rejects %s', (_label, value) => {
     expect(() => assertSafeDroidName(value)).toThrow(DroidNameError);
+  });
+});
+
+// 4F.2 audit M2 — one canonical droid-label format for human-readable
+// surfaces (spawn_worker response, list_workers row, etc.) so future
+// scrapers / fixtures can rely on it.
+describe('formatDroidLabel', () => {
+  it('canonical format is `droid:<name>` (no space after the colon)', () => {
+    expect(formatDroidLabel('design-researcher')).toBe('droid:design-researcher');
+    expect(formatDroidLabel('dhh-reviewer')).toBe('droid:dhh-reviewer');
   });
 });
 

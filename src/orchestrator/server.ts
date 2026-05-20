@@ -23,6 +23,8 @@ import { WaveRegistry, type WaveStore } from './research-wave-registry.js';
 import { AgentSafetyGuard } from './safety.js';
 import type { SafetyGuardOptions } from './safety.js';
 import { thinkTool } from './tools/think.js';
+import { loadBundledDroids } from '../droids/bundled.js';
+import { symphonyDataDir } from '../utils/config.js';
 import { createProposePlanStore, makeProposePlanTool } from './tools/propose-plan.js';
 import type { ProposePlanStore } from './tools/propose-plan.js';
 import { makeSpawnWorkerTool } from './tools/spawn-worker.js';
@@ -767,6 +769,23 @@ export async function startOrchestratorServer(
   const spawnResolve = (project?: string): string => resolveProjectPath(project);
   const listResolve = (project?: string): string | undefined =>
     project !== undefined ? resolveProjectPath(project) : undefined;
+  // Phase 4F.2 — load bundled droids ONCE at server boot. The
+  // `design-researcher` droid (and any future bundled droid) reads its
+  // body from `dist/droids/bundled/*.md` (tsup-copied subtree) with
+  // `{design_catalog_dir}` substituted to the absolute vendor-store
+  // path. A packaging-bug (missing bundle dir) THROWS — that's a
+  // production defect, not a runtime fallback. A malformed individual
+  // file is a warning. The map is read-only for the server's lifetime.
+  const bundledDroidLoad = await loadBundledDroids({
+    systemVars: {
+      design_catalog_dir: path.join(symphonyDataDir(), 'design-catalog'),
+    },
+  });
+  if (bundledDroidLoad.warnings.length > 0) {
+    for (const w of bundledDroidLoad.warnings) {
+      console.error(`[symphony] bundled droid warning at ${w.source}: ${w.message}`);
+    }
+  }
   registry.register(
     makeSpawnWorkerTool({
       registry: workerRegistry,
@@ -777,6 +796,8 @@ export async function startOrchestratorServer(
       // spawn_worker validates task readiness, atomically flips
       // pending → in_progress, and stamps task.workerId post-spawn.
       taskStore,
+      // Phase 4F.2 — see precedence rule in `SpawnWorkerDeps`.
+      bundledDroids: bundledDroidLoad.droids,
     }),
   );
   registry.register(
