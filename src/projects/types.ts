@@ -27,6 +27,19 @@ export interface ProjectRecord {
   readonly verifyCommand?: string;
   /** Default 60_000 ms at the consumer — kill subprocess on timeout. */
   readonly verifyTimeoutMs?: number;
+  /**
+   * Phase 4G.2 — preview server for UI verification. `verify_ui` boots
+   * this command in the worker's worktree, waits for ready, captures
+   * screenshots, then tears it down. Absence ⇒ no UI verification leg.
+   */
+  readonly previewCommand?: string;
+  /**
+   * Phase 4G.2 — boot-wait cap for `previewCommand`. Default 30_000 ms
+   * at the consumer. Distinct from `verifyTimeoutMs` (verify is a
+   * run-to-completion smoke; preview is a long-running server we wait
+   * for then keep alive while screenshots run).
+   */
+  readonly previewTimeoutMs?: number;
   /** Hint for prompt composition; not enforced in 2A.4b. */
   readonly finalizeDefault?: 'push' | 'merge';
 }
@@ -45,6 +58,8 @@ export interface ProjectSnapshot {
   readonly buildCommand?: string;
   readonly verifyCommand?: string;
   readonly verifyTimeoutMs?: number;
+  readonly previewCommand?: string;
+  readonly previewTimeoutMs?: number;
   readonly finalizeDefault?: 'push' | 'merge';
 }
 
@@ -56,6 +71,8 @@ export type ProjectConfigInput = Pick<
   | 'buildCommand'
   | 'verifyCommand'
   | 'verifyTimeoutMs'
+  | 'previewCommand'
+  | 'previewTimeoutMs'
   | 'finalizeDefault'
   | 'defaultModel'
   | 'gitRemote'

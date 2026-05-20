@@ -71,6 +71,9 @@ export const MAESTRO_FRAGMENT_FILES = [
   // Phase 4G.1 — new audit-loop fragment (rule #9 iterate-in-place).
   // Sits between finalize and escalation per the v1 ordering.
   'maestro-audit-loop.md',
+  // Phase 4G.2 — UI verification fragment (verify_ui + skeptical UI
+  // reviewer). Sits between audit-loop and escalation.
+  'maestro-ui-verification.md',
   'maestro-escalation.md',
   'maestro-interrupts.md',
   'maestro-context-hygiene.md',

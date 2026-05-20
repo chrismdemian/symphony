@@ -21,6 +21,8 @@ interface ProjectRow {
   build_command: string | null;
   verify_command: string | null;
   verify_timeout_ms: number | null;
+  preview_command: string | null;
+  preview_timeout_ms: number | null;
   finalize_default: string | null;
   created_at: string;
 }
@@ -58,11 +60,13 @@ export class SqliteProjectStore implements ProjectStore {
         `INSERT INTO projects
            (id, name, path, git_remote, git_branch, base_ref, default_model,
             lint_command, test_command, build_command, verify_command,
-            verify_timeout_ms, finalize_default, created_at)
+            verify_timeout_ms, preview_command, preview_timeout_ms,
+            finalize_default, created_at)
          VALUES
            (@id, @name, @path, @git_remote, @git_branch, @base_ref, @default_model,
             @lint_command, @test_command, @build_command, @verify_command,
-            @verify_timeout_ms, @finalize_default, @created_at)`,
+            @verify_timeout_ms, @preview_command, @preview_timeout_ms,
+            @finalize_default, @created_at)`,
       ),
       getById: db.prepare(`SELECT * FROM projects WHERE id = ?`),
       getByName: db.prepare(`SELECT * FROM projects WHERE name = ?`),
@@ -126,6 +130,8 @@ export class SqliteProjectStore implements ProjectStore {
       build_command: record.buildCommand ?? null,
       verify_command: record.verifyCommand ?? null,
       verify_timeout_ms: record.verifyTimeoutMs ?? null,
+      preview_command: record.previewCommand ?? null,
+      preview_timeout_ms: record.previewTimeoutMs ?? null,
       finalize_default: record.finalizeDefault ?? null,
       created_at: createdAt,
     });
@@ -170,6 +176,8 @@ function rowToRecord(row: ProjectRow): ProjectRecord {
     ...(row.build_command !== null ? { buildCommand: row.build_command } : {}),
     ...(row.verify_command !== null ? { verifyCommand: row.verify_command } : {}),
     ...(row.verify_timeout_ms !== null ? { verifyTimeoutMs: row.verify_timeout_ms } : {}),
+    ...(row.preview_command !== null ? { previewCommand: row.preview_command } : {}),
+    ...(row.preview_timeout_ms !== null ? { previewTimeoutMs: row.preview_timeout_ms } : {}),
     ...(row.finalize_default !== null
       ? { finalizeDefault: row.finalize_default as 'push' | 'merge' }
       : {}),

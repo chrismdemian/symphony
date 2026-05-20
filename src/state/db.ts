@@ -92,7 +92,15 @@ export function validateSchemaContract(db: BetterSqlite3Database, dbPath: string
 
   // Tables the 2A stores persist into.
   if (requireTable('projects')) {
-    for (const col of ['id', 'name', 'path', 'lint_command', 'verify_command'])
+    for (const col of [
+      'id',
+      'name',
+      'path',
+      'lint_command',
+      'verify_command',
+      'preview_command',
+      'preview_timeout_ms',
+    ])
       requireColumn('projects', col);
   }
   if (requireTable('tasks')) {
