@@ -203,7 +203,13 @@ export const defaultShellRunner: ShellCommandRunner = async (input) => {
   };
 };
 
-function killTree(child: ChildProcess): void {
+/**
+ * Phase 4G.2 — exported so `verify_ui` can use the same Win32 tree-kill
+ * (`taskkill /T /F`) + POSIX process-group kill that finalize uses for
+ * `verifyCommand` teardown. Long-running preview servers (vite, next,
+ * etc.) spawn descendants; signaling only the direct child leaks them.
+ */
+export function killTree(child: ChildProcess): void {
   const pid = child.pid;
   if (pid === undefined) return;
   if (process.platform === 'win32') {

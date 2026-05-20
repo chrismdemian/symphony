@@ -152,14 +152,14 @@ export interface WorkerLifecycleOptions {
    * worker prompt's `{test_cmd}` / `{build_cmd}` / `{lint_cmd}` slots.
    * The server wires this to `projectStore.get(...)` (mirrors the
    * `getDefaultModel?` / `getDefaultAutonomyTier?` optional-dep
-   * injection pattern). Omitted by legacy/test rigs → all three render
-   * as the `(none)` sentinel. `{preview_cmd}` has no `ProjectRecord`
-   * field until Phase 5 and is intentionally NOT sourced here.
+   * injection pattern). Omitted by legacy/test rigs → all fields render
+   * as the `(none)` sentinel. `{preview_cmd}` sourced from
+   * `ProjectRecord.previewCommand` (Phase 4G.2).
    */
   readonly resolveProjectCommands?: (input: {
     readonly projectPath: string;
     readonly projectId: string | null;
-  }) => { test?: string; build?: string; lint?: string; verify?: string };
+  }) => { test?: string; build?: string; lint?: string; verify?: string; preview?: string };
   /**
    * Phase 3H.3 — fired whenever a worker transitions to a terminal
    * status (`completed` / `failed` / `killed` / `timeout` / `crashed`).
@@ -688,8 +688,10 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         // `{verify_cmd}` for the reviewer opener + worker-common-suffix
         // DoD block. Renders `(none)` when the project hasn't set one.
         verifyCmd: projectCmds?.verify ?? '',
-        // No `previewCommand` on ProjectRecord until Phase 5.
-        previewCmd: '',
+        // Phase 4G.2 — `previewCommand` joins ProjectRecord; surface it
+        // here so the worker-common-suffix DoD "preview runs without
+        // errors" line renders the actual command instead of `(none)`.
+        previewCmd: projectCmds?.preview ?? '',
       };
       const workerManual =
         input.droid !== undefined

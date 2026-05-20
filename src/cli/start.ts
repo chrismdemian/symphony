@@ -538,7 +538,7 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
     currentMode: 'PLAN',
     autonomyDefault: '1',
     planModeRequired: false,
-    previewCommand: '',
+    previewCommand: defaultProject?.previewCommand ?? '',
     testCommand: defaultProject?.testCommand ?? '',
     buildCommand: defaultProject?.buildCommand ?? '',
     lintCommand: defaultProject?.lintCommand ?? '',

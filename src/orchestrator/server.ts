@@ -45,6 +45,7 @@ import { makeReviewDiffTool } from './tools/review-diff.js';
 import { makeResearchWaveTool } from './tools/research-wave.js';
 import { makeGlobalStatusTool } from './tools/global-status.js';
 import { makeAuditChangesTool } from './tools/audit-changes.js';
+import { makeVerifyUiTool } from './tools/verify-ui.js';
 import { makeFinalizeTool } from './tools/finalize.js';
 import { defaultOneShotRunner, type OneShotRunner } from './one-shot.js';
 import type { AutonomyTier, CapabilityNotice, DispatchContext, ToolMode } from './types.js';
@@ -723,6 +724,10 @@ export async function startOrchestratorServer(
           // opener + worker-common-suffix DoD block both render the real
           // command instead of `(none)`.
           ...(rec?.verifyCommand !== undefined ? { verify: rec.verifyCommand } : {}),
+          // Phase 4G.2 — previewCommand for the worker DoD slot. The
+          // `verify_ui` MCP tool reads it from ProjectRecord directly
+          // (worker prompt vars are display-only).
+          ...(rec?.previewCommand !== undefined ? { preview: rec.previewCommand } : {}),
         };
       },
       // Phase 3H.3 — dispatcher receives the post-decrement total
@@ -859,6 +864,17 @@ export async function startOrchestratorServer(
       registry: workerRegistry,
       projectStore,
       oneShotRunner,
+    }),
+  );
+  // Phase 4G.2 — UI verification leg. Boots `previewCommand`, captures
+  // desktop + mobile screenshots via programmatic Playwright, writes
+  // them to `<worktree>/.symphony/screenshots/<iso>/`. Maestro spawns a
+  // fresh reviewer worker against the screenshots; reviewer reads them
+  // via Claude Code's `Read` tool.
+  registry.register(
+    makeVerifyUiTool({
+      registry: workerRegistry,
+      projectStore,
     }),
   );
   registry.register(

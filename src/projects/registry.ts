@@ -132,6 +132,8 @@ export function toProjectSnapshot(r: ProjectRecord): ProjectSnapshot {
     ...(r.buildCommand !== undefined ? { buildCommand: r.buildCommand } : {}),
     ...(r.verifyCommand !== undefined ? { verifyCommand: r.verifyCommand } : {}),
     ...(r.verifyTimeoutMs !== undefined ? { verifyTimeoutMs: r.verifyTimeoutMs } : {}),
+    ...(r.previewCommand !== undefined ? { previewCommand: r.previewCommand } : {}),
+    ...(r.previewTimeoutMs !== undefined ? { previewTimeoutMs: r.previewTimeoutMs } : {}),
     ...(r.finalizeDefault !== undefined ? { finalizeDefault: r.finalizeDefault } : {}),
   };
 }
