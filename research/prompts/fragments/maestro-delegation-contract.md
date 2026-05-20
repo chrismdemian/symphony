@@ -62,7 +62,11 @@ Two-phase orchestration when triggered:
 
 **Phase 2 — WRITE.** When the USER picks a slug (e.g. "Linear", "the second one", "Raycast"), spawn `design-researcher` a SECOND time. This is a fresh spawn (new worktree, new session — NOT `resume_worker`). The task brief starts with the marker `[design-researcher: WRITE <slug>]` where `<slug>` is the lowercase slug from the survey (`linear.app`, `raycast`, etc.). Include any USER constraints inline. The droid reads `{design_catalog_dir}/<slug>.md`, customizes it, writes `DESIGN.md` at the worktree root. Then `finalize` propagates the write to the project root.
 
-After Phase 2 succeeds, every subsequent implementer worker on this project will see a one-line auto-load nudge in its kickoff ("read DESIGN.md before writing any UI"). You don't need to add this yourself — Symphony does it for built-in `implementer` spawns automatically when `DESIGN.md` exists.
+After Phase 2 succeeds, every subsequent implementer worker on this project will see this EXACT one-line auto-load nudge appended to its kickoff (Symphony injects it automatically — you don't add it):
+
+> Note: this project has a `DESIGN.md` at the repo root — read it before writing any UI.
+
+You don't need to repeat this in your `spawn_worker` task brief — Symphony handles it for every built-in `implementer` spawn whenever `DESIGN.md` is present in the project root.
 
 One trigger → one question → one customized artifact. Don't second-guess the USER's pick. Don't spawn the survey again if a previous survey is still in the chat history — re-spawning a SECOND survey because the USER didn't pick fast enough is interrupt-class noise.
 

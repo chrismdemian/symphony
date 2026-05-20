@@ -11,7 +11,10 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createWorkerLifecycle } from '../../src/orchestrator/worker-lifecycle.js';
+import {
+  createWorkerLifecycle,
+  DESIGN_MD_AUTO_LOAD_NOTE,
+} from '../../src/orchestrator/worker-lifecycle.js';
 import { WorkerRegistry } from '../../src/orchestrator/worker-registry.js';
 import { makeSpawnWorkerTool } from '../../src/orchestrator/tools/spawn-worker.js';
 import { WorktreeManager } from '../../src/worktree/manager.js';
@@ -125,8 +128,11 @@ const args = (over: Record<string, unknown>) => ({
   ...over,
 });
 
-const AUTO_LOAD_NEEDLE =
-  'this project has a `DESIGN.md` at the repo root — read it before writing any UI';
+// 4F.3 audit M1 — assert the SAME constant the production code uses,
+// so prompt-vs-code drift can only happen by editing the exported
+// `DESIGN_MD_AUTO_LOAD_NOTE`. The "fragment quotes it verbatim" test
+// below proves the Maestro prompt and the constant agree.
+const AUTO_LOAD_NEEDLE = DESIGN_MD_AUTO_LOAD_NOTE;
 
 function workerKickoffText(repo: string, registry: WorkerRegistry): string {
   // The kickoff lands in `<worktree>/CLAUDE.md` when injection
@@ -237,5 +243,22 @@ describe('Phase 4F.3 — Maestro prompt rule-#13 protocol present', () => {
     expect(fragment).toContain('hasUiStack');
     expect(fragment).toContain('hasDesignMd');
     expect(fragment).toContain('{design_catalog_dir}');
+  });
+
+  // 4F.3 audit M1 — the prompt MUST quote the auto-load note verbatim
+  // so a future scraper reading the protocol gets the exact wire
+  // string Symphony injects. Constant + prompt agreement is the lock.
+  it('Maestro prompt quotes DESIGN_MD_AUTO_LOAD_NOTE verbatim (M1 drift lock)', () => {
+    const fragment = readFileSync(
+      path.join(
+        process.cwd(),
+        'research',
+        'prompts',
+        'fragments',
+        'maestro-delegation-contract.md',
+      ),
+      'utf8',
+    );
+    expect(fragment).toContain(DESIGN_MD_AUTO_LOAD_NOTE);
   });
 });
