@@ -139,6 +139,26 @@ skills
   });
 
 program
+  .command('update-catalogs')
+  .description(
+    'Vendor the awesome-design-md design catalog into ~/.symphony/design-catalog/ for the bundled design-researcher droid (Phase 4F.2).',
+  )
+  .option('--force', 'Refetch every slug (default: skip slugs already present).')
+  .option('--slug <name>', 'Only update one slug (matches `getdesign list`).')
+  .option('--vendor-dir <path>', 'Override the vendor directory.')
+  .action(
+    async (opts: { force?: boolean; slug?: string; vendorDir?: string }) => {
+      const { runUpdateCatalogs } = await import('./cli/update-catalogs.js');
+      const result = await runUpdateCatalogs({
+        ...(opts.force === true ? { force: true } : {}),
+        ...(opts.slug !== undefined ? { only: opts.slug } : {}),
+        ...(opts.vendorDir !== undefined ? { vendorDir: opts.vendorDir } : {}),
+      });
+      process.exit(result.exitCode);
+    },
+  );
+
+program
   .command('mcp-server')
   .description('Run the Symphony orchestrator MCP server over stdio. Spawned as a child of claude -p.')
   .option('--in-memory', 'Skip the SQLite store; use in-memory registries only (Phase 2A behavior).')

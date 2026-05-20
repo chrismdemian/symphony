@@ -54,5 +54,14 @@ export default defineConfig({
       path.resolve('dist/prompts/fragments'),
       (f) => f.endsWith('.md'),
     );
+    // Phase 4F.2 — bundled droid `.md` files (`design-researcher` etc.).
+    // Loaded at server boot via `src/droids/bundled.ts:loadBundledDroids`
+    // (which walks `import.meta.url` candidates and lands here in the
+    // bundled layout).
+    copyTree(
+      path.resolve('src/droids/bundled'),
+      path.resolve('dist/droids/bundled'),
+      (f) => f.endsWith('.md'),
+    );
   },
 });

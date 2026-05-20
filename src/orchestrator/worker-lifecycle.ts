@@ -755,6 +755,12 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         taskId: input.taskId ?? null,
         worktreePath: worktree.path,
         role: input.role,
+        // Phase 4F.2 (audit M5) — surface the droid identity on the
+        // record + snapshot so Maestro/UI can distinguish "this
+        // implementer-baseline worker is actually <droid>". In-memory
+        // only; `toPersisted` drops it (recovered workers lose the
+        // label but the worktree CLAUDE.md preserves behavior).
+        ...(input.droid !== undefined ? { droidName: input.droid.name } : {}),
         featureIntent,
         taskDescription: input.taskDescription,
         // Phase 3S — resolved above (hoisted for the Phase 4A prompt var).

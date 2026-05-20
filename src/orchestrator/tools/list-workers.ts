@@ -45,7 +45,15 @@ export function makeListWorkersTool(deps: ListWorkersDeps): ToolRegistration<typ
       const summary = snaps.length === 0
         ? 'No workers registered.'
         : snaps
-            .map((s) => `- ${s.id} [${s.status}] ${s.role}/${s.featureIntent} — ${s.worktreePath}`)
+            // Phase 4F.2 — when a custom/bundled droid is running,
+            // surface its name so Maestro can distinguish it from a
+            // generic implementer baseline (audit M5 deferral).
+            .map(
+              (s) =>
+                `- ${s.id} [${s.status}] ${
+                  s.droidName !== undefined ? `droid:${s.droidName}` : s.role
+                }/${s.featureIntent} — ${s.worktreePath}`,
+            )
             .join('\n');
       return {
         content: [{ type: 'text', text: summary }],

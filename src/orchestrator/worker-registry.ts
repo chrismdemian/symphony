@@ -25,6 +25,19 @@ export interface WorkerRecord {
   readonly taskId: string | null;
   readonly worktreePath: string;
   readonly role: WorkerRole;
+  /**
+   * Phase 4F.2 (audit M5 deferral) — name of the custom or bundled
+   * droid this worker is running under. Undefined for built-in role
+   * spawns; set to `input.droid.name` for custom-droid spawns by
+   * `doSpawn`. Surfaces in `WorkerRecordSnapshot`, `list_workers`, and
+   * the `spawn_worker` response so Maestro/the UI can distinguish
+   * "this implementer-baseline worker is actually a design-researcher".
+   * IN-MEMORY ONLY in 4F.2 — `toPersisted` drops it; recovered workers
+   * lose the label (their worktree CLAUDE.md still carries the droid
+   * body so behavior is preserved). SQL persistence is a tracked
+   * follow-up (would need a migration + `PersistedWorkerRecord` field).
+   */
+  readonly droidName?: string;
   readonly featureIntent: string;
   readonly taskDescription: string;
   readonly model?: string;
@@ -66,6 +79,8 @@ export interface WorkerRecordSnapshot {
   readonly projectPath: string;
   readonly worktreePath: string;
   readonly role: WorkerRole;
+  /** Phase 4F.2 (audit M5) — mirrors `WorkerRecord.droidName`. */
+  readonly droidName?: string;
   readonly featureIntent: string;
   readonly taskDescription: string;
   readonly model?: string;
@@ -543,6 +558,7 @@ export function toSnapshot(r: WorkerRecord): WorkerRecordSnapshot {
   } as const;
   return {
     ...base,
+    ...(r.droidName !== undefined ? { droidName: r.droidName } : {}),
     ...(r.model !== undefined ? { model: r.model } : {}),
     ...(r.sessionId !== undefined ? { sessionId: r.sessionId } : {}),
     ...(r.completedAt !== undefined ? { completedAt: r.completedAt } : {}),

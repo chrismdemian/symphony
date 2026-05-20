@@ -66,6 +66,15 @@ export interface SpawnWorkerDeps {
    * keep working).
    */
   readonly taskStore?: TaskStore;
+  /**
+   * Phase 4F.2 — bundled droids loaded once at server boot
+   * (`loadBundledDroids` in `src/droids/bundled.ts`). Resolution
+   * precedence: project droid (under `<project>/.symphony/droids/`)
+   * SHADOWS bundled droid SHADOWS built-in role (PLAN.md §4F override
+   * rule). Omitted in pre-4F.2 test seams; resolution falls back to
+   * project + built-in.
+   */
+  readonly bundledDroids?: ReadonlyMap<string, DroidDefinition>;
 }
 
 export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typeof shape> {
@@ -91,7 +100,9 @@ export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typ
       // in_progress.
       const { droids, warnings: droidWarnings } =
         await loadProjectDroids(projectPath);
-      const customDroid: DroidDefinition | undefined = droids.get(role);
+      // 4F.2 — precedence: project droid > bundled droid > built-in role.
+      const customDroid: DroidDefinition | undefined =
+        droids.get(role) ?? deps.bundledDroids?.get(role);
       let resolvedRole: WorkerRole;
       if (customDroid !== undefined) {
         // `WorkerRole` is load-bearing across pipeline/SQL/snapshot;
@@ -124,7 +135,10 @@ export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typ
         }
         resolvedRole = role as WorkerRole;
       } else {
-        const droidNames = [...droids.keys()].sort();
+        const projectNames = [...droids.keys()].sort();
+        const bundledNames = [
+          ...(deps.bundledDroids?.keys() ?? []),
+        ].sort();
         const warnText =
           droidWarnings.length > 0
             ? ' Skipped malformed droid file(s): ' +
@@ -141,7 +155,9 @@ export function makeSpawnWorkerTool(deps: SpawnWorkerDeps): ToolRegistration<typ
                 `Unknown role '${role}'. Built-in roles: ${WORKER_ROLES.join(
                   ', ',
                 )}. Project droids: ${
-                  droidNames.length > 0 ? droidNames.join(', ') : '(none)'
+                  projectNames.length > 0 ? projectNames.join(', ') : '(none)'
+                }. Bundled droids: ${
+                  bundledNames.length > 0 ? bundledNames.join(', ') : '(none)'
                 }.${warnText}`,
             },
           ],
