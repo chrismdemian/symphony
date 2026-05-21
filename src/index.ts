@@ -27,23 +27,40 @@ program
 
 program
   .command('add <path>')
-  .description('Register a project with Symphony.')
-  .action((projectPath: string) => {
-    console.log(`[symphony] add ${projectPath} — not yet implemented`);
+  .description(
+    'Register a project with Symphony. Name auto-detects from --name, .symphony.json, package.json, then directory basename.',
+  )
+  .option('--name <name>', 'Override the auto-detected project name (slug-normalized).')
+  .action(async (projectPath: string, opts: { name?: string }) => {
+    const { runAdd } = await import('./cli/add.js');
+    const result = await runAdd({
+      projectPath,
+      ...(opts.name !== undefined ? { nameOverride: opts.name } : {}),
+    });
+    process.exit(result.ok ? 0 : 1);
   });
 
 program
   .command('list')
   .description('List registered projects.')
-  .action(() => {
-    console.log('[symphony] list — not yet implemented');
+  .option('--json', 'Print as JSON instead of a table (for scripting).')
+  .action(async (opts: { json?: boolean }) => {
+    const { runList } = await import('./cli/list.js');
+    const result = await runList({ format: opts.json === true ? 'json' : 'table' });
+    process.exit(result.ok ? 0 : 1);
   });
 
 program
   .command('remove <name>')
-  .description('Unregister a project by name.')
-  .action((name: string) => {
-    console.log(`[symphony] remove ${name} — not yet implemented`);
+  .description('Unregister a project by name (or id).')
+  .option('--force', 'Remove even when active workers or pending tasks exist.')
+  .action(async (name: string, opts: { force?: boolean }) => {
+    const { runRemove } = await import('./cli/remove.js');
+    const result = await runRemove({
+      nameOrId: name,
+      ...(opts.force === true ? { force: true } : {}),
+    });
+    process.exit(result.ok ? 0 : 1);
   });
 
 program
