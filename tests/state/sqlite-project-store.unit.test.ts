@@ -144,4 +144,100 @@ describe('SqliteProjectStore', () => {
     store.register({ id: 'p2', name: 'b', path: '/tmp/b', createdAt: '' });
     expect(store.size()).toBe(2);
   });
+
+  // Phase 5A — migration 0009 fields
+  describe('Phase 5A — multi-project config fields', () => {
+    it('persists all 9 new fields and round-trips them through get()', () => {
+      store.register({
+        id: 'p5a',
+        name: 'phase5a',
+        path: process.cwd(),
+        createdAt: '',
+        worktreeDir: '.symphony/worktrees-custom',
+        mcpConfig: '.mcp.custom.json',
+        maxConcurrentWorkers: 5,
+        qualityPipeline: 'simplified',
+        planModeRequired: true,
+        defaultAutonomyTier: 2,
+        maestroWarmth: 0.7,
+        droidsDir: '.symphony/droids-custom',
+        designInspiration: 'linear',
+      });
+      const rec = store.get('phase5a')!;
+      expect(rec.worktreeDir).toBe('.symphony/worktrees-custom');
+      expect(rec.mcpConfig).toBe('.mcp.custom.json');
+      expect(rec.maxConcurrentWorkers).toBe(5);
+      expect(rec.qualityPipeline).toBe('simplified');
+      expect(rec.planModeRequired).toBe(true);
+      expect(rec.defaultAutonomyTier).toBe(2);
+      expect(rec.maestroWarmth).toBeCloseTo(0.7);
+      expect(rec.droidsDir).toBe('.symphony/droids-custom');
+      expect(rec.designInspiration).toBe('linear');
+    });
+
+    it('returns the snapshot with all 9 fields populated', () => {
+      store.register({
+        id: 'p5b',
+        name: 'snapshot-test',
+        path: '/tmp/snap',
+        createdAt: '',
+        planModeRequired: false,
+        defaultAutonomyTier: 3,
+        maestroWarmth: 0,
+      });
+      const snap = store.snapshot('snapshot-test')!;
+      expect(snap.planModeRequired).toBe(false);
+      expect(snap.defaultAutonomyTier).toBe(3);
+      expect(snap.maestroWarmth).toBe(0);
+    });
+
+    it('omits undefined fields from the returned record (no `key: undefined`)', () => {
+      store.register({
+        id: 'p5c',
+        name: 'partial',
+        path: '/tmp/partial',
+        createdAt: '',
+        maxConcurrentWorkers: 3,
+        // intentionally omit every other Phase 5A field
+      });
+      const rec = store.get('partial')!;
+      expect(rec.maxConcurrentWorkers).toBe(3);
+      expect('worktreeDir' in rec).toBe(false);
+      expect('mcpConfig' in rec).toBe(false);
+      expect('qualityPipeline' in rec).toBe(false);
+      expect('planModeRequired' in rec).toBe(false);
+      expect('defaultAutonomyTier' in rec).toBe(false);
+      expect('maestroWarmth' in rec).toBe(false);
+      expect('droidsDir' in rec).toBe(false);
+      expect('designInspiration' in rec).toBe(false);
+    });
+
+    it('round-trips `planModeRequired` boolean ↔ INTEGER 0/1', () => {
+      store.register({
+        id: 'p5d',
+        name: 'planmode-true',
+        path: '/tmp/pmt',
+        createdAt: '',
+        planModeRequired: true,
+      });
+      store.register({
+        id: 'p5e',
+        name: 'planmode-false',
+        path: '/tmp/pmf',
+        createdAt: '',
+        planModeRequired: false,
+      });
+      // Raw SQL probe to confirm 0/1 storage.
+      const rowTrue = svc.db
+        .prepare("SELECT plan_mode_required FROM projects WHERE name = 'planmode-true'")
+        .get() as { plan_mode_required: number };
+      const rowFalse = svc.db
+        .prepare("SELECT plan_mode_required FROM projects WHERE name = 'planmode-false'")
+        .get() as { plan_mode_required: number };
+      expect(rowTrue.plan_mode_required).toBe(1);
+      expect(rowFalse.plan_mode_required).toBe(0);
+      expect(store.get('planmode-true')!.planModeRequired).toBe(true);
+      expect(store.get('planmode-false')!.planModeRequired).toBe(false);
+    });
+  });
 });

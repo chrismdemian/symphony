@@ -25,6 +25,16 @@ interface ProjectRow {
   preview_timeout_ms: number | null;
   finalize_default: string | null;
   created_at: string;
+  // Phase 5A — migration 0009
+  worktree_dir: string | null;
+  mcp_config: string | null;
+  max_concurrent_workers: number | null;
+  quality_pipeline: string | null;
+  plan_mode_required: number | null;
+  default_autonomy_tier: number | null;
+  maestro_warmth: number | null;
+  droids_dir: string | null;
+  design_inspiration: string | null;
 }
 
 export interface SqliteProjectStoreOptions {
@@ -61,12 +71,18 @@ export class SqliteProjectStore implements ProjectStore {
            (id, name, path, git_remote, git_branch, base_ref, default_model,
             lint_command, test_command, build_command, verify_command,
             verify_timeout_ms, preview_command, preview_timeout_ms,
-            finalize_default, created_at)
+            finalize_default, created_at,
+            worktree_dir, mcp_config, max_concurrent_workers, quality_pipeline,
+            plan_mode_required, default_autonomy_tier, maestro_warmth,
+            droids_dir, design_inspiration)
          VALUES
            (@id, @name, @path, @git_remote, @git_branch, @base_ref, @default_model,
             @lint_command, @test_command, @build_command, @verify_command,
             @verify_timeout_ms, @preview_command, @preview_timeout_ms,
-            @finalize_default, @created_at)`,
+            @finalize_default, @created_at,
+            @worktree_dir, @mcp_config, @max_concurrent_workers, @quality_pipeline,
+            @plan_mode_required, @default_autonomy_tier, @maestro_warmth,
+            @droids_dir, @design_inspiration)`,
       ),
       getById: db.prepare(`SELECT * FROM projects WHERE id = ?`),
       getByName: db.prepare(`SELECT * FROM projects WHERE name = ?`),
@@ -134,6 +150,17 @@ export class SqliteProjectStore implements ProjectStore {
       preview_timeout_ms: record.previewTimeoutMs ?? null,
       finalize_default: record.finalizeDefault ?? null,
       created_at: createdAt,
+      // Phase 5A
+      worktree_dir: record.worktreeDir ?? null,
+      mcp_config: record.mcpConfig ?? null,
+      max_concurrent_workers: record.maxConcurrentWorkers ?? null,
+      quality_pipeline: record.qualityPipeline ?? null,
+      plan_mode_required:
+        record.planModeRequired === undefined ? null : record.planModeRequired ? 1 : 0,
+      default_autonomy_tier: record.defaultAutonomyTier ?? null,
+      maestro_warmth: record.maestroWarmth ?? null,
+      droids_dir: record.droidsDir ?? null,
+      design_inspiration: record.designInspiration ?? null,
     });
 
     return { ...record, path: resolvedPath, createdAt };
@@ -181,5 +208,23 @@ function rowToRecord(row: ProjectRow): ProjectRecord {
     ...(row.finalize_default !== null
       ? { finalizeDefault: row.finalize_default as 'push' | 'merge' }
       : {}),
+    // Phase 5A
+    ...(row.worktree_dir !== null ? { worktreeDir: row.worktree_dir } : {}),
+    ...(row.mcp_config !== null ? { mcpConfig: row.mcp_config } : {}),
+    ...(row.max_concurrent_workers !== null
+      ? { maxConcurrentWorkers: row.max_concurrent_workers }
+      : {}),
+    ...(row.quality_pipeline !== null
+      ? { qualityPipeline: row.quality_pipeline as 'full' | 'simplified' | 'none' }
+      : {}),
+    ...(row.plan_mode_required !== null
+      ? { planModeRequired: row.plan_mode_required === 1 }
+      : {}),
+    ...(row.default_autonomy_tier !== null
+      ? { defaultAutonomyTier: row.default_autonomy_tier as 1 | 2 | 3 }
+      : {}),
+    ...(row.maestro_warmth !== null ? { maestroWarmth: row.maestro_warmth } : {}),
+    ...(row.droids_dir !== null ? { droidsDir: row.droids_dir } : {}),
+    ...(row.design_inspiration !== null ? { designInspiration: row.design_inspiration } : {}),
   };
 }

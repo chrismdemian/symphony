@@ -100,6 +100,16 @@ export function validateSchemaContract(db: BetterSqlite3Database, dbPath: string
       'verify_command',
       'preview_command',
       'preview_timeout_ms',
+      // Phase 5A — migration 0009
+      'worktree_dir',
+      'mcp_config',
+      'max_concurrent_workers',
+      'quality_pipeline',
+      'plan_mode_required',
+      'default_autonomy_tier',
+      'maestro_warmth',
+      'droids_dir',
+      'design_inspiration',
     ])
       requireColumn('projects', col);
   }

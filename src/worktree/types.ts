@@ -57,6 +57,45 @@ export interface SymphonyConfig {
    * project file never crashes worktree creation.
    */
   readonly maxConcurrentWorkers?: number;
+  /**
+   * Phase 5A — `project` section persists per-project config to the
+   * SQLite `projects` table via `seedProjectsFromMap`. Schema + loader
+   * live in `symphony-config.ts`. Existing top-level fields above
+   * (preservePatterns, lifecycleScripts, worktreePool, maxConcurrentWorkers)
+   * remain untouched and continue their existing consumer paths.
+   */
+  readonly project?: ProjectSection;
+}
+
+/**
+ * Phase 5A — Persisted-to-ProjectRecord shape. Mirrors `ProjectConfigInput`
+ * fields plus an informational `name`. Validation lives in the
+ * `ProjectSectionSchema` Zod schema in `symphony-config.ts`. See PLAN.md
+ * §Phase 5 (lines 1944–1982) for field rationale.
+ */
+export interface ProjectSection {
+  readonly name?: string;
+  readonly defaultModel?: string;
+  readonly worktreeDir?: string;
+  readonly mcpConfig?: string;
+  readonly maxConcurrentWorkers?: number;
+  readonly qualityPipeline?: 'full' | 'simplified' | 'none';
+  readonly planModeRequired?: boolean;
+  readonly defaultAutonomyTier?: 1 | 2 | 3;
+  readonly previewCommand?: string;
+  readonly previewTimeoutMs?: number;
+  readonly testCommand?: string;
+  readonly buildCommand?: string;
+  readonly lintCommand?: string;
+  readonly verifyCommand?: string;
+  readonly verifyTimeoutMs?: number;
+  readonly finalizeDefault?: 'push' | 'merge';
+  readonly maestroWarmth?: number;
+  readonly droidsDir?: string;
+  readonly designInspiration?: string | null;
+  readonly gitRemote?: string;
+  readonly gitBranch?: string;
+  readonly baseRef?: string;
 }
 
 export interface WorktreeManagerConfig {

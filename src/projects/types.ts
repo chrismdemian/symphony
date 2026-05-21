@@ -42,6 +42,24 @@ export interface ProjectRecord {
   readonly previewTimeoutMs?: number;
   /** Hint for prompt composition; not enforced in 2A.4b. */
   readonly finalizeDefault?: 'push' | 'merge';
+  /**
+   * Phase 5A — multi-project config fields. Persisted via migration 0009;
+   * source-of-truth is `<project>/.symphony.json` `project` section (Zod
+   * schema in `src/worktree/symphony-config.ts`). The Zod schema enforces
+   * value-range validation; SQL columns are nullable + uncheck'd.
+   *
+   * NOTE: 5A persists these fields. Most consumers (per-project MCP
+   * routing, Maestro warmth/tier/planMode) wire up in 5B–5F.
+   */
+  readonly worktreeDir?: string;
+  readonly mcpConfig?: string;
+  readonly maxConcurrentWorkers?: number;
+  readonly qualityPipeline?: 'full' | 'simplified' | 'none';
+  readonly planModeRequired?: boolean;
+  readonly defaultAutonomyTier?: 1 | 2 | 3;
+  readonly maestroWarmth?: number;
+  readonly droidsDir?: string;
+  readonly designInspiration?: string;
 }
 
 export interface ProjectSnapshot {
@@ -61,6 +79,16 @@ export interface ProjectSnapshot {
   readonly previewCommand?: string;
   readonly previewTimeoutMs?: number;
   readonly finalizeDefault?: 'push' | 'merge';
+  // Phase 5A
+  readonly worktreeDir?: string;
+  readonly mcpConfig?: string;
+  readonly maxConcurrentWorkers?: number;
+  readonly qualityPipeline?: 'full' | 'simplified' | 'none';
+  readonly planModeRequired?: boolean;
+  readonly defaultAutonomyTier?: 1 | 2 | 3;
+  readonly maestroWarmth?: number;
+  readonly droidsDir?: string;
+  readonly designInspiration?: string;
 }
 
 /** Partial project record used by `OrchestratorServerOptions.projectConfigs`. */
@@ -78,6 +106,16 @@ export type ProjectConfigInput = Pick<
   | 'gitRemote'
   | 'gitBranch'
   | 'baseRef'
+  // Phase 5A
+  | 'worktreeDir'
+  | 'mcpConfig'
+  | 'maxConcurrentWorkers'
+  | 'qualityPipeline'
+  | 'planModeRequired'
+  | 'defaultAutonomyTier'
+  | 'maestroWarmth'
+  | 'droidsDir'
+  | 'designInspiration'
 >;
 
 export interface ProjectRegistryListFilter {

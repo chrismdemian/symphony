@@ -62,7 +62,7 @@ import {
 import { startRpcServer, type RpcServerHandle } from '../rpc/server.js';
 import { createSymphonyRouter } from '../rpc/router-impl.js';
 import { loadConfig } from '../utils/config.js';
-import { readSymphonyConfig } from '../worktree/symphony-config.js';
+import { readProjectConfig, readSymphonyConfig } from '../worktree/symphony-config.js';
 import { createNotificationDispatcher } from '../notifications/dispatcher.js';
 import type { DispatcherHandle } from '../notifications/types.js';
 import { spawnToast } from '../notifications/spawn-toast.js';
@@ -390,18 +390,22 @@ export async function startOrchestratorServer(
   const defaultProjectPath = path.resolve(options.defaultProjectPath ?? process.cwd());
   const projects = options.projects ?? {};
 
+  // Phase 5A — merge `.symphony.json` `project` overlay into caller
+  // configs once, so both SQLite + in-memory seeding paths see the
+  // unified shape. Caller's `options.projectConfigs[name]` still wins
+  // over file values per the documented precedence.
+  const effectiveProjectConfigs = mergeProjectConfigsWithFiles(projects, options.projectConfigs);
+
   const projectStore: ProjectStore =
     options.projectStore ??
     (() => {
       if (options.database) {
         const store = new SqliteProjectStore(options.database.db);
-        seedProjectsFromMap(store, projects, options.projectConfigs);
+        seedProjectsFromMap(store, projects, effectiveProjectConfigs);
         return store;
       }
       const store = projectRegistryFromMap(projects, {
-        ...(options.projectConfigs !== undefined
-          ? { configs: options.projectConfigs as Record<string, Partial<ProjectRecord>> }
-          : {}),
+        configs: effectiveProjectConfigs as Record<string, Partial<ProjectRecord>>,
       });
       return store;
     })();
@@ -1280,6 +1284,42 @@ function createMemoryAuditStore(): AuditStore {
       return this.list({ ...filter, limit: 1_000_000, offset: 0 }).length;
     },
   };
+}
+
+/**
+ * Phase 5A — merge `<projectPath>/.symphony.json` `project` section overlay
+ * with the caller-supplied `options.projectConfigs` overlay. Caller wins.
+ *
+ * Precedence (lowest → highest):
+ *   1. SQL NULL defaults
+ *   2. `.symphony.json` `project` section (file overlay)
+ *   3. `options.projectConfigs[name]` (caller overlay)
+ *
+ * Warnings from each loader are forwarded to `console.warn` — a broken
+ * `.symphony.json` must NOT crash orchestrator boot. Logs the project
+ * name + the loader's diagnostic so the user can act.
+ *
+ * Returns a new map; never mutates either input. Empty file overlay +
+ * empty caller overlay yields an empty entry (downstream paths spread
+ * an empty object cleanly).
+ */
+export function mergeProjectConfigsWithFiles(
+  projects: Readonly<Record<string, string>>,
+  callerConfigs?: Readonly<Record<string, ProjectConfigInput>>,
+): Record<string, ProjectConfigInput> {
+  const merged: Record<string, ProjectConfigInput> = {};
+  for (const [name, pathStr] of Object.entries(projects)) {
+    if (!pathStr || typeof pathStr !== 'string') continue;
+    const resolved = path.resolve(pathStr);
+    const fileResult = readProjectConfig(resolved);
+    for (const w of fileResult.warnings) {
+      console.warn(`[symphony] project '${name}': ${w}`);
+    }
+    const fileOverlay = fileResult.overlay ?? {};
+    const callerOverlay = callerConfigs?.[name] ?? {};
+    merged[name] = { ...fileOverlay, ...callerOverlay };
+  }
+  return merged;
 }
 
 /**
