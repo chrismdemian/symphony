@@ -160,6 +160,39 @@ describe('Phase 5A — .symphony.json loader → ProjectRecord', () => {
     expect(rec.qualityPipeline).toBeUndefined();
   });
 
+  it('audit-M1 regression: preserves caller-only configs (no `projects` map counterpart)', () => {
+    // Caller passes `projectConfigs` for a name that has NO corresponding
+    // entry in `projects` — e.g. a 5B add-then-register-via-config path.
+    // The merged map MUST still contain the caller's overlay; the pre-fix
+    // implementation iterated only `Object.entries(projects)` and dropped it.
+    const merged = mergeProjectConfigsWithFiles(
+      {},
+      {
+        'caller-only': { qualityPipeline: 'simplified', testCommand: 'caller-test' },
+      },
+    );
+    expect(merged['caller-only']).toEqual({
+      qualityPipeline: 'simplified',
+      testCommand: 'caller-test',
+    });
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('audit-M1 regression: caller-only entries co-exist with projects-map entries', () => {
+    const projectDir = path.join(dir, 'proj-mix');
+    writeConfig(projectDir, { project: { qualityPipeline: 'full' } });
+    const merged = mergeProjectConfigsWithFiles(
+      { mapped: projectDir },
+      {
+        'caller-only': { qualityPipeline: 'none' },
+        mapped: { testCommand: 'caller-wins' },
+      },
+    );
+    expect(merged['caller-only']).toEqual({ qualityPipeline: 'none' });
+    expect(merged.mapped?.qualityPipeline).toBe('full');
+    expect(merged.mapped?.testCommand).toBe('caller-wins');
+  });
+
   it('missing `.symphony.json` returns empty overlay silently (common path)', () => {
     const projectDir = path.join(dir, 'proj-f');
     fs.mkdirSync(projectDir, { recursive: true });

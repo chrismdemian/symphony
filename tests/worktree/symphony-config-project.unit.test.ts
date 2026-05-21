@@ -83,6 +83,13 @@ describe('Phase 5A — ProjectSectionSchema (Zod)', () => {
     expect(ProjectSectionSchema.safeParse({ designInspiration: null }).success).toBe(true);
     expect(ProjectSectionSchema.safeParse({ designInspiration: '' }).success).toBe(false);
   });
+
+  it('audit-m4: accepts `previewUrl` (no-op; not propagated to overlay)', () => {
+    expect(
+      ProjectSectionSchema.safeParse({ previewUrl: 'http://localhost:3000' }).success,
+    ).toBe(true);
+    expect(ProjectSectionSchema.safeParse({ previewUrl: '' }).success).toBe(false);
+  });
 });
 
 describe('Phase 5A — readProjectConfig (file loader)', () => {
@@ -230,5 +237,18 @@ describe('Phase 5A — readProjectConfig (file loader)', () => {
     const r = readProjectConfig(dir);
     expect(r.warnings).toEqual([]);
     expect(r.overlay).toEqual({});
+  });
+
+  it('audit-m4: `previewUrl` in `project` parses cleanly but is NOT in overlay', () => {
+    fs.writeFileSync(
+      path.join(dir, '.symphony.json'),
+      JSON.stringify({
+        project: { previewUrl: 'http://localhost:3000', qualityPipeline: 'full' },
+      }),
+    );
+    const r = readProjectConfig(dir);
+    expect(r.warnings).toEqual([]);
+    // `previewUrl` accepted by Zod but the loader doesn't propagate it.
+    expect(r.overlay).toEqual({ qualityPipeline: 'full' });
   });
 });

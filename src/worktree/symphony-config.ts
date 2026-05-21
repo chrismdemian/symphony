@@ -69,6 +69,12 @@ export const ProjectSectionSchema = z
     gitRemote: z.string().min(1).optional(),
     gitBranch: z.string().min(1).optional(),
     baseRef: z.string().min(1).optional(),
+    // Phase 5A audit-m4: accept `previewUrl` in strict mode so users
+    // can write it without a Zod rejection. NOT propagated to the
+    // overlay — `verify_ui` (4G.2) reads the URL from the
+    // `previewCommand` stdout banner, not from this field. Persistence
+    // wires up in 5B/5F when a TUI panel needs the value.
+    previewUrl: z.string().min(1).optional(),
   })
   .strict();
 
@@ -79,11 +85,12 @@ export type ParsedProjectSection = z.infer<typeof ProjectSectionSchema>;
  * 1950–1972) that are intentionally NOT persisted by Phase 5A. The
  * drift-lock test excludes these from the schema-vs-PLAN comparison.
  *
- * - `previewUrl` — surfaced-to-user hint, no behavioral consumer in 4G.2's
- *   `verify_ui` (it reads the URL from `previewCommand` stdout). Defer to
- *   5B or 5F when a TUI panel needs to display the value.
+ * Currently empty: `previewUrl` was on this list pre-audit-m4 but now
+ * lives in the Zod schema as a no-op-accepted field (audit-m4 fix).
+ * Add fields here when a new PLAN.md field should be temporarily
+ * tolerated without code support.
  */
-export const PHASE_5A_DEFERRED_FIELDS: readonly string[] = ['previewUrl'];
+export const PHASE_5A_DEFERRED_FIELDS: readonly string[] = [];
 
 export interface ReadProjectConfigResult {
   /** Overlay merged into ProjectConfigInput. Null on missing file / Zod failure. */

@@ -96,6 +96,8 @@ export interface ProjectSection {
   readonly gitRemote?: string;
   readonly gitBranch?: string;
   readonly baseRef?: string;
+  /** No-op accepted (audit-m4) — `verify_ui` reads URL from previewCommand stdout. */
+  readonly previewUrl?: string;
 }
 
 export interface WorktreeManagerConfig {

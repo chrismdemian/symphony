@@ -1319,6 +1319,17 @@ export function mergeProjectConfigsWithFiles(
     const callerOverlay = callerConfigs?.[name] ?? {};
     merged[name] = { ...fileOverlay, ...callerOverlay };
   }
+  // Audit M1 fix: preserve caller-only entries (no `projects` map
+  // counterpart) — file overlay is unreachable in that case but the
+  // caller's config must still flow through. Phase 5B's CLI-registration
+  // path will exercise this when `symphony add` registers a project
+  // BEFORE the orchestrator-boot map is rebuilt.
+  if (callerConfigs !== undefined) {
+    for (const [name, cfg] of Object.entries(callerConfigs)) {
+      if (name in merged) continue;
+      merged[name] = { ...cfg };
+    }
+  }
   return merged;
 }
 
@@ -1419,13 +1430,25 @@ function ensureDefaultProjectRegistered(
     if (path.resolve(record.path) === defaultPath) return;
   }
   const name = pickDefaultProjectName(store);
-  const extra = projectConfigs?.[name] ?? projectConfigs?.['default'];
+  // Phase 5A audit-C1 fix: the primary CLI boot path
+  // (`cd ~/myapp && symphony start`) hits THIS function without ever
+  // going through `mergeProjectConfigsWithFiles` (the `projects` map is
+  // empty when no `--project` flag is passed). Read the file overlay
+  // here so `<defaultPath>/.symphony.json` is honored. Caller overlay
+  // (synthesized `default` entry if the user passed one) still wins.
+  const fileResult = readProjectConfig(defaultPath);
+  for (const w of fileResult.warnings) {
+    console.warn(`[symphony] default project: ${w}`);
+  }
+  const fileOverlay = fileResult.overlay ?? {};
+  const callerOverlay = projectConfigs?.[name] ?? projectConfigs?.['default'] ?? {};
   store.register({
     id: name,
     name,
     path: defaultPath,
     createdAt: '',
-    ...(extra ?? {}),
+    ...fileOverlay,
+    ...callerOverlay,
   });
 }
 
