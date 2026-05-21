@@ -135,6 +135,20 @@ export function toProjectSnapshot(r: ProjectRecord): ProjectSnapshot {
     ...(r.previewCommand !== undefined ? { previewCommand: r.previewCommand } : {}),
     ...(r.previewTimeoutMs !== undefined ? { previewTimeoutMs: r.previewTimeoutMs } : {}),
     ...(r.finalizeDefault !== undefined ? { finalizeDefault: r.finalizeDefault } : {}),
+    // Phase 5A
+    ...(r.worktreeDir !== undefined ? { worktreeDir: r.worktreeDir } : {}),
+    ...(r.mcpConfig !== undefined ? { mcpConfig: r.mcpConfig } : {}),
+    ...(r.maxConcurrentWorkers !== undefined
+      ? { maxConcurrentWorkers: r.maxConcurrentWorkers }
+      : {}),
+    ...(r.qualityPipeline !== undefined ? { qualityPipeline: r.qualityPipeline } : {}),
+    ...(r.planModeRequired !== undefined ? { planModeRequired: r.planModeRequired } : {}),
+    ...(r.defaultAutonomyTier !== undefined
+      ? { defaultAutonomyTier: r.defaultAutonomyTier }
+      : {}),
+    ...(r.maestroWarmth !== undefined ? { maestroWarmth: r.maestroWarmth } : {}),
+    ...(r.droidsDir !== undefined ? { droidsDir: r.droidsDir } : {}),
+    ...(r.designInspiration !== undefined ? { designInspiration: r.designInspiration } : {}),
   };
 }
 
