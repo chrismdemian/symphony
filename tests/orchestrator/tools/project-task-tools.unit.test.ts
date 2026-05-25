@@ -358,6 +358,99 @@ describe('list_tasks', () => {
   });
 });
 
+describe('create_task — Phase 5D resolver routing (audit M1)', () => {
+  it('omitted project + resolver routing — cursor wins over default', async () => {
+    const taskStore = new TaskRegistry();
+    const projectStore = seedProjects();
+    // Mimic the server-side cursor resolver: return projB's path.
+    const projB = projectStore.get('backend')!;
+    const tool = makeCreateTaskTool({
+      taskStore,
+      projectStore,
+      resolveProjectPath: () => projB.path,
+    });
+    const res = await tool.handler(
+      {
+        project: undefined,
+        description: 'cursor-routed',
+        priority: undefined,
+        depends_on: undefined,
+      },
+      ctx(),
+    );
+    expect(res.isError).toBeFalsy();
+    const sc = res.structuredContent as { projectId: string };
+    expect(sc.projectId).toBe('backend');
+  });
+
+  it('omitted project + no resolver → errors with actionable hint', async () => {
+    const tool = makeCreateTaskTool({
+      taskStore: new TaskRegistry(),
+      projectStore: seedProjects(),
+    });
+    const res = await tool.handler(
+      {
+        project: undefined,
+        description: 'unrouted',
+        priority: undefined,
+        depends_on: undefined,
+      },
+      ctx(),
+    );
+    expect(res.isError).toBe(true);
+    expect(asText(res)).toContain('No active project set');
+    expect(asText(res)).toContain('set_active_project');
+  });
+
+  it('explicit project wins over the resolver cursor', async () => {
+    const taskStore = new TaskRegistry();
+    const projectStore = seedProjects();
+    const projA = projectStore.get('frontend')!;
+    const projB = projectStore.get('backend')!;
+    const tool = makeCreateTaskTool({
+      taskStore,
+      projectStore,
+      // Resolver points to backend — but explicit "frontend" should win.
+      resolveProjectPath: () => projB.path,
+    });
+    const res = await tool.handler(
+      {
+        project: 'frontend',
+        description: 'explicit wins',
+        priority: undefined,
+        depends_on: undefined,
+      },
+      ctx(),
+    );
+    expect(res.isError).toBeFalsy();
+    const sc = res.structuredContent as { projectId: string };
+    expect(sc.projectId).toBe(projA.id);
+  });
+
+  it('omitted project + resolver to unknown path → unknown-project error', async () => {
+    const tool = makeCreateTaskTool({
+      taskStore: new TaskRegistry(),
+      projectStore: seedProjects(),
+      // Resolver returns a path that doesn't match any registered
+      // project (e.g. the cursor names a removed project and the
+      // server's `getActiveProjectPath` fell through to the boot
+      // default — which itself might not be in the store).
+      resolveProjectPath: () => '/tmp/never-registered',
+    });
+    const res = await tool.handler(
+      {
+        project: undefined,
+        description: 'orphan path',
+        priority: undefined,
+        depends_on: undefined,
+      },
+      ctx(),
+    );
+    expect(res.isError).toBe(true);
+    expect(asText(res)).toContain('No active project set');
+  });
+});
+
 describe('create_task', () => {
   it('creates in pending state', async () => {
     const taskStore = new TaskRegistry();

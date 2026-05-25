@@ -1,6 +1,9 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   applyPatchToDisk,
+  configFilePath,
   defaultConfig,
   loadConfig,
   type ConfigSource,
@@ -149,6 +152,91 @@ export function ConfigProvider(props: ConfigProviderProps): React.JSX.Element {
     [initialOverride],
   );
 
+  // Phase 5D audit M2+M3 — watch `~/.symphony/config.json` for
+  // cross-process changes and call `reload()` on every meaningful
+  // event. Maestro's MCP child writes the file when `set_active_project`
+  // fires; the TUI lives in a different process and otherwise sees
+  // the new value only when SettingsPanel mounts (a non-event for
+  // most users). This effect bridges the gap.
+  //
+  // Why fs.watch:
+  //   - In-process writes go through `applyPatchToDisk` → `saveConfig`,
+  //     which renames over the destination atomically. On POSIX +
+  //     NTFS that's one CHANGE event. On macOS HFS+ it may fire two
+  //     (rename triggers RENAME + CHANGE). A 50ms debounce smooths
+  //     coalesces multi-event bursts.
+  //   - Win32 fs.watch on a single FILE has historical reliability
+  //     issues (the docs explicitly warn). We watch the PARENT
+  //     directory and filter by basename — that's the recommended
+  //     pattern for cross-platform single-file watching.
+  //   - When fs.watch throws or fires `'error'` (ENOSPC on Linux,
+  //     EPERM on Win32 SMB shares), fall back to a 1s polling tick.
+  //     Polling overhead on a tiny JSON file is negligible.
+  //
+  // Skipped under `initialOverride` (test/visual harnesses don't want
+  // disk side-effects clobbering their fixtures). The effect's
+  // cleanup closes the watcher on unmount.
+  useEffect(() => {
+    if (initialOverride) return;
+    const target = configFilePath();
+    const dir = pathDirname(target);
+    const base = pathBasename(target);
+    let debounceTimer: NodeJS.Timeout | null = null;
+    let pollTimer: NodeJS.Timeout | null = null;
+    let watcher: fs.FSWatcher | undefined;
+    let lastMtimeMs = readMtimeMs(target);
+    const trigger = (): void => {
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        void reload();
+      }, 50);
+    };
+    const startPolling = (): void => {
+      // Fallback: poll mtime every 1s. Triggers reload when the
+      // file's mtime moves. Symphony's tiny JSON file makes this
+      // overhead negligible; cleaner than retrying fs.watch.
+      pollTimer = setInterval(() => {
+        const m = readMtimeMs(target);
+        if (m !== null && m !== lastMtimeMs) {
+          lastMtimeMs = m;
+          trigger();
+        }
+      }, 1000);
+    };
+    try {
+      watcher = fs.watch(dir, (eventType, filename) => {
+        if (filename === null || filename.toString() !== base) return;
+        trigger();
+      });
+      watcher.on('error', () => {
+        // Drop the watcher on error and switch to polling. Either
+        // ENOSPC (Linux inotify exhaustion) or EPERM (SMB / FUSE
+        // mounts that don't support inotify).
+        try {
+          watcher?.close();
+        } catch {
+          // ignore
+        }
+        watcher = undefined;
+        if (pollTimer === null) startPolling();
+      });
+    } catch {
+      // fs.watch threw synchronously (rare — usually a missing dir).
+      // Fall back to polling.
+      startPolling();
+    }
+    return () => {
+      if (debounceTimer !== null) clearTimeout(debounceTimer);
+      if (pollTimer !== null) clearInterval(pollTimer);
+      try {
+        watcher?.close();
+      } catch {
+        // ignore
+      }
+    };
+  }, [initialOverride, reload]);
+
   // Phase 3H.2 — `setConfig` routes through the single-writer helper
   // `applyPatchToDisk` (`config.ts`) which serializes ALL config writes
   // within this process via a Promise queue. That serialization closes
@@ -276,4 +364,25 @@ function applyPatchInMemory(
 
 export function useConfig(): ConfigController {
   return useContext(ConfigContext);
+}
+
+/**
+ * Phase 5D audit M2+M3 — helpers for the `fs.watch` cross-process
+ * bridge. Module-scope to keep the effect body terse; exported only
+ * as internal seams the tests use.
+ */
+function pathDirname(filePath: string): string {
+  return path.dirname(filePath);
+}
+
+function pathBasename(filePath: string): string {
+  return path.basename(filePath);
+}
+
+function readMtimeMs(filePath: string): number | null {
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return null;
+  }
 }

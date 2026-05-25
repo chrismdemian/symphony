@@ -158,27 +158,27 @@ describe('Phase 5D scenario — set_active_project routing (real fs + real serve
     const taskB1 = (await client.callTool({
       name: 'create_task',
       arguments: { project: 'projb', description: 'explicit projb task' },
-    })) as { structuredContent: { id: string; projectId: string }; isError?: boolean };
+    })) as unknown as {
+      structuredContent: { id: string; projectId: string };
+      isError?: boolean;
+    };
     expect(taskB1.isError).toBeFalsy();
     // ── Then 3: lands on projb ──────────────────────────────────────
     expect(taskB1.structuredContent.projectId).toBe('pb');
 
-    // ── When 3: create_task with NO project (resolver consults cursor)
-    // The MCP schema requires `project:` on create_task today, so we
-    // simulate the omitted-arg routing via list_tasks's optional
-    // `project:` filter — which goes through the SAME projectStore
-    // resolution path. The active cursor controls Maestro's CHOICE
-    // to omit; the resolver itself triggers on `project: undefined`.
-    // For the routing assertion we observe: a second create_task
-    // explicitly to projb confirms cursor consistency, then a
-    // resolver-level check below covers the omitted-`project:` path
-    // through the lifecycle.getMaxConcurrentWorkers seam (which
-    // routes empty paths to the global default).
+    // ── When 3: create_task with NO project (cursor routes it) ─────
+    // Post-M1 fix — `create_task.project` is now optional and the
+    // tool consults the resolver. With cursor === projb, this task
+    // MUST land on projb without an explicit `project:` arg.
     const taskB2 = (await client.callTool({
       name: 'create_task',
-      arguments: { project: 'projb', description: 'second projb task' },
-    })) as { structuredContent: { id: string; projectId: string }; isError?: boolean };
+      arguments: { description: 'omitted-project task (cursor routes)' },
+    })) as unknown as {
+      structuredContent: { id: string; projectId: string };
+      isError?: boolean;
+    };
     expect(taskB2.isError).toBeFalsy();
+    // ── Then 4: lands on projb via the cursor (NOT defaultProjectPath)
     expect(taskB2.structuredContent.projectId).toBe('pb');
 
     // ── When 4: clear the cursor ────────────────────────────────────
@@ -196,12 +196,19 @@ describe('Phase 5D scenario — set_active_project routing (real fs + real serve
     expect(summaries).toHaveLength(2);
     expect(summaries[1]!.headline).toBe('Active project cleared (was projb)');
 
-    // ── When 5 (recast): downstream create_task explicit to proja ──
+    // ── When 5: downstream create_task with NO project after clear ──
+    // Cursor is null; the resolver falls through to defaultProjectPath
+    // (= projA). The task MUST land on projA without an explicit
+    // `project:` arg — the cleared cursor returns routing to the boot
+    // default.
     const taskA = (await client.callTool({
       name: 'create_task',
-      arguments: { project: 'proja', description: 'projA task after clear' },
-    })) as { structuredContent: { id: string; projectId: string }; isError?: boolean };
-    // ── Then 6: lands on proja ──────────────────────────────────────
+      arguments: { description: 'omitted-project task after clear' },
+    })) as unknown as {
+      structuredContent: { id: string; projectId: string };
+      isError?: boolean;
+    };
+    // ── Then 6: lands on proja (default fallback) ──────────────────
     expect(taskA.isError).toBeFalsy();
     expect(taskA.structuredContent.projectId).toBe('pa');
 

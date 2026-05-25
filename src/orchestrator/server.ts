@@ -1005,7 +1005,17 @@ export async function startOrchestratorServer(
     makeListTasksTool({ taskStore, projectStore }),
   );
   registry.register(
-    makeCreateTaskTool({ taskStore, projectStore }),
+    makeCreateTaskTool({
+      taskStore,
+      projectStore,
+      // Phase 5D audit M1 fix — thread the cursor-aware resolver so
+      // an omitted `project:` lands on the active project before
+      // falling back to defaultProjectPath. Mirrors `spawn_worker`'s
+      // optional-project shape; required because the v1 Maestro
+      // prompt promises Maestro it can omit `project:` once a cursor
+      // is set.
+      resolveProjectPath,
+    }),
   );
   registry.register(makeUpdateTaskTool({ taskStore }));
   registry.register(makeTaskNotesTool({ taskStore, projectStore }));
