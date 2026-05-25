@@ -213,6 +213,14 @@ function applyConfigEdits(existing: string, next: SymphonyConfig): string {
     ...(next.defaultProjectPath !== undefined
       ? ([['defaultProjectPath', next.defaultProjectPath]] as const)
       : []),
+    // Phase 5D — activeProject is optional. Same 6-site invariant as
+    // awayMode/autonomyTier: schema, SymphonyConfigPatch, mergePatch,
+    // applyPatchInMemory, THIS field list, AND server.ts boot stamp +
+    // runtime.setActiveProject RPC. Missing any site silently
+    // disconnects persistence from runtime.
+    ...(next.activeProject !== undefined
+      ? ([['activeProject', next.activeProject]] as const)
+      : []),
   ];
   let text = existing;
   for (const [key, value] of fields) {
@@ -223,6 +231,16 @@ function applyConfigEdits(existing: string, next: SymphonyConfig): string {
   // was present on disk, drop it.
   if (next.defaultProjectPath === undefined) {
     const edits = modify(text, ['defaultProjectPath'], undefined, {
+      formattingOptions: FORMATTING,
+    });
+    if (edits.length > 0) text = applyEdits(text, edits);
+  }
+  // Phase 5D — same drop semantics for activeProject. Clearing it (via
+  // `setConfig({activeProject: null})`) returns Maestro to the boot
+  // active project, which is the registered project at
+  // `defaultProjectPath` (else the first registered project).
+  if (next.activeProject === undefined) {
+    const edits = modify(text, ['activeProject'], undefined, {
       formattingOptions: FORMATTING,
     });
     if (edits.length > 0) text = applyEdits(text, edits);
@@ -321,6 +339,15 @@ export interface SymphonyConfigPatch {
   readonly autonomyTier?: SymphonyConfig['autonomyTier'];
   readonly theme?: Partial<SymphonyConfig['theme']>;
   readonly defaultProjectPath?: SymphonyConfig['defaultProjectPath'] | null;
+  /**
+   * Phase 5D — active project. Stored as the registered project's NAME
+   * (mirrors `set_active_project` MCP tool input + `symphony list`
+   * display). `null` clears the field (Maestro falls back to boot
+   * active project). `undefined` is the no-op. Same shape as
+   * `defaultProjectPath`. Runtime-aware (6-site rule, mirrors
+   * `autonomyTier`'s `runtime.setAutonomyTier` propagation).
+   */
+  readonly activeProject?: SymphonyConfig['activeProject'] | null;
   readonly leaderTimeoutMs?: SymphonyConfig['leaderTimeoutMs'];
   readonly keybindOverrides?: SymphonyConfig['keybindOverrides'];
 }
@@ -406,6 +433,16 @@ function mergePatch(current: SymphonyConfig, patch: SymphonyConfigPatch): Sympho
       delete next.defaultProjectPath;
     } else if (patch.defaultProjectPath !== undefined) {
       next.defaultProjectPath = patch.defaultProjectPath;
+    }
+  }
+  // Phase 5D — active project. Same set/clear semantics as
+  // defaultProjectPath. Mirror in `applyPatchInMemory`
+  // (config-context.tsx) and `applyConfigEdits` (above).
+  if ('activeProject' in patch) {
+    if (patch.activeProject === null) {
+      delete next.activeProject;
+    } else if (patch.activeProject !== undefined) {
+      next.activeProject = patch.activeProject;
     }
   }
   return next;

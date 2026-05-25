@@ -18,6 +18,7 @@ import Database from 'better-sqlite3';
 
 import type { ProjectSnapshot } from '../projects/types.js';
 import { resolveDatabasePath } from '../state/path.js';
+import { loadConfig } from '../utils/config.js';
 
 export interface RunListOptions {
   readonly stdout?: NodeJS.WritableStream;
@@ -38,6 +39,12 @@ export interface RunListResult {
   readonly ok: boolean;
   readonly reason?: 'db-open-failed';
   readonly projects: readonly ProjectSnapshot[];
+  /**
+   * Phase 5D — active project NAME from `~/.symphony/config.json`, or
+   * null when no active project is set. Returned so test callers can
+   * assert routing intent without re-reading config themselves.
+   */
+  readonly activeProject?: string | null;
 }
 
 interface ProjectRow {
@@ -74,13 +81,27 @@ export async function runList(opts: RunListOptions = {}): Promise<RunListResult>
   const dbFilePath = opts.dbFilePath ?? resolveDatabasePath();
   const format = opts.format ?? 'table';
 
+  // Phase 5D — surface `config.activeProject` so the table annotates
+  // the active row with `(active)` and the JSON view tags it with
+  // `"active": true`. loadConfig() never throws (documented contract:
+  // ENOENT + parse-failures return defaults + warnings); a wrap is
+  // belt-and-suspenders so a regression there can't tank `symphony
+  // list` for the rest of the user's projects.
+  let activeProject: string | null = null;
+  try {
+    const cfg = await loadConfig();
+    activeProject = cfg.config.activeProject ?? null;
+  } catch {
+    activeProject = null;
+  }
+
   if (!existsSync(dbFilePath)) {
     if (format === 'json') {
       stdout.write('[]\n');
     } else if (!opts.quiet) {
       stdout.write('No projects registered. Run `symphony add <path>` to register one.\n');
     }
-    return { ok: true, projects: [] };
+    return { ok: true, projects: [], activeProject };
   }
 
   // Empty JSON line on any open/read failure so `| jq` pipelines never
@@ -114,19 +135,30 @@ export async function runList(opts: RunListOptions = {}): Promise<RunListResult>
     const snapshots = rows.map(rowToSnapshot);
 
     if (format === 'json') {
-      stdout.write(`${JSON.stringify(snapshots, null, 2)}\n`);
-      return { ok: true, projects: snapshots };
+      // Phase 5D — spread `active: true` on the matching row so a JSON
+      // consumer can pick the active project without a second config
+      // read. Non-active rows omit the field entirely (rather than
+      // emitting `active: false`) so the existing JSON shape stays
+      // backwards-compatible for callers that don't care.
+      const projectsWithActive =
+        activeProject !== null
+          ? snapshots.map((p) =>
+              p.name === activeProject ? { ...p, active: true as const } : p,
+            )
+          : snapshots;
+      stdout.write(`${JSON.stringify(projectsWithActive, null, 2)}\n`);
+      return { ok: true, projects: snapshots, activeProject };
     }
 
     if (snapshots.length === 0) {
       if (!opts.quiet) {
         stdout.write('No projects registered. Run `symphony add <path>` to register one.\n');
       }
-      return { ok: true, projects: [] };
+      return { ok: true, projects: [], activeProject };
     }
 
-    stdout.write(`${renderTable(snapshots, opts.home)}\n`);
-    return { ok: true, projects: snapshots };
+    stdout.write(`${renderTable(snapshots, opts.home, activeProject)}\n`);
+    return { ok: true, projects: snapshots, activeProject };
   } finally {
     db.close();
   }
@@ -180,7 +212,11 @@ interface Column {
   readonly value: (p: ProjectSnapshot) => string;
 }
 
-function renderTable(snapshots: readonly ProjectSnapshot[], homeOverride?: string): string {
+function renderTable(
+  snapshots: readonly ProjectSnapshot[],
+  homeOverride?: string,
+  activeProject?: string | null,
+): string {
   const home = homeOverride ?? os.homedir();
   // Normalize Win32 mixed separators on BOTH sides so a `C:/Users/...`
   // row collapses against a `C:\Users\...` home (audit-m6). Pure
@@ -196,8 +232,16 @@ function renderTable(snapshots: readonly ProjectSnapshot[], homeOverride?: strin
     return p;
   };
 
+  // Phase 5D — annotate the active row in the NAME column. `(active)`
+  // suffix is unambiguous and visually unobtrusive; introducing a new
+  // ACTIVE column for a single-bit flag is more chrome than signal.
+  const nameRender = (p: ProjectSnapshot): string =>
+    activeProject !== undefined && activeProject !== null && p.name === activeProject
+      ? `${p.name} (active)`
+      : p.name;
+
   const columns: readonly Column[] = [
-    { header: 'NAME', value: (p) => p.name },
+    { header: 'NAME', value: nameRender },
     { header: 'PATH', value: (p) => collapseHome(p.path) },
     { header: 'MODEL', value: (p) => p.defaultModel ?? '—' },
     { header: 'TIER', value: (p) => (p.defaultAutonomyTier !== undefined ? `T${p.defaultAutonomyTier}` : '—') },

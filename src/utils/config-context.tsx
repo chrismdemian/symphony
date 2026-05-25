@@ -260,6 +260,17 @@ function applyPatchInMemory(
       next.defaultProjectPath = patch.defaultProjectPath;
     }
   }
+  // Phase 5D — active project. Same set/clear semantics as
+  // defaultProjectPath. Mirror in `mergePatch` and `applyConfigEdits`
+  // (config.ts). 6-site rule: server.ts also propagates via
+  // runtime.setActiveProject (next site after this one).
+  if ('activeProject' in patch) {
+    if (patch.activeProject === null) {
+      delete next.activeProject;
+    } else if (patch.activeProject !== undefined) {
+      next.activeProject = patch.activeProject;
+    }
+  }
   return next;
 }
 

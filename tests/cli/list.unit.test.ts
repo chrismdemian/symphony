@@ -9,6 +9,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { runAdd } from '../../src/cli/add.js';
 import { runList } from '../../src/cli/list.js';
+import {
+  SYMPHONY_CONFIG_FILE_ENV,
+  _resetConfigWriteQueue,
+} from '../../src/utils/config.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -184,6 +188,160 @@ describe('runList (Phase 5B)', () => {
     expect(parsed[0].name).toBe('json-demo');
     expect(parsed[0].path).toBe(path.resolve(repo));
     expect(parsed[0].id).toBe('json-demo');
+  });
+
+  describe('Phase 5D — active project annotation', () => {
+    let priorConfig: string | undefined;
+    let configPath: string;
+
+    beforeEach(() => {
+      configPath = path.join(home, '.symphony', 'config.json');
+      priorConfig = process.env[SYMPHONY_CONFIG_FILE_ENV];
+      process.env[SYMPHONY_CONFIG_FILE_ENV] = configPath;
+      _resetConfigWriteQueue();
+    });
+
+    afterEach(() => {
+      if (priorConfig === undefined) {
+        delete process.env[SYMPHONY_CONFIG_FILE_ENV];
+      } else {
+        process.env[SYMPHONY_CONFIG_FILE_ENV] = priorConfig;
+      }
+      _resetConfigWriteQueue();
+    });
+
+    it('table: annotates the active row with " (active)" suffix on NAME', async () => {
+      const repoA = path.join(sandbox, 'projA');
+      const repoB = path.join(sandbox, 'projB');
+      for (const r of [repoA, repoB]) {
+        await initRepo(r);
+        await runAdd({
+          projectPath: r,
+          dbFilePath: dbPath,
+          stdout: new PassThrough(),
+          stderr: new PassThrough(),
+        });
+      }
+      writeFileSync(
+        configPath,
+        JSON.stringify({ schemaVersion: 1, activeProject: 'projb' }, null, 2),
+      );
+
+      const stdout = new PassThrough();
+      const stdoutBufs: string[] = [];
+      stdout.on('data', (c: Buffer) => stdoutBufs.push(c.toString('utf8')));
+
+      const result = await runList({
+        dbFilePath: dbPath,
+        stdout,
+        stderr: new PassThrough(),
+      });
+      expect(result.ok).toBe(true);
+      expect(result.activeProject).toBe('projb');
+
+      const out = stdoutBufs.join('');
+      expect(out).toContain('projb (active)');
+      // The non-active row stays bare (runAdd lowercases names per
+      // `toProjectIdSlug`; tests rely on that slug shape).
+      expect(out).toContain('proja ');
+      expect(out).not.toContain('proja (active)');
+    });
+
+    it('JSON: spreads `active: true` only on the matching row', async () => {
+      const repoA = path.join(sandbox, 'projA');
+      const repoB = path.join(sandbox, 'projB');
+      for (const r of [repoA, repoB]) {
+        await initRepo(r);
+        await runAdd({
+          projectPath: r,
+          dbFilePath: dbPath,
+          stdout: new PassThrough(),
+          stderr: new PassThrough(),
+        });
+      }
+      writeFileSync(
+        configPath,
+        JSON.stringify({ schemaVersion: 1, activeProject: 'proja' }, null, 2),
+      );
+
+      const stdout = new PassThrough();
+      const stdoutBufs: string[] = [];
+      stdout.on('data', (c: Buffer) => stdoutBufs.push(c.toString('utf8')));
+
+      const result = await runList({
+        dbFilePath: dbPath,
+        format: 'json',
+        stdout,
+        stderr: new PassThrough(),
+      });
+      expect(result.ok).toBe(true);
+      expect(result.activeProject).toBe('proja');
+
+      const parsed = JSON.parse(stdoutBufs.join('')) as ReadonlyArray<
+        { name: string; active?: boolean }
+      >;
+      expect(parsed).toHaveLength(2);
+      const projA = parsed.find((p) => p.name === 'proja');
+      const projB = parsed.find((p) => p.name === 'projb');
+      expect(projA?.active).toBe(true);
+      expect(projB?.active).toBeUndefined();
+    });
+
+    it('no annotation when config.activeProject is absent', async () => {
+      const repo = path.join(sandbox, 'solo');
+      await initRepo(repo);
+      await runAdd({
+        projectPath: repo,
+        dbFilePath: dbPath,
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+      });
+      // No config file present.
+
+      const stdout = new PassThrough();
+      const stdoutBufs: string[] = [];
+      stdout.on('data', (c: Buffer) => stdoutBufs.push(c.toString('utf8')));
+
+      const result = await runList({
+        dbFilePath: dbPath,
+        stdout,
+        stderr: new PassThrough(),
+      });
+      expect(result.ok).toBe(true);
+      expect(result.activeProject).toBeNull();
+      expect(stdoutBufs.join('')).not.toContain('(active)');
+    });
+
+    it('stale activeProject (no matching row) does NOT annotate any row', async () => {
+      const repo = path.join(sandbox, 'real');
+      await initRepo(repo);
+      await runAdd({
+        projectPath: repo,
+        dbFilePath: dbPath,
+        stdout: new PassThrough(),
+        stderr: new PassThrough(),
+      });
+      writeFileSync(
+        configPath,
+        JSON.stringify({ schemaVersion: 1, activeProject: 'ghost' }, null, 2),
+      );
+
+      const stdout = new PassThrough();
+      const stdoutBufs: string[] = [];
+      stdout.on('data', (c: Buffer) => stdoutBufs.push(c.toString('utf8')));
+
+      const result = await runList({
+        dbFilePath: dbPath,
+        stdout,
+        stderr: new PassThrough(),
+      });
+      expect(result.ok).toBe(true);
+      // The activeProject value is surfaced verbatim — config wins
+      // over store state. Consumers (the table renderer here) decide
+      // whether to annotate based on a name match.
+      expect(result.activeProject).toBe('ghost');
+      expect(stdoutBufs.join('')).not.toContain('(active)');
+    });
   });
 
   it('runs without server-running probe (must work while server is up)', async () => {

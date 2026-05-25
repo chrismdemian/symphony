@@ -25,10 +25,12 @@ export const AUDIT_KINDS = [
   'merge_declined',
   'merge_failed',
   'merge_ready',
-  // Mode/config changes (3S autonomyTier, 3M awayMode, 3H model mode)
+  // Mode/config changes (3S autonomyTier, 3M awayMode, 3H model mode,
+  // 5D active project)
   'tier_changed',
   'model_mode_changed',
   'away_mode_changed',
+  'active_project_changed',
   // Tool dispatch (capability shim hook — Phase 7 prep)
   'tool_called',
   'tool_denied',

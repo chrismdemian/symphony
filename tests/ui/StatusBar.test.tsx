@@ -218,6 +218,68 @@ describe('<StatusBar>', () => {
     expect(frame).toContain('\x1b[38;2;229;192;123m');
   });
 
+  describe('Phase 5D — Active project chip', () => {
+    it('omits the Active chip when activeProject is null', () => {
+      const { lastFrame } = renderStatusBar({
+        version: '0.0.0',
+        mode: 'plan',
+        projects: [baseProject],
+        workers: [],
+        sessionId: null,
+        activeProject: null,
+      });
+      expect(lastFrame()).not.toContain('Active:');
+    });
+
+    it('omits the Active chip when activeProject is undefined', () => {
+      const { lastFrame } = renderStatusBar({
+        version: '0.0.0',
+        mode: 'plan',
+        projects: [baseProject],
+        workers: [],
+        sessionId: null,
+      });
+      expect(lastFrame()).not.toContain('Active:');
+    });
+
+    it('renders the Active chip with the cursor name when set', () => {
+      const { lastFrame } = renderStatusBar({
+        version: '0.0.0',
+        mode: 'act',
+        projects: [
+          { ...baseProject, name: 'a' },
+          { ...baseProject, id: 'p2', name: 'b' },
+        ],
+        workers: [],
+        sessionId: null,
+        activeProject: 'b',
+      });
+      // Use short names to keep the rendered bar from wrapping the
+      // Active chip across cells under ink-testing-library's narrow
+      // default width. The label + value together (`Active: b`) must
+      // both appear on one logical render line.
+      expect(lastFrame()).toMatch(/Active:\s*b/);
+    });
+
+    it('paints Active value in accent color (truecolor escape)', () => {
+      const result = render(
+        <ThemeProvider>
+          <StatusBar
+            version="0.0.0"
+            mode="act"
+            projects={[baseProject]}
+            workers={[]}
+            sessionId={null}
+            activeProject="MathScrabble"
+          />
+        </ThemeProvider>,
+      );
+      const frame = result.lastFrame() ?? '';
+      // theme['accent'] = #7C6FEB (violet) → truecolor escape:
+      expect(frame).toContain('\x1b[38;2;124;111;235m');
+    });
+  });
+
   describe('Phase 3M — Away Mode segment', () => {
     it('omits the Away Mode segment when awayMode is false', () => {
       const { lastFrame } = renderStatusBar({

@@ -71,6 +71,11 @@ export interface LayoutProps {
   readonly autonomyTier?: 1 | 2 | 3;
   /** Phase 3N.2 — session token + cost totals for StatusBar segment. */
   readonly sessionTotals?: SessionTotals;
+  /**
+   * Phase 5D — active-project cursor name (or null when unset). Plumbed
+   * from `useConfig().config.activeProject` at the App level.
+   */
+  readonly activeProject?: string | null;
 }
 
 function getPopupOnTopKey(stack: readonly FocusContext[]): string | null {
@@ -106,6 +111,7 @@ export function Layout(props: LayoutProps): React.JSX.Element {
         awayMode={props.awayMode ?? false}
         pendingQueueCount={props.queueResult?.pending.length ?? 0}
         autonomyTier={props.autonomyTier ?? 2}
+        activeProject={props.activeProject ?? null}
         {...(props.sessionTotals !== undefined ? { sessionTotals: props.sessionTotals } : {})}
       />
       {/*

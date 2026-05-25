@@ -116,6 +116,20 @@ export interface RouterDeps {
    */
   readonly setDispatchAutonomyTier?: (tier: AutonomyTier) => void;
   /**
+   * Phase 5D — same shape as `setDispatchAwayMode` but for the active-
+   * project cursor that `resolveProjectPath` consults when a tool call
+   * omits `project:`. The CLI server's closure validates the requested
+   * project name against `projectStore` and emits an audit row on every
+   * change. Test rigs that don't construct a cursor can leave this
+   * undefined — `runtime.setActiveProject` still validates args and
+   * echoes back the requested value.
+   *
+   * Pass `null` to clear the cursor; the resolver falls back to the
+   * boot active project (`defaultProjectPath`-matched registered
+   * project, else first registered).
+   */
+  readonly setDispatchActiveProject?: (project: string | null) => void;
+  /**
    * Phase 3T — flips an `interruptPending` flag on the dispatch context
    * cursor. While true, the dispatch shim short-circuits ACT-scope tool
    * calls so Maestro's still-streaming turn can't spawn fresh workers
@@ -314,6 +328,20 @@ export interface RuntimeSetAutonomyTierArgs {
 
 export interface RuntimeSetAutonomyTierResult {
   readonly tier: AutonomyTier;
+}
+
+// Phase 5D — active project hot-apply. Stored as the registered
+// project's NAME (mirrors the config field + `symphony list` display +
+// `set_active_project` MCP tool input). `null` clears the cursor and
+// returns the dispatch resolver to its boot fallback chain
+// (defaultProjectPath → first registered project).
+
+export interface RuntimeSetActiveProjectArgs {
+  readonly project: string | null;
+}
+
+export interface RuntimeSetActiveProjectResult {
+  readonly project: string | null;
 }
 
 // Phase 3T — interrupt RPC (no args; idempotent).
@@ -823,6 +851,34 @@ export function createSymphonyRouter(deps: RouterDeps) {
       }
       deps.setDispatchAutonomyTier?.(args.tier);
       return { tier: args.tier };
+    },
+    /**
+     * Phase 5D — push the active-project cursor from the TUI (or from
+     * the `set_active_project` MCP tool, which routes through the
+     * server-side closure directly) into the dispatch resolver.
+     * Validates the project NAME against `projectStore`; rejects
+     * unknown names with a typed bad-args error so a misbehaving
+     * client can't silently desync. `null` clears the cursor.
+     * Mirrors `setAwayMode`'s best-effort shape: rigs without a
+     * dispatch cursor still get arg validation.
+     */
+    async setActiveProject(
+      args: RuntimeSetActiveProjectArgs,
+    ): Promise<RuntimeSetActiveProjectResult> {
+      const value = args?.project;
+      if (value !== null && (typeof value !== 'string' || value.length === 0)) {
+        throw badArgs('project must be a non-empty string or null');
+      }
+      if (value !== null) {
+        const stored = deps.projectStore.get(value);
+        if (stored === undefined) {
+          throw badArgs(`unknown project '${value}'`);
+        }
+        deps.setDispatchActiveProject?.(stored.name);
+        return { project: stored.name };
+      }
+      deps.setDispatchActiveProject?.(null);
+      return { project: null };
     },
     /**
      * Phase 3T — atomic pivot. Composes:

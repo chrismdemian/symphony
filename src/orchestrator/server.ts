@@ -41,6 +41,7 @@ import { makeListTasksTool } from './tools/list-tasks.js';
 import { makeCreateTaskTool } from './tools/create-task.js';
 import { makeUpdateTaskTool } from './tools/update-task.js';
 import { makeTaskNotesTool } from './tools/task-notes.js';
+import { makeSetActiveProjectTool } from './tools/set-active-project.js';
 import { createTaskNotesMirrorQueue } from '../state/task-notes-mirror-queue.js';
 import { makeAskUserTool } from './tools/ask-user.js';
 import { makeReviewDiffTool } from './tools/review-diff.js';
@@ -63,7 +64,7 @@ import {
 } from '../rpc/auth.js';
 import { startRpcServer, type RpcServerHandle } from '../rpc/server.js';
 import { createSymphonyRouter } from '../rpc/router-impl.js';
-import { loadConfig } from '../utils/config.js';
+import { applyPatchToDisk, loadConfig } from '../utils/config.js';
 import { readProjectConfig, readSymphonyConfig } from '../worktree/symphony-config.js';
 import { createNotificationDispatcher } from '../notifications/dispatcher.js';
 import type { DispatcherHandle } from '../notifications/types.js';
@@ -546,15 +547,113 @@ export async function startOrchestratorServer(
     options.waveStore ??
     (options.database ? new SqliteWaveStore(options.database.db) : new WaveRegistry());
 
-  const resolveProjectPath = (project?: string): string => {
-    if (project === undefined || project.length === 0) return defaultProjectPath;
-    const stored = projectStore.get(project);
-    if (stored) return stored.path;
-    // Accept absolute path fallback for Phase 5 pre-registry mode.
-    if (path.isAbsolute(project)) return path.resolve(project);
-    throw new Error(
-      `Unknown project '${project}'. Register it via OrchestratorServerOptions.projects or pass an absolute path.`,
+  // Phase 5D — active-project cursor. `null` means the resolver falls
+  // back to the boot-time default (defaultProjectPath). Tool calls that
+  // explicitly pass `project:` are NEVER routed through this cursor —
+  // explicit-arg always wins, matching the existing semantics.
+  //
+  // The cursor is mutated by:
+  //   - `setDispatchActiveProject` (wired into RouterDeps below)
+  //   - `set_active_project` MCP tool (Maestro-side handle plumbed via
+  //     `lifecycleOptions.activeProjectController` further down)
+  //   - boot-time `resolveBootActiveProject()` (after ensureDefault).
+  //
+  // Stored as the registered project's NAME (mirrors the config field
+  // + `symphony list` + the MCP tool input). Path is resolved on read
+  // so a registered project that gets re-registered at a different
+  // path still routes correctly without cursor reload.
+  let activeProjectCursor: string | null = null;
+
+  /**
+   * Look up the path of the project named by the cursor, if any. Returns
+   * undefined when the cursor is null OR when the named project no
+   * longer exists (e.g. user did `symphony remove` mid-session). The
+   * resolver below treats undefined as "fall through to defaultProjectPath".
+   */
+  const getActiveProjectPath = (): string | undefined => {
+    if (activeProjectCursor === null) return undefined;
+    const rec = projectStore.get(activeProjectCursor);
+    return rec?.path;
+  };
+
+  /**
+   * Phase 5D — central setter for the active-project cursor. Both the
+   * `runtime.setActiveProject` RPC handler (TUI-direct) and the
+   * `set_active_project` MCP tool (Maestro-driven) route through THIS
+   * closure so audit + chat-row signal fire identically regardless of
+   * which entry point flipped the cursor.
+   *
+   * Trust contract: the caller has ALREADY validated the project name
+   * against `projectStore` (or passed `null` to clear). No
+   * double-validation here.
+   *
+   * No-op when value === prev (don't emit chat rows for redundant
+   * "switch to X" when we were already on X).
+   */
+  const setDispatchActiveProject = (value: string | null): void => {
+    const prev = activeProjectCursor;
+    activeProjectCursor = value;
+    if (prev === value) return;
+    auditLogger.append(
+      {
+        ts: new Date().toISOString(),
+        kind: 'active_project_changed',
+        severity: 'info',
+        headline: `active project ${prev ?? '(none)'} → ${value ?? '(none)'}`,
+        payload: { from: prev ?? null, to: value ?? null },
+      },
+      { rawKeys: ['from', 'to'] },
     );
+    // Phase 5D — chat-row signal. Reuse CompletionSummary (3O.1 /
+    // 3P precedent) with `statusKind: 'completed'` so the chat
+    // bubble renders with the gold ✓ glyph. Synthetic workerId
+    // mirrors 3M's `away-digest-${Date.now()}` shape; chat reducer
+    // keys rows by its own turnId so workerId collisions are inert.
+    // The bubble's `(project) · duration` tail is suppressed by
+    // `projectName=''` AND `durationMs=null` (3M-locked Bubble
+    // behavior) — the headline itself carries the project name
+    // change, so the tail would be redundant.
+    completionsBroker.publish({
+      workerId: `active-project-${Date.now()}`,
+      workerName: 'Symphony',
+      projectName: '',
+      statusKind: 'completed',
+      durationMs: null,
+      headline:
+        value === null
+          ? `Active project cleared (was ${prev ?? '(none)'})`
+          : `Active project → ${value}`,
+      ts: new Date().toISOString(),
+      fallback: false,
+    });
+  };
+
+  /**
+   * Phase 5D — disk persistence for the active-project field. Wraps
+   * `applyPatchToDisk` so the `set_active_project` MCP tool can
+   * persist without importing `config.ts` directly (keeps the tool
+   * test-friendly — production wires this, tests pass `vi.fn()`).
+   */
+  const persistActiveProject = async (project: string | null): Promise<void> => {
+    await applyPatchToDisk({ activeProject: project });
+  };
+
+  const resolveProjectPath = (project?: string): string => {
+    if (project !== undefined && project.length > 0) {
+      const stored = projectStore.get(project);
+      if (stored) return stored.path;
+      // Accept absolute path fallback for Phase 5 pre-registry mode.
+      if (path.isAbsolute(project)) return path.resolve(project);
+      throw new Error(
+        `Unknown project '${project}'. Register it via OrchestratorServerOptions.projects or pass an absolute path.`,
+      );
+    }
+    // Phase 5D — omitted project: consult the active-project cursor
+    // first. If null OR the cursor names a project that no longer
+    // exists, fall back to defaultProjectPath. The fallback chain
+    // mirrors the boot resolver below so mid-session removes don't
+    // strand Maestro on a phantom project.
+    return getActiveProjectPath() ?? defaultProjectPath;
   };
 
   const workerManager =
@@ -657,18 +756,45 @@ export async function startOrchestratorServer(
   let globalModelMode: 'opus' | 'mixed';
   let bootAwayMode: boolean;
   let bootAutonomyTier: AutonomyTier;
+  // Phase 5D — boot-time active-project resolution. Reads
+  // `config.activeProject` from disk; validates against the
+  // (post-`ensureDefault`) projectStore so a project that was removed
+  // out-of-band gracefully degrades to the defaultProjectPath
+  // fallback. `undefined` means "no persisted preference" — the
+  // cursor stays null and the resolver uses defaultProjectPath.
+  let bootActiveProjectName: string | undefined;
   try {
     const bootGlobalConfig = await loadConfig();
     globalMaxWorkers = bootGlobalConfig.config.maxConcurrentWorkers;
     globalModelMode = bootGlobalConfig.config.modelMode;
     bootAwayMode = bootGlobalConfig.config.awayMode;
     bootAutonomyTier = bootGlobalConfig.config.autonomyTier;
+    bootActiveProjectName = bootGlobalConfig.config.activeProject;
   } catch {
     const fallback = (await import('../utils/config-schema.js')).defaultConfig();
     globalMaxWorkers = fallback.maxConcurrentWorkers;
     globalModelMode = fallback.modelMode;
     bootAwayMode = fallback.awayMode;
     bootAutonomyTier = fallback.autonomyTier;
+    bootActiveProjectName = fallback.activeProject;
+  }
+  // Phase 5D — initialize the active-project cursor. The cursor is the
+  // CONFIG's `activeProject` when it names a known project; otherwise
+  // null (resolver falls back to defaultProjectPath). We do NOT
+  // auto-promote the boot default into the cursor — a null cursor is
+  // semantically distinct from "user pinned the boot project." This
+  // matters for `symphony list`'s `(active)` annotation: only an
+  // explicit USER choice (or Maestro's `set_active_project` call)
+  // marks a project active.
+  if (bootActiveProjectName !== undefined) {
+    const stored = projectStore.get(bootActiveProjectName);
+    if (stored !== undefined) {
+      activeProjectCursor = stored.name;
+    }
+    // else: persisted active project was removed out-of-band. Leave
+    // cursor null; the resolver falls back to defaultProjectPath
+    // silently. We don't audit-log on boot because the user hasn't
+    // taken an action this session.
   }
   // Phase 3M / 3S — stamp the dispatch context with the persisted runtime
   // flags so the capability shim's guards take effect on the first tool
@@ -861,6 +987,17 @@ export async function startOrchestratorServer(
   registry.register(
     makeGetProjectInfoTool({ store: projectStore, workerRegistry }),
   );
+  // Phase 5D — set_active_project MCP tool. Both this tool and the
+  // `runtime.setActiveProject` RPC share `setDispatchActiveProject`
+  // (top-level closure above) so audit + chat-row signal fire
+  // identically regardless of which entry point flipped the cursor.
+  registry.register(
+    makeSetActiveProjectTool({
+      projectStore,
+      setDispatchActiveProject,
+      persist: persistActiveProject,
+    }),
+  );
   registry.register(
     makeCreateWorktreeTool({ store: projectStore, worktreeManager }),
   );
@@ -981,6 +1118,10 @@ export async function startOrchestratorServer(
           }, { rawKeys: ['from', 'to'] });
         }
       },
+      // Phase 5D — see the top-level `setDispatchActiveProject`
+      // closure. Audit + chat-row signal fire from there so the MCP
+      // tool path and the RPC path both flow through one writer.
+      setDispatchActiveProject,
       // Phase 3T — bridge the runtime.interrupt RPC's pivot-pending flag
       // into the live dispatch context. The shim reads
       // `ctx.interruptPending` and short-circuits ACT-scope tool calls
