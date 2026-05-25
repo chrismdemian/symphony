@@ -180,6 +180,11 @@ export const DEFAULT_PRESERVE_PATTERNS: readonly string[] = [
   '.env.*.local',
   '.envrc',
   'docker-compose.override.yml',
+  // Phase 5C — Maestro mirrors task notes to `<project>/.symphony/tasks/<id>/notes.md`
+  // so workers spawned in worktrees can `Read` prior context. `.symphony/` is
+  // git-excluded inside worktrees (see DEFAULT_GIT_EXCLUDE_PATTERNS); without
+  // this pattern the project-root mirror would never reach the worktree.
+  '.symphony/tasks/**/notes.md',
 ];
 
 export const DEFAULT_EXCLUDE_SEGMENTS: readonly string[] = [

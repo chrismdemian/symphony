@@ -41,6 +41,18 @@ export interface TaskRegistryOptions {
    * `WorkerLifecycleOptions.onWorkerStatusChange`).
    */
   readonly onTaskStatusChange?: (snapshot: TaskSnapshot) => void;
+  /**
+   * Phase 5C — fired AFTER `update()` appends a non-empty note. Receives
+   * the post-update task snapshot AND the new `TaskNote` row (defensive
+   * copies — same immutability contract as `onTaskStatusChange`). Used
+   * by the server to dispatch the disk mirror writer.
+   *
+   * ONLY fires on a real note-append (`patch.notes` trim-non-empty).
+   * Blank notes (which the update path drops) do NOT fire. Errors
+   * thrown by the callback are swallowed so a misbehaving consumer
+   * cannot poison the update path.
+   */
+  readonly onNotesAppended?: (snapshot: TaskSnapshot, newNote: TaskNote) => void;
 }
 
 function defaultIdGenerator(): string {
@@ -58,12 +70,16 @@ export class TaskRegistry implements TaskStore {
   private readonly genId: () => string;
   private readonly projectStore: ProjectStore | undefined;
   private readonly onTaskStatusChange: ((snapshot: TaskSnapshot) => void) | undefined;
+  private readonly onNotesAppended:
+    | ((snapshot: TaskSnapshot, newNote: TaskNote) => void)
+    | undefined;
 
   constructor(opts: TaskRegistryOptions = {}) {
     this.now = opts.now ?? Date.now;
     this.genId = opts.idGenerator ?? defaultIdGenerator;
     this.projectStore = opts.projectStore;
     this.onTaskStatusChange = opts.onTaskStatusChange;
+    this.onNotesAppended = opts.onNotesAppended;
   }
 
   list(filter: TaskListFilter = {}): TaskRecord[] {
@@ -151,11 +167,13 @@ export class TaskRegistry implements TaskStore {
         record.completedAt = iso;
       }
     }
+    let appendedNote: TaskNote | undefined;
     if (patch.notes !== undefined) {
       const text = patch.notes.trim();
       if (text.length > 0) {
         const entry: TaskNote = { at: iso, text };
         record.notes.push(entry);
+        appendedNote = entry;
       }
     }
     if (patch.workerId !== undefined) {
@@ -177,6 +195,17 @@ export class TaskRegistry implements TaskStore {
     ) {
       try {
         this.onTaskStatusChange(toTaskSnapshot(record));
+      } catch {
+        // downstream consumer must not poison the update path
+      }
+    }
+    // Phase 5C — fires AFTER the status callback so consumers that
+    // track both signals see them in a consistent order. The note
+    // copy is the entry just pushed (with `at = iso`); the snapshot
+    // carries the full post-update notes array.
+    if (this.onNotesAppended !== undefined && appendedNote !== undefined) {
+      try {
+        this.onNotesAppended(toTaskSnapshot(record), { ...appendedNote });
       } catch {
         // downstream consumer must not poison the update path
       }

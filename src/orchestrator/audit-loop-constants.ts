@@ -89,6 +89,24 @@ export const AUDIT_ESCALATION_TEMPLATE =
  * (`role-opener-reviewer-v1.md:13`); Maestro's prompt MUST spawn a fresh
  * reviewer, NOT `resume_worker` on the implementer.
  */
+/**
+ * Phase 5C — verbatim context-hygiene rule Maestro follows when
+ * externalizing progress notes. Quoted in the v1 prompt's Context
+ * Hygiene section (and the regenerated fragment
+ * `maestro-context-hygiene.md`). Drift-locked against the fragment by
+ * `tests/integration/5c-prompt-drift.integration.test.ts` (mirrors the
+ * 4F.3 `DESIGN_MD_AUTO_LOAD_NOTE` / 4G.1 `AUDIT_RESUME_PROMPT_PREFIX`
+ * / 4G.2 `UI_REVIEWER_TASK_BRIEF_TEMPLATE` patterns).
+ *
+ * The protocol references the `task_notes` MCP tool by name; Symphony's
+ * tool registration in `server.ts:registerTaskNotesTool` is the
+ * code-side authority. Renaming the tool requires editing the v1
+ * prompt + this constant + `pnpm gen:fragments`; the drift-lock test
+ * fails CI otherwise.
+ */
+export const TASK_NOTES_PROTOCOL =
+  '**"Context remaining does not mean task is complete."** Do not declare done because you\'re running low on context. Externalize state: call `task_notes(action: "append", task_id, text)` for every progress beat — Symphony mirrors the SQL row to `<project>/.symphony/tasks/<task-id>/notes.md` so workers spawned for that task can `Read` prior context from their worktree. Pull notes on demand with `task_notes(action: "read", task_id)` (one task, markdown blob — does NOT flood like `list_tasks`). `task_notes(action: "list")` summarizes which tasks have notes worth reading. Update the plan doc. Use SQLite.';
+
 export const UI_REVIEWER_TASK_BRIEF_TEMPLATE = `You are a skeptical UI reviewer for Symphony.
 
 Screenshots from the implementer's worktree (read each with the Read tool — Claude Code's Read handles PNGs natively):

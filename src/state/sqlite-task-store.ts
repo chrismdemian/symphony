@@ -55,6 +55,12 @@ export interface SqliteTaskStoreOptions {
    * updates and non-status patches (notes/workerId/result) do not.
    */
   readonly onTaskStatusChange?: (snapshot: TaskSnapshot) => void;
+  /**
+   * Phase 5C — fired AFTER `update()` appends a non-empty note (mirrors
+   * `TaskRegistryOptions.onNotesAppended`). Receives a frozen snapshot
+   * AND a copy of the new `TaskNote`. Errors swallowed.
+   */
+  readonly onNotesAppended?: (snapshot: TaskSnapshot, newNote: TaskNote) => void;
 }
 
 function defaultIdGenerator(): string {
@@ -93,6 +99,9 @@ export class SqliteTaskStore implements TaskStore {
   private readonly genId: () => string;
   private readonly onCorruptRow: (err: CorruptRecordError) => void;
   private readonly onTaskStatusChange: ((snapshot: TaskSnapshot) => void) | undefined;
+  private readonly onNotesAppended:
+    | ((snapshot: TaskSnapshot, newNote: TaskNote) => void)
+    | undefined;
 
   constructor(private readonly db: Database, opts: SqliteTaskStoreOptions = {}) {
     this.now = opts.now ?? Date.now;
@@ -105,6 +114,7 @@ export class SqliteTaskStore implements TaskStore {
         void err;
       });
     this.onTaskStatusChange = opts.onTaskStatusChange;
+    this.onNotesAppended = opts.onNotesAppended;
     this.stmts = {
       insert: db.prepare(
         `INSERT INTO tasks
@@ -265,10 +275,13 @@ export class SqliteTaskStore implements TaskStore {
     }
 
     const notes = parseNotes(existing);
+    let appendedNote: TaskNote | undefined;
     if (patch.notes !== undefined) {
       const text = patch.notes.trim();
       if (text.length > 0) {
-        notes.push({ at: iso, text });
+        const entry: TaskNote = { at: iso, text };
+        notes.push(entry);
+        appendedNote = entry;
       }
     }
 
@@ -299,6 +312,19 @@ export class SqliteTaskStore implements TaskStore {
     ) {
       try {
         this.onTaskStatusChange(toTaskSnapshot({ ...record, notes: record.notes.slice() }));
+      } catch {
+        // downstream consumer must not poison the update path
+      }
+    }
+    // Phase 5C — fires after the status callback so a tool that does
+    // BOTH a status flip and a note append in one update sees the two
+    // signals in a consistent order.
+    if (this.onNotesAppended !== undefined && appendedNote !== undefined) {
+      try {
+        this.onNotesAppended(
+          toTaskSnapshot({ ...record, notes: record.notes.slice() }),
+          { ...appendedNote },
+        );
       } catch {
         // downstream consumer must not poison the update path
       }

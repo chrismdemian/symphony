@@ -54,6 +54,32 @@ describe('matchesPreservePattern', () => {
     expect(matchesPreservePattern('apps/web/.env', ['.env'])).toBe(true);
   });
 
+  it('matches Phase 5C task-notes mirror paths via the default pattern', () => {
+    // Regression-lock: the disk mirror lives at
+    // <project>/.symphony/tasks/<id>/notes.md and MUST be carried into
+    // worktrees so worker `Read` calls find prior task context.
+    expect(
+      matchesPreservePattern(
+        '.symphony/tasks/tk-abc12345/notes.md',
+        DEFAULT_PRESERVE_PATTERNS,
+      ),
+    ).toBe(true);
+    expect(
+      matchesPreservePattern(
+        '.symphony/tasks/tk-deadbeef/notes.md',
+        DEFAULT_PRESERVE_PATTERNS,
+      ),
+    ).toBe(true);
+    // Negative case: an unrelated file inside .symphony/tasks/ does NOT
+    // match (only notes.md is preserved by the default).
+    expect(
+      matchesPreservePattern(
+        '.symphony/tasks/tk-abc12345/scratch.txt',
+        DEFAULT_PRESERVE_PATTERNS,
+      ),
+    ).toBe(false);
+  });
+
   it('respects negation', () => {
     expect(matchesPreservePattern('.env.example', ['.env*', '!.env.example'])).toBe(false);
     expect(matchesPreservePattern('.env.local', ['.env*', '!.env.example'])).toBe(true);
