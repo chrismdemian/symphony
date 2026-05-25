@@ -50,6 +50,7 @@ export const TOOL_VERB: Readonly<Record<string, string>> = Object.freeze({
   update_task: 'Scoring',
   task_notes: 'Annotating',
   propose_plan: 'Scoring',
+  set_active_project: 'Cueing',
 
   // Worktree
   create_worktree: 'Arranging',

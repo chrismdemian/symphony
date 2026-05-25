@@ -417,6 +417,32 @@ function AppShell(props: AppProps): React.JSX.Element {
     });
   }, [autonomyTier, rpc]);
 
+  // Phase 5D — active-project cursor sync. The TUI's read of
+  // `config.activeProject` and the server's `activeProjectCursor` can
+  // diverge after a `runtime.setActiveProject` RPC (the RPC writes the
+  // server cursor; the disk write is the next thing the SetConfig
+  // commit does). This effect closes the loop: when the user (or a
+  // mid-session config-file edit) flips the active project on disk,
+  // push the new value into the server so omitted-`project:` tool
+  // calls route correctly without a Symphony restart.
+  //
+  // Best-effort: on RPC failure the cursor stays at its prior value
+  // until the next push (mirrors the awayMode + autonomyTier handlers).
+  const activeProject = config.activeProject ?? null;
+  const prevActiveProjectRef = React.useRef(activeProject);
+  useEffect(() => {
+    const prev = prevActiveProjectRef.current;
+    if (prev === activeProject) return;
+    prevActiveProjectRef.current = activeProject;
+    void rpc.call.runtime
+      .setActiveProject({ project: activeProject })
+      .catch(() => {
+        // Best-effort; server falls back to prior cursor + boot
+        // defaultProjectPath. A user-visible failure would be more
+        // hostile than a silent re-sync on next push.
+      });
+  }, [activeProject, rpc]);
+
   // Phase 3T — interrupt pivot handlers. Two split entry points (Esc
   // vs Ctrl+C) so the Ctrl+C path can implement the two-tap-to-exit
   // escape hatch via a ref-tracked timer.
@@ -591,6 +617,7 @@ function AppShell(props: AppProps): React.JSX.Element {
               questionsResult={questionsResult}
               awayMode={awayMode}
               autonomyTier={autonomyTier}
+              activeProject={activeProject}
               sessionTotals={sessionTotalsResult.totals}
             />
           </Box>

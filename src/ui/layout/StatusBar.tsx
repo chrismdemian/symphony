@@ -62,6 +62,21 @@ export interface StatusBarProps {
    * matches the schema default. Cycled via Ctrl+Y.
    */
   readonly autonomyTier?: AutonomyTier;
+  /**
+   * Phase 5D — active-project cursor name. When set, an `Active:
+   * <name>` chip renders between the `Project:` segment and (if
+   * present) Away Mode. The cursor is sourced from `config.activeProject`
+   * at the App level (lives across the same useConfig provider as
+   * awayMode + autonomyTier). Pass `null` / `undefined` to suppress
+   * the chip entirely — Symphony has no notion of "active project"
+   * until the user / Maestro calls `set_active_project`.
+   *
+   * Why a separate chip (vs morphing `Project:`): the existing
+   * `Project:` segment shows the first registered project + a count.
+   * Replacing it would break the existing visual contract; an additive
+   * chip surfaces routing state without invasive layout changes.
+   */
+  readonly activeProject?: string | null;
 }
 
 function activeCount(workers: readonly WorkerRecordSnapshot[]): number {
@@ -195,6 +210,21 @@ export function StatusBar(props: StatusBarProps): React.JSX.Element {
       <Text color={theme['border']}>{SEPARATOR}</Text>
       <Text color={theme['textMuted']}>Project: </Text>
       <Text color={theme['text']}>{formatProject(props.projects)}</Text>
+      {/*
+       * Phase 5D — Active project chip. Renders ONLY when the cursor
+       * is explicitly set (someone called `set_active_project`). Null
+       * / undefined hides the chip — Symphony has no "currently
+       * active" semantics until a real choice is made. Value tone is
+       * accent (gold) so the eye lands on the routing target, label
+       * stays muted (chrome).
+       */}
+      {props.activeProject !== null && props.activeProject !== undefined && (
+        <>
+          <Text color={theme['border']}>{SEPARATOR}</Text>
+          <Text color={theme['textMuted']}>Active: </Text>
+          <Text color={theme['accent']}>{props.activeProject}</Text>
+        </>
+      )}
       {awayMode && (
         <>
           <Text color={theme['border']}>{SEPARATOR}</Text>

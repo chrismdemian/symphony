@@ -61,6 +61,11 @@ export const MAESTRO_FRAGMENT_SEPARATOR = '\n\n---\n\n';
  */
 export const MAESTRO_FRAGMENT_FILES = [
   'maestro-identity.md',
+  // Phase 5D — active-project routing protocol. Sits between identity
+  // (which surfaces the cursor at session start) and voice (which is
+  // about HOW Maestro speaks) because routing is a structural concern
+  // that shapes every subsequent tool dispatch.
+  'maestro-active-project.md',
   'maestro-voice.md',
   'maestro-autonomy-tiers.md',
   'maestro-model-selection.md',

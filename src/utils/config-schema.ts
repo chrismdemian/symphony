@@ -116,6 +116,27 @@ export const SymphonyConfigSchema = z.object({
     })
     .default({ name: 'symphony', autoFallback16Color: true }),
   defaultProjectPath: z.string().min(1).optional(),
+  /**
+   * Phase 5D — currently active project. Maestro and the dispatch
+   * resolver default to this project when a tool call omits `project:`.
+   * Stored as the registered project's NAME (mirrors what
+   * `set_active_project` accepts and what `symphony list` displays).
+   * `undefined` means "fall back to bootActiveProject" (the project
+   * registered at `defaultProjectPath`, else first registered).
+   *
+   * Runtime-aware field (6-site rule per 3M/3S): `server.ts` resolves
+   * `bootActiveProject` at startup and updates the dispatch-context
+   * cursor via `runtime.setActiveProject`. Disk read happens once at
+   * boot; subsequent switches flow disk → dispatch via the RPC.
+   *
+   * Validation against `projectStore` happens at the consumer (boot
+   * resolver + `set_active_project` MCP tool), NOT at the schema layer:
+   * a Zod schema can't read a live registry, and rejecting a name on
+   * config read would orphan the user's last-active project after a
+   * `symphony remove + symphony add` round-trip. The boot resolver
+   * tolerates an unknown name and falls back with a warning.
+   */
+  activeProject: z.string().min(1).optional(),
   leaderTimeoutMs: z.number().int().min(100).max(1000).default(300),
   keybindOverrides: z.record(z.string(), KeyChordSchema).default({}),
   /**
