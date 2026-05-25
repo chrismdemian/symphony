@@ -40,6 +40,8 @@ import { makeCreateWorktreeTool } from './tools/create-worktree.js';
 import { makeListTasksTool } from './tools/list-tasks.js';
 import { makeCreateTaskTool } from './tools/create-task.js';
 import { makeUpdateTaskTool } from './tools/update-task.js';
+import { makeTaskNotesTool } from './tools/task-notes.js';
+import { createTaskNotesMirrorQueue } from '../state/task-notes-mirror-queue.js';
 import { makeAskUserTool } from './tools/ask-user.js';
 import { makeReviewDiffTool } from './tools/review-diff.js';
 import { makeResearchWaveTool } from './tools/research-wave.js';
@@ -421,15 +423,42 @@ export async function startOrchestratorServer(
   const taskReadyOnTaskStatusChange = (snapshot: TaskSnapshot): void => {
     taskReadyDispatcherRef.current?.onTaskStatusChange(snapshot);
   };
+  // Phase 5C — fire-and-forget disk mirror for task notes. SQL is source
+  // of truth; the mirror exists so workers in worktrees can `Read` prior
+  // context and humans can inspect notes outside Symphony. Errors are
+  // swallowed inside `mirrorTaskNotes` (returns `skipReason`) so a fs
+  // failure never poisons SQL writes. We resolve the project path
+  // lazily on each callback so registry/seed timing doesn't matter.
+  //
+  // Per-task serialization (`createTaskNotesMirrorQueue`) prevents
+  // back-to-back appends from racing on the same target file: each
+  // task gets its own promise chain so `mkdir → writeFile → rename`
+  // cycles never interleave.
+  const taskNotesMirrorQueue = createTaskNotesMirrorQueue();
+  const taskNotesOnAppend = (snapshot: TaskSnapshot): void => {
+    const proj = projectStore.get(snapshot.projectId);
+    const projectPath = proj?.path ?? null;
+    void taskNotesMirrorQueue
+      .enqueue({
+        projectPath,
+        taskId: snapshot.id,
+        notes: snapshot.notes,
+      })
+      .catch(() => {
+        // mirror is best-effort; never re-throw.
+      });
+  };
   const taskStore: TaskStore =
     options.taskStore ??
     (options.database
       ? new SqliteTaskStore(options.database.db, {
           onTaskStatusChange: taskReadyOnTaskStatusChange,
+          onNotesAppended: taskNotesOnAppend,
         })
       : new TaskRegistry({
           projectStore,
           onTaskStatusChange: taskReadyOnTaskStatusChange,
+          onNotesAppended: taskNotesOnAppend,
         }));
   // Phase 3H.3 — instantiate the notifications dispatcher BEFORE the
   // question store so its `onQuestionEnqueued` hook is wired at the
@@ -842,6 +871,7 @@ export async function startOrchestratorServer(
     makeCreateTaskTool({ taskStore, projectStore }),
   );
   registry.register(makeUpdateTaskTool({ taskStore }));
+  registry.register(makeTaskNotesTool({ taskStore, projectStore }));
 
   registry.register(makeAskUserTool({ questionStore, projectStore }));
   registry.register(makeReviewDiffTool({ registry: workerRegistry }));

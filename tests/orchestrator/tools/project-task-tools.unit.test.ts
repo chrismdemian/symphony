@@ -234,7 +234,7 @@ describe('list_tasks', () => {
       projectStore: seedProjects(),
     });
     const res = await tool.handler(
-      { project: undefined, status: undefined, limit: undefined, ready_only: undefined },
+      { project: undefined, status: undefined, limit: undefined, ready_only: undefined, include_notes: undefined },
       ctx(),
     );
     expect(asText(res)).toBe('No tasks match.');
@@ -248,7 +248,7 @@ describe('list_tasks', () => {
     taskStore.create({ projectId: 'backend', description: 'fix query' });
     const tool = makeListTasksTool({ taskStore, projectStore });
     const res = await tool.handler(
-      { project: 'frontend', status: undefined, limit: undefined, ready_only: undefined },
+      { project: 'frontend', status: undefined, limit: undefined, ready_only: undefined, include_notes: undefined },
       ctx(),
     );
     const sc = res.structuredContent as { tasks: Array<{ projectId: string }> };
@@ -264,7 +264,7 @@ describe('list_tasks', () => {
     taskStore.create({ projectId: 'frontend', description: 'b' });
     const tool = makeListTasksTool({ taskStore, projectStore });
     const res = await tool.handler(
-      { project: undefined, status: 'pending', limit: undefined, ready_only: undefined },
+      { project: undefined, status: 'pending', limit: undefined, ready_only: undefined, include_notes: undefined },
       ctx(),
     );
     const sc = res.structuredContent as { tasks: unknown[] };
@@ -281,7 +281,7 @@ describe('list_tasks', () => {
     taskStore.update(b.id, { status: 'cancelled' });
     const tool = makeListTasksTool({ taskStore, projectStore });
     const res = await tool.handler(
-      { project: undefined, status: ['completed', 'cancelled'], limit: undefined, ready_only: undefined },
+      { project: undefined, status: ['completed', 'cancelled'], limit: undefined, ready_only: undefined, include_notes: undefined },
       ctx(),
     );
     expect((res.structuredContent as { tasks: unknown[] }).tasks.length).toBe(2);
@@ -293,7 +293,7 @@ describe('list_tasks', () => {
       projectStore: seedProjects(),
     });
     const res = await tool.handler(
-      { project: 'ghost', status: undefined, limit: undefined, ready_only: undefined },
+      { project: 'ghost', status: undefined, limit: undefined, ready_only: undefined, include_notes: undefined },
       ctx(),
     );
     expect(res.isError).toBe(true);
@@ -307,7 +307,7 @@ describe('list_tasks', () => {
     }
     const tool = makeListTasksTool({ taskStore, projectStore });
     const res = await tool.handler(
-      { project: undefined, status: undefined, limit: 2, ready_only: undefined },
+      { project: undefined, status: undefined, limit: 2, ready_only: undefined, include_notes: undefined },
       ctx(),
     );
     const sc = res.structuredContent as { tasks: unknown[]; total: number; truncated: boolean };
@@ -325,7 +325,7 @@ describe('list_tasks', () => {
     const tool = makeListTasksTool({ taskStore, projectStore });
     // A pending → B not ready, A ready.
     let res = await tool.handler(
-      { project: undefined, status: undefined, limit: undefined, ready_only: true },
+      { project: undefined, status: undefined, limit: undefined, ready_only: true, include_notes: undefined },
       ctx(),
     );
     let sc = res.structuredContent as { tasks: Array<{ id: string }> };
@@ -334,7 +334,7 @@ describe('list_tasks', () => {
     taskStore.update(a.id, { status: 'in_progress' });
     taskStore.update(a.id, { status: 'completed' });
     res = await tool.handler(
-      { project: undefined, status: undefined, limit: undefined, ready_only: true },
+      { project: undefined, status: undefined, limit: undefined, ready_only: true, include_notes: undefined },
       ctx(),
     );
     sc = res.structuredContent as { tasks: Array<{ id: string }> };
@@ -350,7 +350,7 @@ describe('list_tasks', () => {
     taskStore.update(a.id, { status: 'completed' });
     const tool = makeListTasksTool({ taskStore, projectStore });
     const res = await tool.handler(
-      { project: 'backend', status: undefined, limit: undefined, ready_only: true },
+      { project: 'backend', status: undefined, limit: undefined, ready_only: true, include_notes: undefined },
       ctx(),
     );
     const sc = res.structuredContent as { tasks: Array<{ id: string }> };
