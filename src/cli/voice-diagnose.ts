@@ -92,7 +92,25 @@ export async function runVoiceDiagnose(
     return result;
   }
 
-  const fixtureBytes = await fsp.readFile(fixturePath);
+  // Audit-m5 fix: wrap readFile so a race-window unlink / permission
+  // / I/O error surfaces as a structured `fixture-missing` result, not
+  // as an unhandled rejection.
+  let fixtureBytes: Buffer;
+  try {
+    fixtureBytes = await fsp.readFile(fixturePath);
+  } catch (cause) {
+    const result: VoiceDiagnoseResult = {
+      ok: false,
+      exitCode: 1,
+      reason: 'fixture-missing',
+      speechSegments: 0,
+      events: [],
+      stderrTail: String(cause),
+      durationMs: Math.round(performance.now() - t0),
+    };
+    emit(stdout, stderr, format, result);
+    return result;
+  }
 
   // 3. Spawn bridge
   const bridge = opts.bridgeFactory ? opts.bridgeFactory() : new VoiceBridge();

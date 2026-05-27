@@ -42,7 +42,9 @@ export async function runVoiceInstall(
       stdout.write(`[symphony] Voice subsystem installed at ${result.venvPath}.\n`);
     }
     stdout.write(`           silero-vad: ${result.sileroVadInstalled ? 'present' : 'MISSING'}\n`);
+    stdout.write(`           onnxruntime: ${result.onnxRuntimeInstalled ? 'present' : 'MISSING'}\n`);
     stdout.write(`           sounddevice: ${result.soundDeviceInstalled ? 'present' : 'MISSING'}\n`);
+    stdout.write(`           numpy: ${result.numpyInstalled ? 'present' : 'MISSING'}\n`);
     stdout.write(
       `           pyaudio (optional fallback): ${
         result.pyAudioInstalled ? 'present' : 'absent (sounddevice is primary)'

@@ -394,7 +394,19 @@ class Bridge:
             self.shutdown_event.set()
 
     def run(self) -> int:
-        """Main loop. Returns the process exit code."""
+        """Main loop. Returns the process exit code.
+
+        Audit-m6 note: in mic mode the audio iterator's `q.get()`
+        BLOCKS waiting for the next sounddevice callback. The
+        `shutdown_event` flag is checked AFTER each frame returns —
+        so the latency floor for honoring a shutdown command is one
+        frame (~32 ms at 16 kHz / 512-sample chunks). In practice
+        sounddevice keeps producing frames at the configured cadence
+        even during silence; if a future audio backend can pause its
+        callback stream, swap the queue's blocking `get()` to a
+        `get(timeout=0.1)` + Empty-catch loop so the flag is polled
+        at 10 Hz regardless of audio cadence.
+        """
         assert self.segmenter is not None
         assert self.audio_iter is not None
 
@@ -423,9 +435,15 @@ class Bridge:
                                 }
                             )
                 except ValueError as e:
+                    # Audit-m7 fix: fail-fast on first frame-shape error
+                    # rather than flooding every subsequent frame with the
+                    # same error. Frame-size mismatch is a configuration
+                    # bug (Node/Python disagree on frame_samples) — keep-
+                    # going just spammed N errors/sec while remaining broken.
                     emit_error("frame-shape", str(e))
-                    # Frame-size errors are programmer errors; keep going
-                    # but log so the failure mode is visible.
+                    log(f"frame-shape error: {e!r} — exiting; check --frame-samples alignment")
+                    self.shutdown_event.set()
+                    break
         finally:
             if self.audio_close is not None:
                 self.audio_close()

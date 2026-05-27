@@ -194,8 +194,59 @@ describe('runVoiceInstall — happy path', () => {
     expect(result.ok).toBe(true);
     expect(result.idempotent).toBe(true);
     expect(result.sileroVadInstalled).toBe(true);
+    expect(result.onnxRuntimeInstalled).toBe(true);
     expect(result.soundDeviceInstalled).toBe(true);
+    expect(result.numpyInstalled).toBe(true);
     expect(installCount).toBe(0); // no installs in idempotent path
+  });
+
+  it('audit-m2 regression: idempotent fast-path requires ALL REQUIRED deps, not just three', async () => {
+    // Pre-fix bug: probeDeps.allPresent = silero && onnxruntime && sounddevice,
+    // omitting numpy. A venv with everything except numpy would short-circuit
+    // through the idempotent fast-path and crash later at `import numpy`.
+    // The fix made `allPresent` reduce over REQUIRED_PIP_PACKAGES dynamically.
+    const venvDir = makeTmp('voice-installer-');
+    const venvPython = path.join(venvDir, 'bin', 'python');
+    const fsp = await import('node:fs/promises');
+    await fsp.mkdir(path.dirname(venvPython), { recursive: true });
+    await fsp.writeFile(venvPython, '#!/usr/bin/env false\n');
+    await fsp.chmod(venvPython, 0o755);
+
+    let installCount = 0;
+    const spawner: InstallerSpawner = async (req) => {
+      if (req.args[0] === '--version') {
+        return { stdout: 'Python 3.11.5', stderr: '', exitCode: 0, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'show') {
+        // numpy missing; all others present
+        const pkg = req.args[3];
+        if (pkg === 'numpy') {
+          return { stdout: '', stderr: '', exitCode: 1, signal: null };
+        }
+        return {
+          stdout: `Name: ${pkg}\nVersion: 1.0`,
+          stderr: '',
+          exitCode: 0,
+          signal: null,
+        };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'install') {
+        installCount += 1;
+      }
+      return { stdout: '', stderr: '', exitCode: 0, signal: null };
+    };
+
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: '/tmp/fake-home',
+      spawner,
+    });
+    // Must NOT be idempotent — numpy missing forces full install
+    expect(result.idempotent).toBe(false);
+    expect(result.ok).toBe(true);
+    // numpy install was attempted
+    expect(installCount).toBeGreaterThan(0);
   });
 });
 

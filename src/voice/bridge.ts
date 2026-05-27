@@ -136,6 +136,7 @@ export class VoiceBridge extends EventEmitter {
   private child: ChildHandle | undefined;
   private readlineIface: readline.Interface | undefined;
   private status: VoiceBridgeStatus = { kind: 'idle' };
+  private inputMode: 'mic' | 'stdin-pcm' | undefined;
   private readyResolvers: Array<(e: Extract<VoiceBridgeEvent, { type: 'ready' }>) => void> = [];
   private readyRejector: ((cause: Error) => void) | undefined;
   private shutdownAckResolvers: Array<() => void> = [];
@@ -222,6 +223,7 @@ export class VoiceBridge extends EventEmitter {
     }
 
     this.child = child;
+    this.inputMode = opts.inputMode;
     this.status = { kind: 'starting', pid: child.pid ?? -1 };
 
     this.attachStreams(child as unknown as ChildIO, opts.onStderr);
@@ -281,11 +283,16 @@ export class VoiceBridge extends EventEmitter {
   }
 
   /**
-   * Graceful shutdown. Sends `{"cmd":"shutdown"}`, awaits `shutdown_ack`
-   * or `graceMs` (default 5 s), then SIGTERM with 1 s grace, then SIGKILL.
-   * Win32 uses `taskkill /T /F` for the final stage (2A.4b M1 / 3Q precedent).
+   * Graceful shutdown. In `mic` mode: sends `{"cmd":"shutdown"}`,
+   * awaits `shutdown_ack` or `graceMs` (default 5 s), then SIGTERM
+   * with 1 s grace, then SIGKILL. Win32 uses `taskkill /T /F` for the
+   * final stage (2A.4b M1 / 3Q precedent).
    *
-   * `stdin-pcm` mode has no command channel — we go straight to SIGTERM.
+   * In `stdin-pcm` mode: stdin IS the PCM stream — there is no Python
+   * stdin command reader. The bridge typically exits on stdin EOF
+   * after the caller's `stdin.end()`, emitting `shutdown_ack` on the
+   * way out. If `stop()` is called without prior `stdin.end()` (e.g.
+   * abort), we go straight to force-stop.
    */
   async stop(opts: VoiceBridgeStopOptions = {}): Promise<void> {
     const child = this.child;
@@ -296,7 +303,12 @@ export class VoiceBridge extends EventEmitter {
 
     const graceMs = opts.graceMs ?? SHUTDOWN_GRACE_MS;
     const stdin = child.stdin;
-    const canCommand = stdin !== null && !stdin.destroyed;
+    // Audit-m4 fix: gate command-channel attempt on `inputMode === 'mic'`.
+    // In stdin-pcm mode the Python side has no command reader; sending
+    // a shutdown JSON would just be absorbed as ~32 bytes of PCM and
+    // we'd wait the full grace period for an ack that never comes.
+    const canCommand =
+      this.inputMode === 'mic' && stdin !== null && !stdin.destroyed;
 
     if (canCommand) {
       try {
@@ -354,11 +366,17 @@ export class VoiceBridge extends EventEmitter {
       input: child.stdout,
       crlfDelay: Infinity,
     });
-    // Cap per-line memory at 10 MB. readline v22 caps internally at
-    // ~64 KB by default; node 22's `Interface.maxLength` constructor
-    // option isn't exposed via createInterface, so we instead wrap the
-    // line listener to truncate. The 1A stream-parser uses 10 MB; we
-    // follow suit for symmetry.
+    // POST-HOC slice cap (audit-m1). Note: readline does NOT cap line
+    // length internally — it buffers the full line before emitting
+    // (verified empirically: 50 MB chunk -> single `line` event of
+    // length 50 MB). This slice is a cosmetic defense-in-depth that
+    // truncates AFTER readline already held the memory. Acceptable
+    // today because the only writer to the bridge's stdout is the
+    // Python bridge itself, emitting ~150-byte JSON events with
+    // newlines on every event. If a future change lets a worker pipe
+    // arbitrary data through this stdout, switch to a raw `data` event
+    // listener that bound-checks the running buffer (Multica scanner
+    // pattern, 1A precedent).
     this.readlineIface.on('line', (rawLine) => {
       const line =
         rawLine.length > READLINE_MAX_LINE_BYTES

@@ -115,7 +115,8 @@ export function voiceDiagnoseFixturePath(): string {
   }
   throw new VoiceDiagnoseFixtureNotFoundError(
     `diagnose-3s.pcm not found in: ${candidates.join(', ')}. ` +
-      'Run `node tests/fixtures/voice/generate.mjs` to regenerate.',
+      'Run `~/.symphony/voice-env/bin/python tests/fixtures/voice/generate.py` ' +
+      '(Win32: `~/.symphony/voice-env/Scripts/python tests/fixtures/voice/generate.py`) to regenerate.',
   );
 }
 

@@ -74,7 +74,9 @@ export interface VoiceInstallResult {
   readonly venvPath: string;
   readonly pythonPath: string;
   readonly sileroVadInstalled: boolean;
+  readonly onnxRuntimeInstalled: boolean;
   readonly soundDeviceInstalled: boolean;
+  readonly numpyInstalled: boolean;
   readonly pyAudioInstalled: boolean;
   readonly warnings: readonly string[];
   /** True when nothing was reinstalled (every requested dep already present at its current version). */

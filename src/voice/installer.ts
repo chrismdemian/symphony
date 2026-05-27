@@ -163,7 +163,9 @@ export async function runVoiceInstall(
         venvPath: venvDir,
         pythonPath: '',
         sileroVadInstalled: false,
+        onnxRuntimeInstalled: false,
         soundDeviceInstalled: false,
+        numpyInstalled: false,
         pyAudioInstalled: false,
         warnings: [
           `\`${pythonCmd} --version\` failed (exit ${probe.exitCode}): ${probe.stderr.slice(0, 500)}`,
@@ -180,7 +182,9 @@ export async function runVoiceInstall(
       venvPath: venvDir,
       pythonPath: '',
       sileroVadInstalled: false,
+      onnxRuntimeInstalled: false,
       soundDeviceInstalled: false,
+      numpyInstalled: false,
       pyAudioInstalled: false,
       warnings: [`Failed to invoke \`${pythonCmd}\`: ${describeError(cause)}`],
       idempotent: false,
@@ -202,7 +206,9 @@ export async function runVoiceInstall(
         venvPath: venvDir,
         pythonPath: '',
         sileroVadInstalled: false,
+        onnxRuntimeInstalled: false,
         soundDeviceInstalled: false,
+        numpyInstalled: false,
         pyAudioInstalled: false,
         warnings: [
           `${pythonVersion} too old — Symphony voice requires Python >= ${MIN_PYTHON_MAJOR}.${MIN_PYTHON_MINOR}.`,
@@ -231,7 +237,9 @@ export async function runVoiceInstall(
         venvPath: venvDir,
         pythonPath: '',
         sileroVadInstalled: false,
+        onnxRuntimeInstalled: false,
         soundDeviceInstalled: false,
+        numpyInstalled: false,
         pyAudioInstalled: false,
         warnings: [
           `Windows Store Python detected at ${basePrefix.stdout.trim()} — install a real Python ` +
@@ -267,7 +275,9 @@ export async function runVoiceInstall(
         venvPath: venvDir,
         pythonPath: venvPython,
         sileroVadInstalled: depStatus.silero,
+        onnxRuntimeInstalled: depStatus.onnxruntime,
         soundDeviceInstalled: depStatus.sounddevice,
+        numpyInstalled: depStatus.numpy,
         pyAudioInstalled: depStatus.pyaudio,
         warnings: [],
         idempotent: true,
@@ -293,7 +303,9 @@ export async function runVoiceInstall(
         venvPath: venvDir,
         pythonPath: '',
         sileroVadInstalled: false,
+        onnxRuntimeInstalled: false,
         soundDeviceInstalled: false,
+        numpyInstalled: false,
         pyAudioInstalled: false,
         warnings: [
           `\`python -m venv ${venvDir}\` failed (exit ${venvCreate.exitCode}): ` +
@@ -343,7 +355,9 @@ export async function runVoiceInstall(
         venvPath: venvDir,
         pythonPath: venvPython,
         sileroVadInstalled: false,
+        onnxRuntimeInstalled: false,
         soundDeviceInstalled: false,
+        numpyInstalled: false,
         pyAudioInstalled: false,
         warnings: [
           `\`pip install ${pkg}\` failed (exit ${install.exitCode}): ` +
@@ -378,7 +392,9 @@ export async function runVoiceInstall(
     venvPath: venvDir,
     pythonPath: venvPython,
     sileroVadInstalled: finalStatus.silero,
+    onnxRuntimeInstalled: finalStatus.onnxruntime,
     soundDeviceInstalled: finalStatus.sounddevice,
+    numpyInstalled: finalStatus.numpy,
     pyAudioInstalled: finalStatus.pyaudio,
     warnings,
     idempotent: false,
@@ -389,10 +405,19 @@ interface DepStatus {
   readonly silero: boolean;
   readonly onnxruntime: boolean;
   readonly sounddevice: boolean;
+  readonly numpy: boolean;
   readonly pyaudio: boolean;
-  readonly allPresent: boolean; // all REQUIRED, ignoring pyaudio
+  /** All REQUIRED packages present; OPTIONAL `pyaudio` excluded. */
+  readonly allPresent: boolean;
 }
 
+/**
+ * Probe each REQUIRED_PIP_PACKAGES entry + the OPTIONAL pyaudio.
+ * `allPresent` reduces over the REQUIRED list dynamically so adding a new
+ * required dep (e.g. `moonshine-onnx` in 6B) updates the check
+ * automatically — defends against the 6A audit-m2 "silently omits one"
+ * pattern recurring.
+ */
 async function probeDeps(
   spawner: InstallerSpawner,
   venvPython: string,
@@ -404,18 +429,18 @@ async function probeDeps(
     });
     return result.exitCode === 0;
   };
-  const [silero, onnxruntime, sounddevice, pyaudio] = await Promise.all([
-    check('silero-vad'),
-    check('onnxruntime'),
-    check('sounddevice'),
-    check('pyaudio'),
-  ]);
+  const requiredResults = await Promise.all(
+    REQUIRED_PIP_PACKAGES.map(async (p) => [p, await check(p)] as const),
+  );
+  const required = new Map(requiredResults);
+  const pyaudio = await check('pyaudio');
   return {
-    silero,
-    onnxruntime,
-    sounddevice,
+    silero: required.get('silero-vad') === true,
+    onnxruntime: required.get('onnxruntime') === true,
+    sounddevice: required.get('sounddevice') === true,
+    numpy: required.get('numpy') === true,
     pyaudio,
-    allPresent: silero && onnxruntime && sounddevice,
+    allPresent: requiredResults.every(([, present]) => present),
   };
 }
 
