@@ -69,6 +69,17 @@ export type VoiceBridgeEvent =
       readonly code: 'utterance-truncated';
       readonly tMs: number;
     }
+  | {
+      /** Phase 6C — fired when openWakeWord's sustain+cooldown logic commits
+       * to a wake-word detection. Decoupled from VAD: may fire mid-segment
+       * (during continuous speech that starts with "hey symphony") OR
+       * outside any VAD segment (single softly-spoken wake phrase).
+       * Consumers MUST NOT assume `wake_word` precedes `speech_start`. */
+      readonly type: 'wake_word';
+      readonly model: string;
+      readonly score: number;
+      readonly tMs: number;
+    }
   | { readonly type: 'error'; readonly code: string; readonly message: string }
   | { readonly type: 'shutdown_ack' };
 
@@ -112,7 +123,9 @@ export interface VoiceInstallResult {
     | 'numpy-install-failed'
     | 'moonshine-install-failed'
     | 'moonshine-import-failed'
-    | 'moonshine-download-failed';
+    | 'moonshine-download-failed'
+    | 'openwakeword-install-failed'
+    | 'openwakeword-import-failed';
   readonly venvPath: string;
   readonly pythonPath: string;
   readonly sileroVadInstalled: boolean;
@@ -128,6 +141,12 @@ export interface VoiceInstallResult {
   readonly moonshineModelWarmed: boolean;
   /** Phase 6B — atomic `~/.symphony/voice-vocab.json` seed file created (only when target was absent). */
   readonly voiceVocabSeeded: boolean;
+  /** Phase 6C — `openwakeword` pip-shows present. */
+  readonly openWakeWordInstalled: boolean;
+  /** Phase 6C — `from openwakeword.model import Model` succeeded. Validates the ONNX runtime + tflite-runtime-or-onnx-fallback + shared embedding backbone dependencies. */
+  readonly openWakeWordImportOk: boolean;
+  /** Phase 6C — bundled `hey-symphony.onnx` model present on disk (under `assets/wake-models/` in dev, `dist/assets/wake-models/` in built). */
+  readonly wakeModelBundled: boolean;
   readonly warnings: readonly string[];
   /** True when nothing was reinstalled (every requested dep already present at its current version). */
   readonly idempotent: boolean;

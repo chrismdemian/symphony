@@ -82,5 +82,22 @@ export default defineConfig({
       path.resolve('src/voice/vocab-seed.json'),
       path.resolve('dist/voice/vocab-seed.json'),
     );
+    // Phase 6C — bundled wake-word ONNX models + LICENSE + checksums.
+    // Loaded at runtime via `src/voice/path.ts:voiceWakeModelPath` which
+    // walks `import.meta.url` candidates. The `.onnx` may legitimately
+    // not exist yet (training is a separate one-time op); copyTree is
+    // tolerant of missing dirs via the `existsSync` guard at the top.
+    if (fs.existsSync(path.resolve('assets/wake-models'))) {
+      copyTree(
+        path.resolve('assets/wake-models'),
+        path.resolve('dist/assets/wake-models'),
+        (f) =>
+          f.endsWith('.onnx') ||
+          f.endsWith('.onnx.data') ||
+          f === 'LICENSE.md' ||
+          f === 'CHECKSUMS.txt' ||
+          f === 'training-config.json',
+      );
+    }
   },
 });

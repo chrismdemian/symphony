@@ -10,7 +10,9 @@ import {
   voiceEnvDir,
   voiceVocabSeedPath,
   voiceVocabUserPath,
+  voiceWakeModelPath,
   VoiceVocabSeedNotFoundError,
+  VoiceWakeModelNotFoundError,
 } from './path.js';
 
 /**
@@ -144,6 +146,12 @@ const REQUIRED_PIP_PACKAGES = [
   'sounddevice',
   'numpy',
   'useful-moonshine-onnx==20251121',
+  // Phase 6C — openWakeWord. Pure-Python wheel + uses the same onnxruntime
+  // already required by 6A's Silero VAD. No GPU at runtime. The library
+  // ships small pretrained models (CC BY-NC-SA) — Symphony only ships its
+  // own Apache-2.0 self-trained `hey-symphony.onnx`, so the licensing on
+  // the bundled artifacts doesn't transitively affect us.
+  'openwakeword',
 ] as const;
 const OPTIONAL_PIP_PACKAGES = ['pyaudio'] as const;
 
@@ -155,6 +163,7 @@ const PIP_SHOW_NAMES: Record<(typeof REQUIRED_PIP_PACKAGES)[number], string> = {
   sounddevice: 'sounddevice',
   numpy: 'numpy',
   'useful-moonshine-onnx==20251121': 'useful-moonshine-onnx',
+  openwakeword: 'openwakeword',
 } as const;
 
 /**
@@ -181,6 +190,9 @@ function makeBaseResult(
     moonshineImportOk: false,
     moonshineModelWarmed: false,
     voiceVocabSeeded: false,
+    openWakeWordInstalled: false,
+    openWakeWordImportOk: false,
+    wakeModelBundled: false,
     warnings: [],
     idempotent: false,
   };
@@ -286,10 +298,13 @@ export async function runVoiceInstall(
   if (venvExists && opts.force !== true) {
     const depStatus = await probeDeps(spawner, venvPython);
     if (depStatus.allPresent) {
-      progress('voice-env exists, all deps present + Moonshine imports — idempotent.');
+      progress(
+        'voice-env exists, all deps present + Moonshine + openWakeWord imports — idempotent.',
+      );
       // Even on idempotent path, install the vocab seed if absent
       // (cheap; user may have deleted ~/.symphony/voice-vocab.json).
       const seeded = await tryInstallVocabSeed(home, warnings);
+      const wakeBundled = wakeModelBundledOnDisk(warnings);
       // Touch model warmup only if the HF cache is empty — but we can't
       // easily probe that without invoking python. Set
       // moonshineModelWarmed=true on the idempotent path because the
@@ -310,6 +325,9 @@ export async function runVoiceInstall(
         moonshineImportOk: depStatus.moonshineImport,
         moonshineModelWarmed: true,
         voiceVocabSeeded: seeded,
+        openWakeWordInstalled: depStatus.openwakeword,
+        openWakeWordImportOk: depStatus.openWakeWordImport,
+        wakeModelBundled: wakeBundled,
         warnings,
         idempotent: true,
       };
@@ -408,10 +426,41 @@ export async function runVoiceInstall(
     ]);
   }
 
-  // 9. Install the vocab seed atomically (only when target absent).
+  // 9. openWakeWord import smoke (same audit-m2 shape — pip show doesn't
+  // prove the package's transitive deps load). openWakeWord pulls
+  // onnxruntime (already pinned by 6A) + tflite-runtime as an optional;
+  // we force the ONNX backend at runtime so the tflite missing-on-Windows
+  // story is irrelevant. The import check exercises the ONNX path only.
+  progress('Validating openWakeWord import (transitive dep check)...');
+  const owwImportOk = await runOpenWakeWordImportSmoke(spawner, venvPython);
+  if (!owwImportOk) {
+    return failureResult(
+      makeBaseResult(venvDir, venvPython),
+      'openwakeword-import-failed',
+      [
+        'openwakeword installed but `from openwakeword.model import Model` failed. ' +
+          'A transitive dep (onnxruntime / scipy / openwakeword shared model) ' +
+          'failed to load. Try `pnpm rebuild` or check the voice-env Python version.',
+      ],
+    );
+  }
+
+  // 10. Install the vocab seed atomically (only when target absent).
   const seeded = await tryInstallVocabSeed(home, warnings);
 
-  // 10. Re-probe to populate the final result.
+  // 11. Probe the bundled wake-word model on disk (informational — failing
+  // to find it is NOT a fatal install error because the user might be
+  // doing a from-source-without-trained-model dev install).
+  const wakeBundled = wakeModelBundledOnDisk(warnings);
+  if (!wakeBundled) {
+    warnings.push(
+      'No bundled wake-word model found. Voice still works for VAD + STT; ' +
+        '`symphony voice listen` / `--wake-word` will fail until the model ' +
+        'is built. See scripts/train-wake-word/README.md.',
+    );
+  }
+
+  // 12. Re-probe to populate the final result.
   const finalStatus = await probeDeps(spawner, venvPython);
   return {
     ...makeBaseResult(venvDir, venvPython),
@@ -426,6 +475,9 @@ export async function runVoiceInstall(
     moonshineImportOk: finalStatus.moonshineImport,
     moonshineModelWarmed: true,
     voiceVocabSeeded: seeded,
+    openWakeWordInstalled: finalStatus.openwakeword,
+    openWakeWordImportOk: finalStatus.openWakeWordImport,
+    wakeModelBundled: wakeBundled,
     warnings,
     idempotent: false,
   };
@@ -443,6 +495,7 @@ function pkgFailureReason(
   if (pkg === 'sounddevice') return 'sounddevice-install-failed';
   if (pkg === 'numpy') return 'numpy-install-failed';
   if (pkg === 'useful-moonshine-onnx==20251121') return 'moonshine-install-failed';
+  if (pkg === 'openwakeword') return 'openwakeword-install-failed';
   // Defensive: a new required pkg added without updating this switch
   // surfaces here. Type-narrowing via `never` would also catch it at
   // compile time when the spec literal is added to REQUIRED_PIP_PACKAGES.
@@ -524,7 +577,15 @@ interface DepStatus {
    * numba wheel; the import smoke does. Audit-m2 lesson applied.
    */
   readonly moonshineImport: boolean;
-  /** All REQUIRED packages present AND moonshine imports cleanly; OPTIONAL `pyaudio` excluded. */
+  /** Phase 6C — `pip show openwakeword` exit 0. */
+  readonly openwakeword: boolean;
+  /**
+   * Phase 6C — `python -c "from openwakeword.model import Model"` exit 0.
+   * Validates the openwakeword package can construct its Model class —
+   * exercises the shared embedding backbone + ONNX runtime path.
+   */
+  readonly openWakeWordImport: boolean;
+  /** All REQUIRED packages present AND moonshine + openWakeWord import cleanly; OPTIONAL `pyaudio` excluded. */
   readonly allPresent: boolean;
 }
 
@@ -565,6 +626,11 @@ async function probeDeps(
   if (moonshinePresent) {
     moonshineImport = await runMoonshineImportSmoke(spawner, venvPython);
   }
+  const openWakeWordPresent = required.get('openwakeword') === true;
+  let openWakeWordImport = false;
+  if (openWakeWordPresent) {
+    openWakeWordImport = await runOpenWakeWordImportSmoke(spawner, venvPython);
+  }
   const requiredAllShown = requiredResults.every(([, present]) => present);
   return {
     silero: required.get('silero-vad') === true,
@@ -574,7 +640,13 @@ async function probeDeps(
     pyaudio,
     moonshine: moonshinePresent,
     moonshineImport,
-    allPresent: requiredAllShown && moonshineImport,
+    openwakeword: openWakeWordPresent,
+    openWakeWordImport,
+    // `allPresent` reduces over the REQUIRED list dynamically (6A audit-m2)
+    // AND requires every import smoke to pass. Adding a new required dep
+    // with an import smoke means: add the constant + the probe + extend the
+    // smoke chain here. Tests regression-lock this fan-out.
+    allPresent: requiredAllShown && moonshineImport && openWakeWordImport,
   };
 }
 
@@ -600,6 +672,51 @@ async function runMoonshineImportSmoke(
     args: ['-c', 'from moonshine_onnx import transcribe'],
   });
   return result.exitCode === 0;
+}
+
+/**
+ * Phase 6C — runs `python -c "from openwakeword.model import Model"` and
+ * returns true on exit 0. Mirrors `runMoonshineImportSmoke`'s shape; needed
+ * because pip-show alone doesn't catch the transitive deps openwakeword
+ * pulls in (scipy / onnxruntime / shared embedding model). Audit-m2 lesson
+ * applied: pip-show is a metadata check, import is a runtime check.
+ *
+ * Caveat: this import path triggers a one-time download of openWakeWord's
+ * shared speech-embedding backbone from HuggingFace (~5 MB). After the
+ * first successful smoke, subsequent runs are cache hits (~200 ms).
+ */
+async function runOpenWakeWordImportSmoke(
+  spawner: InstallerSpawner,
+  venvPython: string,
+): Promise<boolean> {
+  const result = await spawner({
+    cmd: venvPython,
+    args: ['-c', 'from openwakeword.model import Model'],
+  });
+  return result.exitCode === 0;
+}
+
+/**
+ * Phase 6C — probe the bundled wake-word model on disk. Non-fatal probe:
+ * the model may legitimately be absent in a from-source-without-training
+ * dev install. The boolean is surfaced on `VoiceInstallResult.wakeModelBundled`
+ * so CLI consumers can render a clear status line + the warning is appended.
+ */
+function wakeModelBundledOnDisk(warnings: string[]): boolean {
+  try {
+    // Default model name. If we ever ship multiple, probe each via a
+    // KNOWN_BUNDLED_WAKE_MODELS array.
+    voiceWakeModelPath('hey-symphony');
+    return true;
+  } catch (cause) {
+    if (cause instanceof VoiceWakeModelNotFoundError) {
+      return false;
+    }
+    warnings.push(
+      `unexpected error probing wake model: ${describeError(cause)}`,
+    );
+    return false;
+  }
 }
 
 /**

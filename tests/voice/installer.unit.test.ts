@@ -662,5 +662,233 @@ describe('runVoiceInstall — Phase 6B vocab seed', () => {
   });
 });
 
+describe('runVoiceInstall — Phase 6C openWakeWord', () => {
+  it('fails with openwakeword-import-failed when transitive deps fail to load', async () => {
+    const venvDir = makeTmp('voice-installer-');
+    const spawner: InstallerSpawner = async (req) => {
+      if (req.args[0] === '--version') {
+        return { stdout: 'Python 3.11.5', stderr: '', exitCode: 0, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'show') {
+        return { stdout: '', stderr: '', exitCode: 1, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'install') {
+        return { stdout: 'installed', stderr: '', exitCode: 0, signal: null };
+      }
+      // Moonshine import + warmup succeed
+      if (
+        req.args[0] === '-c' &&
+        req.args[1]?.includes('moonshine_onnx')
+      ) {
+        return { stdout: '', stderr: '', exitCode: 0, signal: null };
+      }
+      // openWakeWord import fails
+      if (
+        req.args[0] === '-c' &&
+        req.args[1]?.startsWith('from openwakeword')
+      ) {
+        return {
+          stdout: '',
+          stderr: 'ImportError: scipy.signal not available',
+          exitCode: 1,
+          signal: null,
+        };
+      }
+      return { stdout: '', stderr: '', exitCode: 0, signal: null };
+    };
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: makeTmp('home-'),
+      spawner,
+      force: true,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('openwakeword-import-failed');
+    // Field shape preserved on failure
+    expect(result.openWakeWordImportOk).toBe(false);
+  });
+
+  it('happy path populates openWakeWordInstalled / openWakeWordImportOk', async () => {
+    const venvDir = makeTmp('voice-installer-');
+    const home = makeTmp('home-');
+    const calls: Array<{ args: readonly string[] }> = [];
+    const spawner: InstallerSpawner = async (req) => {
+      calls.push({ args: req.args });
+      if (req.args[0] === '--version') {
+        return { stdout: 'Python 3.11.5', stderr: '', exitCode: 0, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'show') {
+        // FINAL re-probe path — claim every pkg present for the result fields
+        return {
+          stdout: `Name: ${req.args[3]}\nVersion: 1.0`,
+          stderr: '',
+          exitCode: 0,
+          signal: null,
+        };
+      }
+      return { stdout: '', stderr: '', exitCode: 0, signal: null };
+    };
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: home,
+      spawner,
+      force: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.openWakeWordInstalled).toBe(true);
+    expect(result.openWakeWordImportOk).toBe(true);
+    // The openwakeword import smoke was invoked
+    const ranImportSmoke = calls.some(
+      (c) =>
+        c.args[0] === '-c' &&
+        typeof c.args[1] === 'string' &&
+        c.args[1].includes('from openwakeword.model import Model'),
+    );
+    expect(ranImportSmoke).toBe(true);
+  });
+
+  it('audit-m2 regression: openwakeword added to REQUIRED — idempotent fast-path requires it', async () => {
+    // A venv with everything EXCEPT openwakeword must NOT short-circuit
+    // through the idempotent fast-path. Mirrors the 6B audit-m2 lock-in
+    // applied to the new dep.
+    const venvDir = makeTmp('voice-installer-');
+    const venvPython = path.join(venvDir, 'bin', 'python');
+    const fsp = await import('node:fs/promises');
+    await fsp.mkdir(path.dirname(venvPython), { recursive: true });
+    await fsp.writeFile(venvPython, '#!/usr/bin/env false\n');
+    await fsp.chmod(venvPython, 0o755);
+
+    let installCount = 0;
+    const spawner: InstallerSpawner = async (req) => {
+      if (req.args[0] === '--version') {
+        return { stdout: 'Python 3.11.5', stderr: '', exitCode: 0, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'show') {
+        const pkg = req.args[3];
+        if (pkg === 'openwakeword') {
+          return { stdout: '', stderr: '', exitCode: 1, signal: null };
+        }
+        return {
+          stdout: `Name: ${pkg}\nVersion: 1.0`,
+          stderr: '',
+          exitCode: 0,
+          signal: null,
+        };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'install') {
+        installCount += 1;
+      }
+      return { stdout: '', stderr: '', exitCode: 0, signal: null };
+    };
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: makeTmp('home-'),
+      spawner,
+    });
+    expect(result.idempotent).toBe(false);
+    expect(installCount).toBeGreaterThan(0);
+  });
+
+  it('idempotent fast-path requires the openWakeWord IMPORT smoke to succeed', async () => {
+    // Mirror of the 6B 'idempotent path requires import smoke' protection —
+    // a venv that pip-shows openwakeword but fails to import it must NOT
+    // idempotent-skip. The bridge would crash on first wake-word frame.
+    const venvDir = makeTmp('voice-installer-');
+    const venvPython = path.join(venvDir, 'bin', 'python');
+    const fsp = await import('node:fs/promises');
+    await fsp.mkdir(path.dirname(venvPython), { recursive: true });
+    await fsp.writeFile(venvPython, '#!/usr/bin/env false\n');
+    await fsp.chmod(venvPython, 0o755);
+
+    let installCount = 0;
+    const spawner: InstallerSpawner = async (req) => {
+      if (req.args[0] === '--version') {
+        return { stdout: 'Python 3.11.5', stderr: '', exitCode: 0, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'show') {
+        return {
+          stdout: `Name: ${req.args[3]}\nVersion: 1.0`,
+          stderr: '',
+          exitCode: 0,
+          signal: null,
+        };
+      }
+      if (
+        req.args[0] === '-c' &&
+        req.args[1]?.startsWith('from moonshine_onnx')
+      ) {
+        return { stdout: '', stderr: '', exitCode: 0, signal: null };
+      }
+      // openWakeWord import smoke fails
+      if (
+        req.args[0] === '-c' &&
+        req.args[1]?.startsWith('from openwakeword')
+      ) {
+        return {
+          stdout: '',
+          stderr: 'ImportError: scipy broken',
+          exitCode: 1,
+          signal: null,
+        };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'install') {
+        installCount += 1;
+      }
+      return { stdout: '', stderr: '', exitCode: 0, signal: null };
+    };
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: makeTmp('home-'),
+      spawner,
+    });
+    // idempotent path was SKIPPED because openwakeword import failed in
+    // the probe; install path runs; openwakeword import smoke fails again
+    // -> openwakeword-import-failed.
+    expect(installCount).toBeGreaterThan(0);
+    expect(result.reason).toBe('openwakeword-import-failed');
+  });
+
+  it('wakeModelBundled probe returns false when no .onnx exists; warning surfaced', async () => {
+    // The bundled-model probe is non-fatal — install still succeeds with
+    // a warning. Verifies the wakeModelBundled field shape AND the
+    // warning string mentions the actionable next step.
+    const venvDir = makeTmp('voice-installer-');
+    const home = makeTmp('home-');
+    const spawner: InstallerSpawner = async (req) => {
+      if (req.args[0] === '--version') {
+        return { stdout: 'Python 3.11.5', stderr: '', exitCode: 0, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'show') {
+        // Force re-install path (not idempotent)
+        return { stdout: '', stderr: '', exitCode: 1, signal: null };
+      }
+      return { stdout: '', stderr: '', exitCode: 0, signal: null };
+    };
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: home,
+      spawner,
+      force: true,
+    });
+    // The default voiceWakeModelPath('hey-symphony') resolution will
+    // succeed iff `assets/wake-models/hey-symphony.onnx` exists on the
+    // build machine. We expect it does NOT (training is a separate op),
+    // so wakeModelBundled is false + warning is appended.
+    // BUT: if a future CI environment has the trained model committed,
+    // this test would flip. The contract: install completes OK either way.
+    expect(result.ok).toBe(true);
+    if (!result.wakeModelBundled) {
+      expect(
+        result.warnings.some((w) => w.includes('wake-word model')),
+      ).toBe(true);
+    }
+  });
+});
+
 // Avoid unused-import lint
 void vi;

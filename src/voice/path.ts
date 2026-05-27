@@ -212,6 +212,70 @@ export class VoiceVocabSeedNotFoundError extends Error {
   }
 }
 
+/**
+ * Phase 6C — resolve the bundled wake-word ONNX model.
+ *
+ * Models live under `assets/wake-models/<name>.onnx` in the repo (dev) and
+ * `dist/assets/wake-models/<name>.onnx` after `pnpm build` (tsup copyTree).
+ * Walks `import.meta.url` candidates so both layouts resolve.
+ *
+ * `modelName` is the configured name (`voice.wakeWordModel`, default
+ * `'hey-symphony'`) WITHOUT the `.onnx` suffix. Users dropping a custom
+ * model at `~/.symphony/wake-models/<name>.onnx` are handled by a
+ * separate user-override resolver (deferred until a real user wants it).
+ *
+ * Throws `VoiceWakeModelNotFoundError` when neither layout has the file —
+ * fail-loud on packaging defects rather than handing the bridge a missing
+ * path that errors on the first frame.
+ */
+export function voiceWakeModelPath(modelName: string): string {
+  if (!isSafeModelName(modelName)) {
+    throw new VoiceWakeModelNotFoundError(
+      `invalid wake-word model name: ${JSON.stringify(modelName)}. ` +
+        'Must be a single path segment (a-z, 0-9, dash, underscore).',
+    );
+  }
+  const here = path.dirname(url.fileURLToPath(import.meta.url));
+  const filename = `${modelName}.onnx`;
+  const candidates = [
+    // Dev: src/voice/path.ts -> ../../assets/wake-models/<name>.onnx
+    path.join(here, '..', '..', 'assets', 'wake-models', filename),
+    // Built: dist/index.js -> dist/assets/wake-models/<name>.onnx
+    path.join(here, 'assets', 'wake-models', filename),
+    // Defensive: tarball-extracted dist sometimes has index.js one level up
+    path.join(here, '..', 'assets', 'wake-models', filename),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new VoiceWakeModelNotFoundError(
+    `wake-word model "${filename}" not found in: ${candidates.join(', ')}. ` +
+      'Did `pnpm build` complete? Did training produce `assets/wake-models/' +
+      `${filename}\`? See scripts/train-wake-word/README.md.`,
+  );
+}
+
+/**
+ * Validate that a wake-word model name is a single safe path segment.
+ * Rejects: dots, slashes, backslashes, null, empty, anything that could
+ * traverse out of `assets/wake-models/` via interpolation.
+ *
+ * Pattern: `^[a-z0-9][a-z0-9_-]{0,63}$` — same shape as Phase 5C's
+ * task-id validator. Lowercase enforced so model files are portable
+ * across case-sensitive (Linux) and case-insensitive (Win32, macOS-default)
+ * filesystems.
+ */
+function isSafeModelName(name: string): boolean {
+  return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(name);
+}
+
+export class VoiceWakeModelNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'VoiceWakeModelNotFoundError';
+  }
+}
+
 /** Test seam — strip env overrides so unit tests resolve from `~`. */
 export function _voicePathsForTest(home: string = os.homedir()): {
   readonly envDir: string;
