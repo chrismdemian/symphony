@@ -170,12 +170,20 @@ export interface VoiceDiagnoseResult {
     | 'bridge-ready-timeout'
     | 'bridge-exit-nonzero'
     | 'no-speech-detected'
-    | 'fixture-missing';
+    | 'fixture-missing'
+    | 'wake-model-missing'
+    | 'no-wake-detected';
   readonly speechSegments: number;
   /** Phase 6B — count of `final` STT events seen during the run. */
   readonly finalEvents: number;
   /** Phase 6B — true when an `stt_ready` event was observed. */
   readonly sttReady: boolean;
+  /** Phase 6C — count of `wake_word` events observed (when `--wake-word` mode is active). */
+  readonly wakeEvents: number;
+  /** Phase 6C — true when at least one `wake_word` event fired (convenience boolean over `wakeEvents > 0`). */
+  readonly wakeDetected: boolean;
+  /** Phase 6C — whether the diagnose ran in wake-word mode (`--wake-word`). When false, `wakeEvents`/`wakeDetected` are always 0/false. */
+  readonly wakeMode: boolean;
   readonly events: readonly VoiceBridgeEvent[];
   readonly stderrTail: string;
   /** Wall-clock duration of the diagnose run, in ms. */

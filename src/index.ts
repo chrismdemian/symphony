@@ -199,13 +199,115 @@ voice
     'Pipe a known PCM fixture through the bridge and assert VAD events fire. Exits 0 on PASS.',
   )
   .option('--json', 'Emit a single-line JSON summary instead of human output.')
-  .action(async (opts: { json?: boolean }) => {
-    const { runVoiceDiagnose } = await import('./cli/voice-diagnose.js');
-    const result = await runVoiceDiagnose(
-      opts.json === true ? { format: 'json' } : {},
-    );
-    process.exit(result.exitCode);
-  });
+  .option(
+    '--wake-word',
+    'Phase 6C — run in wake-word mode: pipe wake-symphony-3s.pcm + assert ≥1 wake_word event.',
+  )
+  .option(
+    '--wake-word-threshold <n>',
+    'Override the wake-word activation threshold (0..1, default 0.5).',
+    (v) => Number.parseFloat(v),
+  )
+  .action(
+    async (opts: {
+      json?: boolean;
+      wakeWord?: boolean;
+      wakeWordThreshold?: number;
+    }) => {
+      const { runVoiceDiagnose } = await import('./cli/voice-diagnose.js');
+      const wakeWordThreshold =
+        opts.wakeWordThreshold !== undefined &&
+        Number.isFinite(opts.wakeWordThreshold)
+          ? opts.wakeWordThreshold
+          : undefined;
+      const result = await runVoiceDiagnose({
+        ...(opts.json === true ? { format: 'json' as const } : {}),
+        ...(opts.wakeWord === true ? { wakeWord: true } : {}),
+        ...(wakeWordThreshold !== undefined ? { wakeWordThreshold } : {}),
+      });
+      process.exit(result.exitCode);
+    },
+  );
+
+voice
+  .command('listen')
+  .description(
+    'Phase 6C — listen on the live mic for wake-word events. Press Ctrl-C to exit.',
+  )
+  .option('--json', 'Emit one JSON event per line instead of human output.')
+  .option(
+    '--threshold <n>',
+    'Override the wake-word activation threshold (0..1, default from voice.wakeWordThreshold config).',
+    (v) => Number.parseFloat(v),
+  )
+  .option(
+    '--cooldown-ms <n>',
+    'Override the post-fire cooldown in ms (default from voice.wakeWordCooldownMs config).',
+    (v) => Number.parseInt(v, 10),
+  )
+  .option(
+    '--sustain-frames <n>',
+    'Override the sustain-frame count (default from voice.wakeWordSustainFrames config).',
+    (v) => Number.parseInt(v, 10),
+  )
+  .option(
+    '--max-events <n>',
+    'Auto-exit after N wake-word events (default 0 = unbounded).',
+    (v) => Number.parseInt(v, 10),
+  )
+  .option(
+    '--model <name>',
+    'Override the wake-word model name (default from voice.wakeWordModel config).',
+  )
+  .action(
+    async (opts: {
+      json?: boolean;
+      threshold?: number;
+      cooldownMs?: number;
+      sustainFrames?: number;
+      maxEvents?: number;
+      model?: string;
+    }) => {
+      const { runVoiceListen } = await import('./cli/voice-listen.js');
+      const threshold =
+        opts.threshold !== undefined && Number.isFinite(opts.threshold)
+          ? opts.threshold
+          : undefined;
+      const cooldownMs =
+        opts.cooldownMs !== undefined && !Number.isNaN(opts.cooldownMs)
+          ? opts.cooldownMs
+          : undefined;
+      const sustainFrames =
+        opts.sustainFrames !== undefined && !Number.isNaN(opts.sustainFrames)
+          ? opts.sustainFrames
+          : undefined;
+      const maxEvents =
+        opts.maxEvents !== undefined && !Number.isNaN(opts.maxEvents)
+          ? opts.maxEvents
+          : undefined;
+      // SIGINT (Ctrl-C) abort signal — gives the bridge a chance to stop
+      // cleanly + release the mic before the process exits. Without
+      // this, Ctrl-C would race with the running bridge and leak the
+      // Python subprocess + audio device handle.
+      const abortController = new AbortController();
+      const onSigint = (): void => abortController.abort();
+      process.once('SIGINT', onSigint);
+      try {
+        const result = await runVoiceListen({
+          ...(opts.json === true ? { format: 'json' as const } : {}),
+          ...(threshold !== undefined ? { threshold } : {}),
+          ...(cooldownMs !== undefined ? { cooldownMs } : {}),
+          ...(sustainFrames !== undefined ? { sustainFrames } : {}),
+          ...(maxEvents !== undefined ? { maxEvents } : {}),
+          ...(opts.model !== undefined ? { modelName: opts.model } : {}),
+          signal: abortController.signal,
+        });
+        process.exit(result.exitCode);
+      } finally {
+        process.off('SIGINT', onSigint);
+      }
+    },
+  );
 
 voice
   .command('transcribe <file>')
