@@ -61,7 +61,7 @@ describe('runVoiceInstall — python probe', () => {
     const result = await runVoiceInstall({
       venvDir: '/tmp/voice-not-used',
       platform: 'linux',
-      homeDir: '/tmp/fake-home',
+      homeDir: makeTmp('home-'),
       spawner,
     });
     expect(result.ok).toBe(false);
@@ -78,7 +78,7 @@ describe('runVoiceInstall — python probe', () => {
     const result = await runVoiceInstall({
       venvDir: '/tmp/voice-not-used',
       platform: 'linux',
-      homeDir: '/tmp/fake-home',
+      homeDir: makeTmp('home-'),
       spawner,
     });
     expect(result.ok).toBe(false);
@@ -103,7 +103,7 @@ describe('runVoiceInstall — python probe', () => {
     const result = await runVoiceInstall({
       venvDir: 'C:\\fake\\voice-env',
       platform: 'win32',
-      homeDir: 'C:\\fake-home',
+      homeDir: makeTmp('home-'),
       pythonOverride: 'python',
       spawner,
     });
@@ -138,7 +138,7 @@ describe('runVoiceInstall — happy path', () => {
     const result = await runVoiceInstall({
       venvDir,
       platform: 'linux',
-      homeDir: '/tmp/fake-home',
+      homeDir: makeTmp('home-'),
       spawner,
       force: true, // bypass the idempotent fast-path probe
     });
@@ -188,7 +188,7 @@ describe('runVoiceInstall — happy path', () => {
     const result = await runVoiceInstall({
       venvDir,
       platform: 'linux',
-      homeDir: '/tmp/fake-home',
+      homeDir: makeTmp('home-'),
       spawner,
     });
     expect(result.ok).toBe(true);
@@ -239,7 +239,7 @@ describe('runVoiceInstall — happy path', () => {
     const result = await runVoiceInstall({
       venvDir,
       platform: 'linux',
-      homeDir: '/tmp/fake-home',
+      homeDir: makeTmp('home-'),
       spawner,
     });
     // Must NOT be idempotent — numpy missing forces full install
@@ -283,7 +283,7 @@ describe('runVoiceInstall — partial failures', () => {
     const result = await runVoiceInstall({
       venvDir,
       platform: 'win32',
-      homeDir: 'C:\\fake-home',
+      homeDir: makeTmp('home-'),
       pythonOverride: 'python',
       spawner,
       force: true,
@@ -320,7 +320,7 @@ describe('runVoiceInstall — partial failures', () => {
     const result = await runVoiceInstall({
       venvDir,
       platform: 'linux',
-      homeDir: '/tmp/fake-home',
+      homeDir: makeTmp('home-'),
       spawner,
       force: true,
     });
@@ -349,7 +349,7 @@ describe('runVoiceInstall — progress callback', () => {
     await runVoiceInstall({
       venvDir,
       platform: 'linux',
-      homeDir: '/tmp/fake-home',
+      homeDir: makeTmp('home-'),
       spawner,
       force: true,
       onProgress: (line) => progressLines.push(line),
@@ -357,6 +357,308 @@ describe('runVoiceInstall — progress callback', () => {
     expect(progressLines.some((l) => l.includes('Using Python'))).toBe(true);
     // Spawner-fired progress should also reach the caller
     expect(progressLines.some((l) => l.includes('silero-vad'))).toBe(true);
+  });
+});
+
+// Phase 6B — Moonshine STT install steps
+describe('runVoiceInstall — Phase 6B Moonshine', () => {
+  it('fails with moonshine-import-failed when transitive deps fail to load', async () => {
+    const venvDir = makeTmp('voice-installer-');
+    const spawner: InstallerSpawner = async (req) => {
+      if (req.args[0] === '--version') {
+        return { stdout: 'Python 3.11.5', stderr: '', exitCode: 0, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'show') {
+        return { stdout: '', stderr: '', exitCode: 1, signal: null };
+      }
+      // pip install of every required package succeeds
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'install') {
+        return { stdout: 'installed', stderr: '', exitCode: 0, signal: null };
+      }
+      // Moonshine import smoke: emulate a numba wheel that fails at import
+      if (
+        req.args[0] === '-c' &&
+        req.args[1]?.includes('moonshine_onnx') &&
+        !req.args[1].includes('transcribe(numpy')
+      ) {
+        return {
+          stdout: '',
+          stderr: 'ImportError: Numba needs NumPy 1.24 or less',
+          exitCode: 1,
+          signal: null,
+        };
+      }
+      return { stdout: '', stderr: '', exitCode: 0, signal: null };
+    };
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: makeTmp('home-'),
+      spawner,
+      force: true,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('moonshine-import-failed');
+    // Field shape preserved on failure path
+    expect(result.moonshineModelWarmed).toBe(false);
+    expect(result.moonshineImportOk).toBe(false);
+  });
+
+  it('fails with moonshine-download-failed when warmup network call fails', async () => {
+    const venvDir = makeTmp('voice-installer-');
+    const spawner: InstallerSpawner = async (req) => {
+      if (req.args[0] === '--version') {
+        return { stdout: 'Python 3.11.5', stderr: '', exitCode: 0, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'show') {
+        return { stdout: '', stderr: '', exitCode: 1, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'install') {
+        return { stdout: 'installed', stderr: '', exitCode: 0, signal: null };
+      }
+      // Import smoke OK
+      if (
+        req.args[0] === '-c' &&
+        req.args[1]?.startsWith('from moonshine_onnx')
+      ) {
+        return { stdout: '', stderr: '', exitCode: 0, signal: null };
+      }
+      // Warmup (network) fails
+      if (req.args[0] === '-c' && req.args[1]?.includes('transcribe(numpy.zeros')) {
+        return {
+          stdout: '',
+          stderr: 'ConnectionError: HTTPSConnectionPool(host=huggingface.co)',
+          exitCode: 1,
+          signal: null,
+        };
+      }
+      return { stdout: '', stderr: '', exitCode: 0, signal: null };
+    };
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: makeTmp('home-'),
+      spawner,
+      force: true,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('moonshine-download-failed');
+    expect(result.moonshineImportOk).toBe(false);
+    // moonshineImportOk is populated by the FINAL re-probe; failure paths
+    // skip that. Test that the failure result carries the warning text.
+    expect(result.warnings.some((w) => w.includes('Moonshine model warmup'))).toBe(true);
+  });
+
+  it('happy path populates moonshineInstalled / moonshineImportOk / moonshineModelWarmed', async () => {
+    const venvDir = makeTmp('voice-installer-');
+    const home = makeTmp('home-');
+    const calls: Array<{ args: readonly string[] }> = [];
+    const spawner: InstallerSpawner = async (req) => {
+      calls.push({ args: req.args });
+      if (req.args[0] === '--version') {
+        return { stdout: 'Python 3.11.5', stderr: '', exitCode: 0, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'show') {
+        return { stdout: '', stderr: '', exitCode: 1, signal: null };
+      }
+      return { stdout: '', stderr: '', exitCode: 0, signal: null };
+    };
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: home,
+      spawner,
+      force: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.moonshineModelWarmed).toBe(true);
+    // The final re-probe runs pip-show which we made fail; so moonshineInstalled
+    // is reported false in the result. The IMPORT smoke runs separately; in this
+    // fake the smoke also "succeeds" (generic exit 0). The contract: the install
+    // PROCESS completed, the warm-up SUCCEEDED, so ok=true.
+    // The import smoke was invoked
+    const ranImportSmoke = calls.some(
+      (c) =>
+        c.args[0] === '-c' &&
+        typeof c.args[1] === 'string' &&
+        c.args[1].includes('from moonshine_onnx'),
+    );
+    expect(ranImportSmoke).toBe(true);
+    // The warm-up was invoked
+    const ranWarmup = calls.some(
+      (c) =>
+        c.args[0] === '-c' &&
+        typeof c.args[1] === 'string' &&
+        c.args[1].includes('transcribe(numpy.zeros'),
+    );
+    expect(ranWarmup).toBe(true);
+  });
+
+  it('moonshine added to required-deps probe; idempotent fast-path requires it', async () => {
+    // Audit-m2 extension: a venv missing only useful-moonshine-onnx
+    // must NOT short-circuit through the idempotent fast-path. Verifies
+    // the dynamic reduce-over-REQUIRED_PIP_PACKAGES still includes the
+    // new dep.
+    const venvDir = makeTmp('voice-installer-');
+    const venvPython = path.join(venvDir, 'bin', 'python');
+    const fsp = await import('node:fs/promises');
+    await fsp.mkdir(path.dirname(venvPython), { recursive: true });
+    await fsp.writeFile(venvPython, '#!/usr/bin/env false\n');
+    await fsp.chmod(venvPython, 0o755);
+
+    let installCount = 0;
+    const spawner: InstallerSpawner = async (req) => {
+      if (req.args[0] === '--version') {
+        return { stdout: 'Python 3.11.5', stderr: '', exitCode: 0, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'show') {
+        const pkg = req.args[3];
+        if (pkg === 'useful-moonshine-onnx') {
+          return { stdout: '', stderr: '', exitCode: 1, signal: null };
+        }
+        return {
+          stdout: `Name: ${pkg}\nVersion: 1.0`,
+          stderr: '',
+          exitCode: 0,
+          signal: null,
+        };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'install') {
+        installCount += 1;
+      }
+      return { stdout: '', stderr: '', exitCode: 0, signal: null };
+    };
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: makeTmp('home-'),
+      spawner,
+    });
+    expect(result.idempotent).toBe(false);
+    expect(installCount).toBeGreaterThan(0);
+  });
+
+  it('idempotent fast-path requires the IMPORT smoke to succeed (not just pip-show)', async () => {
+    // 6B audit-protection: a venv that pip-shows every dep but fails
+    // to import moonshine_onnx (e.g. numba wheel broken) must
+    // NOT idempotent-skip. The bridge would crash later otherwise.
+    const venvDir = makeTmp('voice-installer-');
+    const venvPython = path.join(venvDir, 'bin', 'python');
+    const fsp = await import('node:fs/promises');
+    await fsp.mkdir(path.dirname(venvPython), { recursive: true });
+    await fsp.writeFile(venvPython, '#!/usr/bin/env false\n');
+    await fsp.chmod(venvPython, 0o755);
+
+    let installCount = 0;
+    const spawner: InstallerSpawner = async (req) => {
+      if (req.args[0] === '--version') {
+        return { stdout: 'Python 3.11.5', stderr: '', exitCode: 0, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'show') {
+        return {
+          stdout: `Name: ${req.args[3]}\nVersion: 1.0`,
+          stderr: '',
+          exitCode: 0,
+          signal: null,
+        };
+      }
+      // Import smoke fails (transitive dep broken)
+      if (
+        req.args[0] === '-c' &&
+        req.args[1]?.startsWith('from moonshine_onnx')
+      ) {
+        return {
+          stdout: '',
+          stderr: 'ImportError: numba broken',
+          exitCode: 1,
+          signal: null,
+        };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'install') {
+        installCount += 1;
+      }
+      return { stdout: '', stderr: '', exitCode: 0, signal: null };
+    };
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: makeTmp('home-'),
+      spawner,
+    });
+    // idempotent path SKIPPED because import smoke failed.
+    // The non-idempotent install path runs all pip-installs (5 required +
+    // 1 optional), then the import smoke fails again -> moonshine-import-failed.
+    // We assert that pip-installs WERE run (idempotent was skipped) AND
+    // result.reason is the import failure.
+    expect(installCount).toBeGreaterThan(0);
+    expect(result.reason).toBe('moonshine-import-failed');
+  });
+});
+
+describe('runVoiceInstall — Phase 6B vocab seed', () => {
+  it('atomically installs the seed when target absent', async () => {
+    const venvDir = makeTmp('voice-installer-');
+    const home = makeTmp('home-');
+    const spawner: InstallerSpawner = async (req) => {
+      if (req.args[0] === '--version') {
+        return { stdout: 'Python 3.11.5', stderr: '', exitCode: 0, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'show') {
+        return { stdout: '', stderr: '', exitCode: 1, signal: null };
+      }
+      return { stdout: '', stderr: '', exitCode: 0, signal: null };
+    };
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: home,
+      spawner,
+      force: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.voiceVocabSeeded).toBe(true);
+    // Verify file landed at ~/.symphony/voice-vocab.json with seed content
+    const fsp = await import('node:fs/promises');
+    const seedTarget = path.join(home, '.symphony', 'voice-vocab.json');
+    const body = await fsp.readFile(seedTarget, 'utf8');
+    const data = JSON.parse(body) as { version: number; substitutions: Record<string, string> };
+    expect(data.version).toBe(1);
+    expect(Object.keys(data.substitutions).length).toBeGreaterThan(0);
+    // Sanity: a known entry must be present
+    expect(data.substitutions['use effect']).toBe('useEffect');
+  });
+
+  it('never overwrites an existing user vocab file', async () => {
+    const venvDir = makeTmp('voice-installer-');
+    const home = makeTmp('home-');
+    const fsp = await import('node:fs/promises');
+    const symDir = path.join(home, '.symphony');
+    await fsp.mkdir(symDir, { recursive: true });
+    const userVocab = path.join(symDir, 'voice-vocab.json');
+    const userBody = '{"version":1,"substitutions":{"foo bar":"FooBar"}}';
+    await fsp.writeFile(userVocab, userBody, 'utf8');
+
+    const spawner: InstallerSpawner = async (req) => {
+      if (req.args[0] === '--version') {
+        return { stdout: 'Python 3.11.5', stderr: '', exitCode: 0, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'show') {
+        return { stdout: '', stderr: '', exitCode: 1, signal: null };
+      }
+      return { stdout: '', stderr: '', exitCode: 0, signal: null };
+    };
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: home,
+      spawner,
+      force: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.voiceVocabSeeded).toBe(false); // pre-existing user file
+    // User content preserved verbatim
+    const after = await fsp.readFile(userVocab, 'utf8');
+    expect(after).toBe(userBody);
   });
 });
 

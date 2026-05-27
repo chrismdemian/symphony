@@ -142,9 +142,32 @@ class VadSegmenter:
         )
 
     def reset(self) -> None:
-        """Drop all state. Used by the bridge on a `set_threshold`
-        followed by a fresh segment, or after an `error` recovery."""
+        """Drop ALL state, including the monotonic ``_t_ms`` timeline.
+
+        Used after an `error` recovery where the prior timeline is no
+        longer meaningful. For mid-session segment-reset (e.g. Phase 6B
+        hard-cap force-flush) use ``reset_segment_only`` instead — that
+        path needs the t_ms timeline to keep advancing across segments
+        so consumers can plot events on a single per-session axis.
+        """
         self._t_ms = 0
+        self._in_speech = False
+        self._speech_run_ms = 0
+        self._silence_run_ms = 0
+        self._speech_start_t_ms = None
+
+    def reset_segment_only(self) -> None:
+        """Phase 6B (audit-M1) — drop the per-segment hysteresis state
+        without touching the monotonic ``_t_ms`` timeline.
+
+        Used by the bridge's hard-cap force-flush path: a 30s
+        utterance gets force-flushed, we want a fresh segment to start
+        on the NEXT frame, but the wire-protocol contract documents
+        ``tMs`` as "milliseconds since the `ready` event (monotonic
+        per-session timeline)". The original ``reset`` would have
+        rewound that timeline to zero, making a consumer's event plot
+        jump backwards after every hard-cap event.
+        """
         self._in_speech = False
         self._speech_run_ms = 0
         self._silence_run_ms = 0

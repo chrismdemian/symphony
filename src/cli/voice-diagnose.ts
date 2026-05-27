@@ -3,7 +3,7 @@ import { performance } from 'node:perf_hooks';
 
 import { VoiceBridge, VoiceBridgeError } from '../voice/bridge.js';
 import { resolveVoiceEnv } from '../voice/env.js';
-import { voiceDiagnoseFixturePath } from '../voice/path.js';
+import { voiceDiagnoseFixturePath, resolveVoiceVocabPaths } from '../voice/path.js';
 import type { VoiceBridgeEvent, VoiceDiagnoseResult } from '../voice/types.js';
 
 /**
@@ -55,20 +55,36 @@ export async function runVoiceDiagnose(
   const stderr = opts.stderr ?? process.stderr;
   const format = opts.format ?? 'human';
   const t0 = performance.now();
+  const events: VoiceBridgeEvent[] = [];
+
+  // Phase 6B - compute the tallies once and reuse across result builders.
+  const buildResult = (
+    overrides: Partial<VoiceDiagnoseResult> & {
+      ok: boolean;
+      exitCode: number;
+    },
+    stderrTail = '',
+  ): VoiceDiagnoseResult => {
+    const speechStarts = events.filter((e) => e.type === 'speech_start').length;
+    const speechEnds = events.filter((e) => e.type === 'speech_end').length;
+    const finals = events.filter((e) => e.type === 'final').length;
+    const sttReady = events.some((e) => e.type === 'stt_ready');
+    return {
+      speechSegments: Math.min(speechStarts, speechEnds),
+      finalEvents: finals,
+      sttReady,
+      events: events.slice(),
+      stderrTail,
+      durationMs: Math.round(performance.now() - t0),
+      ...overrides,
+    };
+  };
 
   // 1. Verify venv (skipped when caller injects an explicit pythonPath)
   if (opts.pythonPath === undefined) {
     const summary = resolveVoiceEnv(opts.homeDir);
     if (!summary.exists) {
-      const result: VoiceDiagnoseResult = {
-        ok: false,
-        exitCode: 1,
-        reason: 'voice-env-missing',
-        speechSegments: 0,
-        events: [],
-        stderrTail: '',
-        durationMs: Math.round(performance.now() - t0),
-      };
+      const result = buildResult({ ok: false, exitCode: 1, reason: 'voice-env-missing' });
       emit(stdout, stderr, format, result, summary.pythonPath);
       return result;
     }
@@ -79,15 +95,10 @@ export async function runVoiceDiagnose(
   try {
     fixturePath = opts.fixturePath ?? voiceDiagnoseFixturePath();
   } catch (cause) {
-    const result: VoiceDiagnoseResult = {
-      ok: false,
-      exitCode: 1,
-      reason: 'fixture-missing',
-      speechSegments: 0,
-      events: [],
-      stderrTail: String(cause),
-      durationMs: Math.round(performance.now() - t0),
-    };
+    const result = buildResult(
+      { ok: false, exitCode: 1, reason: 'fixture-missing' },
+      String(cause),
+    );
     emit(stdout, stderr, format, result);
     return result;
   }
@@ -99,27 +110,30 @@ export async function runVoiceDiagnose(
   try {
     fixtureBytes = await fsp.readFile(fixturePath);
   } catch (cause) {
-    const result: VoiceDiagnoseResult = {
-      ok: false,
-      exitCode: 1,
-      reason: 'fixture-missing',
-      speechSegments: 0,
-      events: [],
-      stderrTail: String(cause),
-      durationMs: Math.round(performance.now() - t0),
-    };
+    const result = buildResult(
+      { ok: false, exitCode: 1, reason: 'fixture-missing' },
+      String(cause),
+    );
     emit(stdout, stderr, format, result);
     return result;
   }
 
   // 3. Spawn bridge
   const bridge = opts.bridgeFactory ? opts.bridgeFactory() : new VoiceBridge();
-  const events: VoiceBridgeEvent[] = [];
-  bridge.on('event', (e) => events.push(e));
+  bridge.on('event', (e: VoiceBridgeEvent) => events.push(e));
+
+  // Phase 6B - thread vocab paths so the bridge's STT layer can
+  // substitute dev terms. `resolveVoiceVocabPaths` returns [] when
+  // neither the user-global nor project-local file exists; the bridge
+  // safely no-ops in that case.
+  const vocabPaths = resolveVoiceVocabPaths({
+    ...(opts.homeDir !== undefined ? { home: opts.homeDir } : {}),
+  });
 
   try {
     await bridge.start({
       inputMode: 'stdin-pcm',
+      sttVocabPaths: vocabPaths,
       ...(opts.scriptPath !== undefined ? { scriptPath: opts.scriptPath } : {}),
       ...(opts.pythonPath !== undefined ? { pythonPath: opts.pythonPath } : {}),
       ...(opts.pythonPackageDir !== undefined
@@ -135,15 +149,10 @@ export async function runVoiceDiagnose(
     const reason: VoiceDiagnoseResult['reason'] = isReadyTimeout
       ? 'bridge-ready-timeout'
       : 'bridge-spawn-failed';
-    const result: VoiceDiagnoseResult = {
-      ok: false,
-      exitCode: 1,
-      reason,
-      speechSegments: 0,
-      events,
-      stderrTail: bridge.getStderrTail(),
-      durationMs: Math.round(performance.now() - t0),
-    };
+    const result = buildResult(
+      { ok: false, exitCode: 1, reason },
+      bridge.getStderrTail(),
+    );
     emit(stdout, stderr, format, result);
     return result;
   }
@@ -151,15 +160,10 @@ export async function runVoiceDiagnose(
   // 4. Pipe the fixture, chunk by chunk
   const stdin = bridge.childStdin;
   if (stdin === undefined) {
-    const result: VoiceDiagnoseResult = {
-      ok: false,
-      exitCode: 1,
-      reason: 'bridge-spawn-failed',
-      speechSegments: 0,
-      events,
-      stderrTail: bridge.getStderrTail(),
-      durationMs: Math.round(performance.now() - t0),
-    };
+    const result = buildResult(
+      { ok: false, exitCode: 1, reason: 'bridge-spawn-failed' },
+      bridge.getStderrTail(),
+    );
     emit(stdout, stderr, format, result);
     await bridge.stop().catch(() => undefined);
     return result;
@@ -179,7 +183,7 @@ export async function runVoiceDiagnose(
     });
     offset += chunk.length;
     // Pace at ~10x realtime so Silero has time to process without
-    // backpressure — fixture is 3s of audio; pacing puts the whole
+    // backpressure - fixture is 3s of audio; pacing puts the whole
     // run at ~300ms wall-clock plus model cold-start.
     await new Promise((r) => setTimeout(r, 25));
   }
@@ -201,21 +205,28 @@ export async function runVoiceDiagnose(
   // 6. Wait for clean exit
   await bridge.stop({ graceMs: POST_PIPE_DRAIN_MS }).catch(() => undefined);
 
-  // 7. Tally segments
+  // 7. Tally + decide pass
+  const stderrTail = bridge.getStderrTail();
+  const finalsCount = events.filter((e) => e.type === 'final').length;
   const speechStarts = events.filter((e) => e.type === 'speech_start').length;
   const speechEnds = events.filter((e) => e.type === 'speech_end').length;
   const segments = Math.min(speechStarts, speechEnds);
-
-  const ok = segments >= EXPECTED_MIN_SEGMENTS;
-  const result: VoiceDiagnoseResult = {
-    ok,
-    exitCode: ok ? 0 : 1,
-    ...(ok ? {} : { reason: 'no-speech-detected' as const }),
-    speechSegments: segments,
-    events,
-    stderrTail: bridge.getStderrTail(),
-    durationMs: Math.round(performance.now() - t0),
-  };
+  // Phase 6B: require VAD AND - when stt_ready fired - at least one
+  // final event with non-empty text. If stt_ready never fired (e.g.
+  // Moonshine couldn't load), fall back to the pure VAD criterion so
+  // VAD-only operation remains diagnosable.
+  const sttReady = events.some((e) => e.type === 'stt_ready');
+  const vadOk = segments >= EXPECTED_MIN_SEGMENTS;
+  const sttOk = !sttReady || finalsCount >= 1;
+  const ok = vadOk && sttOk;
+  const result = buildResult(
+    {
+      ok,
+      exitCode: ok ? 0 : 1,
+      ...(ok ? {} : { reason: 'no-speech-detected' as const }),
+    },
+    stderrTail,
+  );
   emit(stdout, stderr, format, result);
   return result;
 }

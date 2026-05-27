@@ -1,13 +1,18 @@
-"""Phase 6A — PCM fixture generator via OS TTS.
+"""Phase 6A/6B — PCM fixture generator via OS TTS.
 
 Uses pyttsx3 (Windows SAPI / macOS NSSpeechSynthesizer / Linux espeak)
-to synthesize real speech that Silero VAD reliably fires on. The
-output is normalized to 16 kHz mono LE int16 PCM and committed to the
-repo, so test runs DON'T need pyttsx3 — only fixture regeneration does.
+to synthesize real speech that Silero VAD reliably fires on AND that
+Moonshine can transcribe. The output is normalized to 16 kHz mono LE
+int16 PCM and committed to the repo, so test runs DON'T need pyttsx3 —
+only fixture regeneration does.
 
-Two fixtures committed:
-- `diagnose-3s.pcm`: short utterance + silence framing (~3 s total)
-- `silence-2s.pcm`:  2 s pure silence + tiny dither
+Three fixtures committed:
+- `diagnose-3s.pcm`:    short utterance + silence framing (~3 s total)
+- `silence-2s.pcm`:     2 s pure silence + tiny dither
+- `transcribe-dev-vocab.pcm` (Phase 6B): "use effect inside the package
+  json file" — when piped through Moonshine + the seed vocab file,
+  expected transcript ~= "useEffect inside the package.json file".
+  Used by the 6B production scenario gate.
 
 Regenerate (one-time, when you want different content):
     ~/.symphony/voice-env/bin/python tests/fixtures/voice/generate.py
@@ -100,6 +105,21 @@ def build_silence() -> bytes:
     return to_int16_pcm(silence(2000, seed=10))
 
 
+def build_transcribe_dev_vocab() -> bytes:
+    """Phase 6B — utterance containing dev terms that the seed vocab map
+    substitutes (e.g. "use effect" -> "useEffect"; "package json" ->
+    "package.json"). Both substitutions must hit for the production
+    scenario gate's transcript assertion to pass.
+
+    The phrase is intentionally short (one sentence) so the 30s
+    max-utterance cap is not in play and so the transcript stays
+    deterministic across Moonshine model runs.
+    """
+    speech = synth_via_tts("Use effect inside the package json file.")
+    parts = [silence(500, seed=3), speech, silence(500, seed=4)]
+    return to_int16_pcm(np.concatenate(parts))
+
+
 def main() -> int:
     diagnose = build_diagnose()
     (HERE / "diagnose-3s.pcm").write_bytes(diagnose)
@@ -109,9 +129,14 @@ def main() -> int:
     (HERE / "silence-2s.pcm").write_bytes(sil)
     print(f"wrote silence-2s.pcm ({len(sil)} bytes)")
 
+    dev_vocab = build_transcribe_dev_vocab()
+    (HERE / "transcribe-dev-vocab.pcm").write_bytes(dev_vocab)
+    print(f"wrote transcribe-dev-vocab.pcm ({len(dev_vocab)} bytes)")
+
     checksum_lines = [
         f"diagnose-3s.pcm  {hashlib.sha256(diagnose).hexdigest()}",
         f"silence-2s.pcm  {hashlib.sha256(sil).hexdigest()}",
+        f"transcribe-dev-vocab.pcm  {hashlib.sha256(dev_vocab).hexdigest()}",
     ]
     (HERE / "CHECKSUMS.txt").write_text("\n".join(checksum_lines) + "\n")
     print("wrote CHECKSUMS.txt")

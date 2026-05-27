@@ -1,12 +1,18 @@
 /**
- * Phase 6A — types for the voice bridge. Wire-format types are the
+ * Phase 6A/6B — types for the voice bridge. Wire-format types are the
  * load-bearing contract between Node and the Python subprocess; they
- * carry through to 6B (STT events), 6C (wake-word), 6D (rolling buffer),
- * and 6E (TUI integration) without renaming.
+ * carry through to 6C (wake-word), 6D (rolling buffer), and 6E (TUI
+ * integration) without renaming.
  */
 
 /**
  * JSON events the Python bridge writes to stdout, newline-delimited.
+ *
+ * Phase 6A introduced `ready` / `speech_start` / `speech_end` / `error`
+ * / `shutdown_ack`. Phase 6B adds `stt_ready` (Moonshine warmup
+ * complete), `partial` (re-running batch inference on the growing
+ * buffer every ~200 ms), `final` (transcription on the full segment),
+ * and `warning` (hard-cap utterance truncation).
  *
  * The bridge emits `ready` once after audio init + Silero model load
  * complete. `speech_start` / `speech_end` are the VAD-gated segment
@@ -15,9 +21,19 @@
  * process with code 1 and stderr context. `shutdown_ack` is the final
  * message before a clean `exit 0` in response to `{"cmd":"shutdown"}`.
  *
+ * 6B ordering contract (per segment):
+ *   speech_start
+ *     -> 0..N `partial` events (monotonic `seq`, may have gaps due to
+ *        drop-oldest under load; consumers MUST discard out-of-order
+ *        `partial` events with `seq <= lastRendered.seq`)
+ *     -> speech_end
+ *     -> exactly one `final` event with the latest `seq + 1`
+ *   On hard-cap (>= --max-utterance-seconds): `warning` fires IMMEDIATELY
+ *   at the truncation moment, then `speech_end` (synthetic), then the
+ *   final inference completes and emits `final`.
+ *
  * `tMs` is milliseconds since the `ready` event (monotonic per-session
- * timeline). 6B will emit additional event kinds (`partial`, `final`)
- * without changing this union's shape — the discriminated union widens.
+ * timeline).
  */
 export type VoiceBridgeEvent =
   | {
@@ -28,11 +44,30 @@ export type VoiceBridgeEvent =
       readonly vadMinSpeechMs: number;
       readonly vadMinSilenceMs: number;
     }
+  | { readonly type: 'stt_ready'; readonly model: string }
   | { readonly type: 'speech_start'; readonly tMs: number }
   | {
       readonly type: 'speech_end';
       readonly tMs: number;
       readonly durationMs: number;
+    }
+  | {
+      readonly type: 'partial';
+      readonly seq: number;
+      readonly text: string;
+      readonly tMs: number;
+    }
+  | {
+      readonly type: 'final';
+      readonly seq: number;
+      readonly text: string;
+      readonly tMs: number;
+      readonly durationMs: number;
+    }
+  | {
+      readonly type: 'warning';
+      readonly code: 'utterance-truncated';
+      readonly tMs: number;
     }
   | { readonly type: 'error'; readonly code: string; readonly message: string }
   | { readonly type: 'shutdown_ack' };
@@ -58,6 +93,10 @@ export type VoiceBridgeCommand =
  * Phase 4D.3/4D.4 (exitCode + structured payload). PyAudio install on
  * Win32 is best-effort — `pyAudioAvailable: false` is NOT a failure;
  * sounddevice is the primary capture backend.
+ *
+ * Phase 6B adds Moonshine STT fields (`moonshineInstalled`,
+ * `moonshineImportOk`, `moonshineModelWarmed`) plus a `voiceVocabSeeded`
+ * boolean for the atomic vocab-seed install.
  */
 export interface VoiceInstallResult {
   readonly ok: boolean;
@@ -70,7 +109,10 @@ export interface VoiceInstallResult {
     | 'pip-bootstrap-failed'
     | 'silero-install-failed'
     | 'sounddevice-install-failed'
-    | 'numpy-install-failed';
+    | 'numpy-install-failed'
+    | 'moonshine-install-failed'
+    | 'moonshine-import-failed'
+    | 'moonshine-download-failed';
   readonly venvPath: string;
   readonly pythonPath: string;
   readonly sileroVadInstalled: boolean;
@@ -78,15 +120,26 @@ export interface VoiceInstallResult {
   readonly soundDeviceInstalled: boolean;
   readonly numpyInstalled: boolean;
   readonly pyAudioInstalled: boolean;
+  /** Phase 6B — `useful-moonshine-onnx` pip-shows present. */
+  readonly moonshineInstalled: boolean;
+  /** Phase 6B — `from useful_moonshine_onnx import ...` succeeded (validates transitive deps that `pip show` doesn't catch). */
+  readonly moonshineImportOk: boolean;
+  /** Phase 6B — model weights downloaded + cached locally; future invocations skip the network. */
+  readonly moonshineModelWarmed: boolean;
+  /** Phase 6B — atomic `~/.symphony/voice-vocab.json` seed file created (only when target was absent). */
+  readonly voiceVocabSeeded: boolean;
   readonly warnings: readonly string[];
   /** True when nothing was reinstalled (every requested dep already present at its current version). */
   readonly idempotent: boolean;
 }
 
 /**
- * Result of `runVoiceDiagnose`. Used by the CLI surface and the Phase 6A
- * production scenario gate. `speechSegments` is the count of complete
- * `speech_start → speech_end` pairs observed.
+ * Result of `runVoiceDiagnose`. Used by the CLI surface and the Phase
+ * 6A/6B production scenario gate. `speechSegments` is the count of
+ * complete `speech_start → speech_end` pairs observed. Phase 6B adds
+ * `finalEvents` (count of STT final-text events observed) so the gate
+ * can assert STT is wired even when only VAD events are required by
+ * the strict 6A pass criterion.
  */
 export interface VoiceDiagnoseResult {
   readonly ok: boolean;
@@ -100,8 +153,48 @@ export interface VoiceDiagnoseResult {
     | 'no-speech-detected'
     | 'fixture-missing';
   readonly speechSegments: number;
+  /** Phase 6B — count of `final` STT events seen during the run. */
+  readonly finalEvents: number;
+  /** Phase 6B — true when an `stt_ready` event was observed. */
+  readonly sttReady: boolean;
   readonly events: readonly VoiceBridgeEvent[];
   readonly stderrTail: string;
   /** Wall-clock duration of the diagnose run, in ms. */
   readonly durationMs: number;
+}
+
+/**
+ * Result of `runVoiceTranscribe` (Phase 6B). Mirrors the
+ * `VoiceDiagnoseResult` shape (existing 6A pattern). The joined
+ * transcript is the concatenation of `finals[*].text`, separated by a
+ * single space.
+ */
+export interface VoiceTranscribeResult {
+  readonly ok: boolean;
+  readonly exitCode: number;
+  readonly reason?:
+    | 'voice-env-missing'
+    | 'fixture-missing'
+    | 'unsupported-audio-format'
+    | 'bridge-spawn-failed'
+    | 'bridge-ready-timeout'
+    | 'stt-ready-timeout'
+    | 'no-final-event';
+  readonly transcript: string;
+  readonly partials: ReadonlyArray<{
+    readonly seq: number;
+    readonly text: string;
+    readonly tMs: number;
+  }>;
+  readonly finals: ReadonlyArray<{
+    readonly seq: number;
+    readonly text: string;
+    readonly tMs: number;
+    readonly durationMs: number;
+  }>;
+  readonly events: readonly VoiceBridgeEvent[];
+  readonly stderrTail: string;
+  readonly durationMs: number;
+  readonly sttReady: boolean;
+  readonly truncated: boolean;
 }

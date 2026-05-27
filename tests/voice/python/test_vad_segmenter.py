@@ -243,6 +243,47 @@ def test_reset_drops_state():
     assert events == []
 
 
+def test_reset_zeros_t_ms():
+    """The full reset() rewinds the monotonic timeline to zero."""
+    cfg = VadConfig(sample_rate=16000, frame_samples=480)
+    seg = VadSegmenter(cfg, static_prob(0.0))
+    drive(seg, [silence_frame() for _ in range(5)])
+    assert seg.t_ms == 5 * 30
+    seg.reset()
+    assert seg.t_ms == 0
+
+
+def test_reset_segment_only_preserves_t_ms():
+    """Phase 6B audit-M1 — reset_segment_only() preserves the monotonic
+    timeline. The bridge's hard-cap force-flush relies on this so
+    consumers can plot events on a single per-session axis even after
+    a 30s utterance is truncated."""
+    cfg = VadConfig(
+        sample_rate=16000, frame_samples=480, threshold=0.5,
+        min_speech_ms=100, min_silence_ms=400,
+    )
+    # 10 frames speech (300ms), then 10 frames silence (300ms) -> stepwise
+    # mid-segment; t_ms = 600ms when we reset.
+    seg = VadSegmenter(
+        cfg, stepwise_prob([0.9] * 10 + [0.0] * 10),
+    )
+    drive(seg, [speech_frame() for _ in range(20)])
+    t_ms_before = seg.t_ms
+    assert t_ms_before == 20 * 30
+    # Per-segment state should have built (speech segment opened, then
+    # silence accumulating but min_silence_ms=400 not yet reached).
+    # reset_segment_only(): t_ms preserved, per-segment state dropped.
+    seg.reset_segment_only()
+    assert seg.t_ms == t_ms_before
+    # Continue with silence — no events should fire because the
+    # speech-state flag was cleared. The stepwise_prob exhausted its
+    # list, so further calls return 0.0 (silence).
+    events = drive(seg, [silence_frame() for _ in range(5)])
+    assert events == []
+    # And t_ms keeps advancing monotonically across the reset boundary.
+    assert seg.t_ms == 25 * 30
+
+
 # --- t_ms monotonicity ----------------------------------------------------
 
 

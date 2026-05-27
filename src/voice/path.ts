@@ -93,6 +93,77 @@ export function voicePythonPackageDir(): string {
 }
 
 /**
+ * Phase 6B — resolve the bundled vocab seed JSON (`vocab-seed.json`).
+ * Shipped in both `src/voice/` (dev) and `dist/voice/` (built). Used by
+ * the installer to atomically copy onto `~/.symphony/voice-vocab.json`
+ * on first install (NEVER overwrites an existing user file).
+ *
+ * Throws when neither layout has it — fail-loud on packaging defects.
+ */
+export function voiceVocabSeedPath(): string {
+  const here = path.dirname(url.fileURLToPath(import.meta.url));
+  const candidates = [
+    // Dev: src/voice/path.ts -> src/voice/vocab-seed.json
+    path.join(here, 'vocab-seed.json'),
+    // Built: dist/index.js -> dist/voice/vocab-seed.json (tsup copyTree)
+    path.join(here, 'voice', 'vocab-seed.json'),
+    // Defensive
+    path.join(path.dirname(here), 'voice', 'vocab-seed.json'),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  throw new VoiceVocabSeedNotFoundError(
+    `vocab-seed.json not found in: ${candidates.join(', ')}. ` +
+      'Did `pnpm build` complete? See tsup.config.ts copyTree(src/voice -> dist/voice).',
+  );
+}
+
+/**
+ * Phase 6B — resolve the user-global vocab path at `~/.symphony/voice-vocab.json`.
+ * Override via `SYMPHONY_VOICE_VOCAB_FILE` env var. May not exist on disk;
+ * caller checks `existsSync` separately.
+ */
+export const SYMPHONY_VOICE_VOCAB_FILE_ENV = 'SYMPHONY_VOICE_VOCAB_FILE' as const;
+
+export function voiceVocabUserPath(home?: string): string {
+  const override = process.env[SYMPHONY_VOICE_VOCAB_FILE_ENV]?.trim();
+  if (override !== undefined && override.length > 0) {
+    return path.resolve(override);
+  }
+  return path.join(symphonyDataDir(home), 'voice-vocab.json');
+}
+
+/**
+ * Phase 6B — resolve a project-local vocab path at
+ * `<project>/.symphony/voice-vocab.json`. Returns `undefined` when
+ * `projectRoot` is missing.
+ */
+export function voiceVocabProjectPath(projectRoot: string | undefined): string | undefined {
+  if (projectRoot === undefined || projectRoot.length === 0) return undefined;
+  return path.join(projectRoot, '.symphony', 'voice-vocab.json');
+}
+
+/**
+ * Phase 6B — collect existing vocab paths in load order (user-global
+ * first, then project-local — later overrides earlier on key collision
+ * inside `voice_vocab.py`'s merge).
+ */
+export function resolveVoiceVocabPaths(opts: {
+  readonly home?: string;
+  readonly projectRoot?: string;
+}): string[] {
+  const paths: string[] = [];
+  const userGlobal = voiceVocabUserPath(opts.home);
+  if (existsSync(userGlobal)) paths.push(userGlobal);
+  const projectLocal = voiceVocabProjectPath(opts.projectRoot);
+  if (projectLocal !== undefined && existsSync(projectLocal)) {
+    paths.push(projectLocal);
+  }
+  return paths;
+}
+
+/**
  * Path to the Phase 6A diagnose PCM fixture. The fixture is committed
  * under `tests/fixtures/voice/` and bundled with the repo (NOT shipped
  * in `dist/`). Used by `runVoiceDiagnose` to drive the bridge in
@@ -131,6 +202,13 @@ export class VoiceDiagnoseFixtureNotFoundError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'VoiceDiagnoseFixtureNotFoundError';
+  }
+}
+
+export class VoiceVocabSeedNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'VoiceVocabSeedNotFoundError';
   }
 }
 

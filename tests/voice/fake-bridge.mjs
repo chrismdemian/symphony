@@ -14,6 +14,11 @@
 //   bad-json: emit a literal non-JSON line, then ready
 //   unknown-event: emit a JSON line with type='banana' before ready
 //   immediate-exit: exit 1 without ready (spawn-error class)
+//   no-ack: ignores shutdown, forces grace timeout
+//   stt-happy: ready + stt_ready + (on stdin EOF) speech_start + partial + speech_end + final
+//   stt-ready-never: ready but no stt_ready (forces stt-ready timeout)
+//   stt-no-final: ready + stt_ready + speech_start + speech_end + (no final)
+//   stt-truncated: ready + stt_ready + (on stdin EOF) warning + speech_end + final
 //
 // All scenarios flush each event with a trailing newline.
 
@@ -56,28 +61,83 @@ for (let i = 0; i < args.length; i += 1) {
 }
 
 // Always read stdin in a loop so the shutdown command can find us.
-process.stdin.setEncoding('utf8');
-let stdinBuf = '';
-process.stdin.on('data', (chunk) => {
-  stdinBuf += chunk;
-  let idx = stdinBuf.indexOf('\n');
-  while (idx >= 0) {
-    const line = stdinBuf.slice(0, idx).trim();
-    stdinBuf = stdinBuf.slice(idx + 1);
-    if (line.length === 0) continue;
-    try {
-      const msg = JSON.parse(line);
-      if (msg.cmd === 'shutdown') {
-        emit({ type: 'shutdown_ack' });
-        // Give stdout one tick to flush, then exit clean.
-        setTimeout(() => process.exit(0), 5);
-      }
-    } catch {
-      // ignore bad input from test
+// In stt-* scenarios we treat stdin as raw PCM (drained but ignored),
+// firing the segment events on stdin EOF.
+const isSttScenario =
+  typeof scenario === 'string' && scenario.startsWith('stt-');
+let stdinClosedFired = false;
+const onStdinClose = () => {
+  if (stdinClosedFired) return;
+  stdinClosedFired = true;
+  switch (scenario) {
+    case 'stt-happy': {
+      emit({ type: 'speech_start', tMs: 500 });
+      emit({ type: 'partial', seq: 1, text: 'hello', tMs: 700 });
+      emit({ type: 'speech_end', tMs: 1500, durationMs: 1000 });
+      emit({ type: 'final', seq: 2, text: 'hello world', tMs: 1500, durationMs: 1000 });
+      emit({ type: 'shutdown_ack' });
+      setTimeout(() => process.exit(0), 5);
+      break;
     }
-    idx = stdinBuf.indexOf('\n');
+    case 'stt-no-final': {
+      emit({ type: 'speech_start', tMs: 500 });
+      emit({ type: 'speech_end', tMs: 1500, durationMs: 1000 });
+      emit({ type: 'shutdown_ack' });
+      setTimeout(() => process.exit(0), 5);
+      break;
+    }
+    case 'stt-truncated': {
+      emit({ type: 'speech_start', tMs: 100 });
+      emit({ type: 'partial', seq: 1, text: 'thirty seconds of', tMs: 5000 });
+      emit({ type: 'warning', code: 'utterance-truncated', tMs: 30000 });
+      emit({ type: 'speech_end', tMs: 30000, durationMs: 29900 });
+      emit({
+        type: 'final',
+        seq: 2,
+        text: 'thirty seconds of speech',
+        tMs: 30000,
+        durationMs: 29900,
+      });
+      emit({ type: 'shutdown_ack' });
+      setTimeout(() => process.exit(0), 5);
+      break;
+    }
+    default:
+      break;
   }
-});
+};
+
+if (isSttScenario) {
+  // Drain stdin in raw mode (we don't parse it as JSON). On 'end',
+  // emit the scripted STT events.
+  process.stdin.on('data', () => {
+    /* discard raw PCM */
+  });
+  process.stdin.on('end', onStdinClose);
+} else {
+  process.stdin.setEncoding('utf8');
+  let stdinBuf = '';
+  process.stdin.on('data', (chunk) => {
+    stdinBuf += chunk;
+    let idx = stdinBuf.indexOf('\n');
+    while (idx >= 0) {
+      const line = stdinBuf.slice(0, idx).trim();
+      stdinBuf = stdinBuf.slice(idx + 1);
+      if (line.length === 0) continue;
+      try {
+        const msg = JSON.parse(line);
+        if (msg.cmd === 'shutdown') {
+          emit({ type: 'shutdown_ack' });
+          // Give stdout one tick to flush, then exit clean.
+          setTimeout(() => process.exit(0), 5);
+        }
+      } catch {
+        // ignore bad input from test
+      }
+      idx = stdinBuf.indexOf('\n');
+    }
+  });
+}
 
 // stderr-write probe so stderr-tail tests have something to capture
 process.stderr.write('fake-bridge: scenario=' + scenario + '\n');
@@ -115,6 +175,23 @@ switch (scenario) {
     // Reads shutdown but ignores it — forces the grace timeout path.
     ready();
     process.stdin.removeAllListeners('data');
+    break;
+  case 'stt-happy':
+    ready();
+    setTimeout(() => emit({ type: 'stt_ready', model: 'moonshine/base' }), 5);
+    break;
+  case 'stt-no-final':
+    ready();
+    setTimeout(() => emit({ type: 'stt_ready', model: 'moonshine/base' }), 5);
+    break;
+  case 'stt-truncated':
+    ready();
+    setTimeout(() => emit({ type: 'stt_ready', model: 'moonshine/base' }), 5);
+    break;
+  case 'stt-ready-never':
+    // Ready fires but stt_ready never does — forces the stt-ready-timeout
+    // path in runVoiceTranscribe.
+    ready();
     break;
   default:
     process.stderr.write('unknown scenario: ' + scenario + '\n');

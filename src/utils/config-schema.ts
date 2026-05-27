@@ -176,13 +176,13 @@ export const SymphonyConfigSchema = z.object({
    */
   tuiProjectFilter: z.enum(['all', 'active']).default('all'),
   /**
-   * Phase 6A — voice input subsystem.
+   * Phase 6A/6B — voice input subsystem.
    *
    * `enabled: false` is the default (opt-in feature). When false, the
    * voice bridge does NOT auto-spawn from `symphony start`; only
-   * `symphony voice diagnose` boots it.
+   * `symphony voice diagnose` / `symphony voice transcribe` boot it.
    *
-   * VAD knobs:
+   * VAD knobs (6A):
    *   - `vadThreshold` (0..1, default 0.5): Silero speech-probability
    *     gate. Higher = louder environments. The Silero default.
    *   - `vadMinSpeechMs` (50..2000, default 100): run-up before
@@ -190,14 +190,31 @@ export const SymphonyConfigSchema = z.object({
    *   - `vadMinSilenceMs` (100..3000, default 400): run-down before
    *     emitting `speech_end` — keeps natural pauses inside one segment.
    *
+   * STT knobs (6B):
+   *   - `sttModel` (`'moonshine/base'` | `'moonshine/tiny'`, default
+   *     `'moonshine/base'`): Moonshine model id. `base` is 61M params,
+   *     ~5% WER; `tiny` is 27M, ~13% WER for low-resource devices.
+   *   - `maxUtteranceSeconds` (5..90, default 30): hard cap on utterance
+   *     length. On hard-cap, the bridge force-flushes a `final` event
+   *     and emits a `warning` so the TUI can show "(cut at Ns)".
+   *   - `partialIntervalMs` (100..1000, default 200): cadence at which
+   *     the bridge re-runs Moonshine batch inference on the growing
+   *     audio buffer to emit `partial` events. Lower = more responsive
+   *     UI but higher CPU; higher = batchier.
+   *
    * 5-site cascade (NOT 6) — voice config is client-side; the
    * dispatch-context cursor doesn't read it. Mirror of 5F
    * `tuiProjectFilter` shape. The bridge re-reads thresholds fresh on
-   * each `set_threshold` RPC (deferred to 6E); 6A holds them at spawn
-   * time only.
+   * each `set_threshold` RPC (reserved for 6E); 6A/6B hold them at
+   * spawn time only.
    *
-   * 5 sites: this schema definition, `SymphonyConfigPatch`, `mergePatch`,
-   * `applyPatchInMemory`, `applyConfigEdits` (every `voice.*` field).
+   * Adding a new `voice.*` field that the bridge consumes at spawn
+   * time only — single touch here. The other four sites use
+   * `{...current.voice, ...patch.voice}` partial-merge OR write the
+   * whole `voice` object as one jsonc edit, so structural cascade is
+   * automatic. Adding a `voice.*` field that the BRIDGE must
+   * runtime-reload (via `{cmd:'reload_*'}`) is a separate concern —
+   * the bridge wire format widens then, NOT the cascade.
    */
   voice: z
     .object({
@@ -205,12 +222,20 @@ export const SymphonyConfigSchema = z.object({
       vadThreshold: z.number().min(0).max(1).default(0.5),
       vadMinSpeechMs: z.number().int().min(50).max(2000).default(100),
       vadMinSilenceMs: z.number().int().min(100).max(3000).default(400),
+      sttModel: z
+        .enum(['moonshine/base', 'moonshine/tiny'])
+        .default('moonshine/base'),
+      maxUtteranceSeconds: z.number().int().min(5).max(90).default(30),
+      partialIntervalMs: z.number().int().min(100).max(1000).default(200),
     })
     .default({
       enabled: false,
       vadThreshold: 0.5,
       vadMinSpeechMs: 100,
       vadMinSilenceMs: 400,
+      sttModel: 'moonshine/base',
+      maxUtteranceSeconds: 30,
+      partialIntervalMs: 200,
     }),
 });
 

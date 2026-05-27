@@ -63,14 +63,24 @@ export default defineConfig({
       path.resolve('dist/droids/bundled'),
       (f) => f.endsWith('.md'),
     );
-    // Phase 6A — Python voice bridge files (`voice_bridge.py`,
-    // `vad_segmenter.py`, etc.). Loaded at runtime via
-    // `src/voice/path.ts:voicePythonPackageDir` which walks
-    // `import.meta.url` candidates and lands here in the built layout.
+    // Phase 6A/6B — Python voice bridge files (`voice_bridge.py`,
+    // `vad_segmenter.py`, `voice_vocab.py`, `stt_moonshine.py`).
+    // Loaded at runtime via `src/voice/path.ts:voicePythonPackageDir`
+    // which walks `import.meta.url` candidates and lands here in the
+    // built layout.
     copyTree(
       path.resolve('src/voice/python'),
       path.resolve('dist/voice/python'),
       (f) => f.endsWith('.py'),
+    );
+    // Phase 6B — bundled vocab seed JSON. Installed atomically onto
+    // `~/.symphony/voice-vocab.json` on first install. Loaded via
+    // `src/voice/path.ts:voiceVocabSeedPath` which walks
+    // `import.meta.url` candidates and lands here in the built layout.
+    fs.mkdirSync(path.resolve('dist/voice'), { recursive: true });
+    fs.copyFileSync(
+      path.resolve('src/voice/vocab-seed.json'),
+      path.resolve('dist/voice/vocab-seed.json'),
     );
   },
 });

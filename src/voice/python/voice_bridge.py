@@ -1,8 +1,12 @@
-"""Symphony voice bridge — long-lived Python subprocess (Phase 6A).
+"""Symphony voice bridge — long-lived Python subprocess.
 
-Owns the microphone (or stdin PCM in test mode), runs Silero VAD on
-fixed-size frames, and emits JSON events on stdout. Newline-delimited
-JSON in both directions. See `src/voice/types.ts` for the wire format.
+Phase 6A introduced this bridge: Silero VAD on every frame, emitting
+``speech_start`` / ``speech_end`` events on stdout. Phase 6B layers STT
+on top: between ``speech_start`` and ``speech_end``, frames accumulate
+into a per-segment buffer; a worker thread runs Moonshine inference on
+snapshots at a configurable cadence (``--partial-interval-ms``) and on
+the segment-end flush. Hard cap on utterance length (``--max-utterance-
+seconds``) emits a ``warning`` and force-flushes the buffer.
 
 Commands (stdin):
     {"cmd":"shutdown"}
@@ -10,25 +14,41 @@ Commands (stdin):
 
 Events (stdout):
     {"type":"ready", "backend":"...", "sampleRate":16000, ...}
+    {"type":"stt_ready", "model":"moonshine/base"}   # Phase 6B
     {"type":"speech_start", "tMs":...}
     {"type":"speech_end",   "tMs":..., "durationMs":...}
+    {"type":"partial",      "seq":N, "text":"...", "tMs":...}    # Phase 6B
+    {"type":"final",        "seq":N, "text":"...", "tMs":..., "durationMs":...}  # Phase 6B
+    {"type":"warning",      "code":"utterance-truncated", "tMs":...}  # Phase 6B
     {"type":"error",        "code":"...", "message":"..."}
     {"type":"shutdown_ack"}
 
+Threading (Phase 6B):
+  - Main thread: audio iter -> VAD -> emits speech_start/end + warning.
+  - STT worker thread: loads Moonshine on start, runs warmup inference,
+    emits ``stt_ready``; then dequeues partial/final requests and emits.
+    Finals are priority + never dropped; partials are drop-oldest (only
+    the latest pending partial is processed when the worker frees up).
+  - Stdin command reader thread (mic mode only): unchanged from 6A.
+  - All stdout emits route through an emit-lock so JSON lines stay
+    atomic across threads.
+
 stderr carries human-readable diagnostics (model load progress, audio
-backend selection notices). Node prefixes every stderr line with
-"[voice-bridge] " when relaying to its own stderr.
+backend selection, vocab load stats). Node prefixes every stderr line
+with ``[voice-bridge] `` when relaying.
 
 Exit codes:
-    0 — clean shutdown (received shutdown command OR stdin EOF).
-    1 — fatal init error (model load failed, no audio backend).
-    2 — unexpected runtime error.
+    0 - clean shutdown (received shutdown command OR stdin EOF).
+    1 - fatal init error (model load failed, no audio backend).
+    2 - unexpected runtime error.
 """
 from __future__ import annotations
 
 import argparse
+import collections
 import json
 import os
+import queue
 import sys
 import threading
 import time
@@ -56,12 +76,23 @@ from vad_segmenter import (  # type: ignore[import-not-found]
 
 # ---- JSON event helpers --------------------------------------------------
 
+# Phase 6B: stdout writes happen from BOTH the main thread (VAD events)
+# AND the STT worker thread (transcription events). Without serialization,
+# JSON lines can interleave at the byte level under contention. The
+# emit-lock guarantees one JSON-line-per-write atomicity.
+_EMIT_LOCK = threading.Lock()
+
 
 def emit(event: dict) -> None:
-    """Write one JSON event to stdout with a trailing newline + flush."""
-    sys.stdout.write(json.dumps(event, separators=(",", ":")))
-    sys.stdout.write("\n")
-    sys.stdout.flush()
+    """Write one JSON event to stdout with a trailing newline + flush.
+
+    Thread-safe across the main thread + STT worker thread (Phase 6B).
+    """
+    payload = json.dumps(event, separators=(",", ":"))
+    with _EMIT_LOCK:
+        sys.stdout.write(payload)
+        sys.stdout.write("\n")
+        sys.stdout.flush()
 
 
 def emit_error(code: str, message: str) -> None:
@@ -70,7 +101,7 @@ def emit_error(code: str, message: str) -> None:
 
 def log(msg: str) -> None:
     """Human-readable diagnostic to stderr. Bridge logs are noisy by
-    design — the Node side prefixes and surfaces them."""
+    design - the Node side prefixes and surfaces them."""
     sys.stderr.write(msg.rstrip() + "\n")
     sys.stderr.flush()
 
@@ -82,7 +113,7 @@ def open_stdin_pcm(frame_samples: int) -> Iterator[bytes]:
     """Yield fixed-size frames from stdin (raw int16 LE mono PCM).
 
     Used by the diagnose CLI and integration tests so the bridge can be
-    driven without a microphone. EOF on stdin ends the iterator —
+    driven without a microphone. EOF on stdin ends the iterator -
     caller's main loop treats that as a clean shutdown.
     """
     frame_bytes = frame_samples * 2  # int16
@@ -136,7 +167,7 @@ def open_mic(
             raise ValueError(f"unknown backend '{backend}'")
 
     raise RuntimeError(
-        "no audio backend available — "
+        "no audio backend available - "
         f"sounddevice: {last_err_sd!r}; pyaudio: {last_err_pa!r}"
     )
 
@@ -145,14 +176,13 @@ def _open_sounddevice(  # pragma: no cover - hardware-dependent
     sample_rate: int, frame_samples: int
 ) -> tuple[Iterator[bytes], str, callable]:
     import sounddevice as sd  # type: ignore[import-not-found]
-    import queue
+    import queue as _q
 
-    q: "queue.Queue[bytes]" = queue.Queue(maxsize=256)
+    q: "_q.Queue[bytes]" = _q.Queue(maxsize=256)
 
     def _callback(indata, frames, time_info, status):  # noqa: ARG001
         if status:
             log(f"sounddevice status: {status}")
-        # indata is int16, shape (frames, 1)
         q.put(bytes(indata))
 
     stream = sd.RawInputStream(
@@ -234,8 +264,8 @@ def make_silero_prob_fn(sample_rate: int, frame_samples: int) -> VadProbFn:
     Wire shape:
         input:  float32 (1, context_size + frame_samples)
         sr:     int64 scalar
-        state:  float32 (2, 1, 128) — LSTM state, carried across calls
-        output: float32 (1, 1) — speech probability
+        state:  float32 (2, 1, 128) - LSTM state, carried across calls
+        output: float32 (1, 1) - speech probability
                 + new state in output[1]
     """
     import numpy as np  # type: ignore[import-not-found]
@@ -245,7 +275,7 @@ def make_silero_prob_fn(sample_rate: int, frame_samples: int) -> VadProbFn:
     model = load_silero_vad(onnx=True)
     session = model.session
 
-    # Persistent LSTM state across frames — the model is recurrent.
+    # Persistent LSTM state across frames - the model is recurrent.
     state = np.zeros((2, 1, 128), dtype=np.float32)
     sr_np = np.array(sample_rate, dtype=np.int64)
     context_size = 64 if sample_rate == 16000 else 32
@@ -276,12 +306,208 @@ def make_silero_prob_fn(sample_rate: int, frame_samples: int) -> VadProbFn:
     return _prob
 
 
+# ---- STT worker thread (Phase 6B) ----------------------------------------
+
+
+class SttWorker:
+    """Background thread that runs Moonshine inference.
+
+    Owns a ``MoonshineTranscriber`` instance, a vocab ``Substituter``,
+    and two pending-work slots:
+      - ``_pending_partial``: single slot. Drop-oldest semantics — only
+        the latest partial enqueued before the worker frees up survives.
+        Partials are inherently disposable; only freshness matters.
+      - ``_pending_finals``: unbounded list. Finals are never dropped.
+
+    Construct, call ``start()``, then ``enqueue_partial`` /
+    ``enqueue_final`` from the main thread. Call ``stop()`` to drain
+    pending work + join the thread.
+
+    Load + warmup happens lazily on the worker thread itself:
+      1. Import ``moonshine_onnx`` + load the model.
+      2. Run a 1-second silence inference to warm numba JIT.
+      3. Emit ``stt_ready`` event.
+      4. Begin processing the pending-work slots.
+
+    If load OR warmup fails, the worker emits an ``error`` event with
+    code ``stt-load-failed`` and disables itself — subsequent enqueues
+    are silently dropped. The bridge still emits VAD events; STT is
+    degraded gracefully.
+    """
+
+    def __init__(
+        self,
+        model: str,
+        vocab_sub,
+        sample_rate: int,
+        shutdown_event: threading.Event,
+    ) -> None:
+        self._model = model
+        self._vocab = vocab_sub
+        self._sample_rate = sample_rate
+        self._shutdown_event = shutdown_event
+        self._lock = threading.Lock()
+        # _pending_partial: tuple (seq, pcm_bytes, t_ms) or None.
+        self._pending_partial: Optional[tuple[int, bytes, int]] = None
+        # _pending_finals: list[(seq, pcm_bytes, t_ms, duration_ms)].
+        self._pending_finals: list[tuple[int, bytes, int, int]] = []
+        self._wake = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self._disabled = False
+        # `_ready` flips True once the warmup completes and `stt_ready`
+        # has been emitted. Used only for diagnostics / tests; the
+        # enqueue path doesn't gate on it (partials/finals enqueued
+        # before ready will simply process AFTER load+warmup).
+        self._ready = False
+
+    @property
+    def is_ready(self) -> bool:
+        return self._ready
+
+    @property
+    def is_disabled(self) -> bool:
+        return self._disabled
+
+    def start(self) -> None:
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="stt-worker",
+        )
+        self._thread.start()
+
+    def enqueue_partial(self, seq: int, pcm: bytes, t_ms: int) -> None:
+        """Replace any pending partial with the latest one.
+
+        Drop-oldest semantics — the previous pending partial (if any)
+        is discarded. Cheap; sub-microsecond. Safe to call from the
+        main thread.
+        """
+        if self._disabled or self._shutdown_event.is_set():
+            return
+        with self._lock:
+            self._pending_partial = (seq, pcm, t_ms)
+        self._wake.set()
+
+    def enqueue_final(
+        self, seq: int, pcm: bytes, t_ms: int, duration_ms: int,
+    ) -> None:
+        """Enqueue a final inference request. Never dropped."""
+        if self._disabled or self._shutdown_event.is_set():
+            return
+        with self._lock:
+            self._pending_finals.append((seq, pcm, t_ms, duration_ms))
+        self._wake.set()
+
+    def stop(self, timeout: float = 30.0) -> None:
+        """Signal stop and join the worker thread.
+
+        The worker drains pending finals + the latest pending partial
+        BEFORE exiting (so a `speech_end` immediately followed by EOF
+        still produces a `final` event). Bounded by ``timeout`` to
+        protect against a wedged inference call.
+        """
+        self._shutdown_event.set()
+        self._wake.set()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+
+    def _run(self) -> None:
+        try:
+            self._load_and_warmup()
+        except Exception as e:  # noqa: BLE001
+            # Load failure is non-fatal to the bridge - VAD continues
+            # without STT. Emit an error event so consumers know STT
+            # never came online; flag disabled so further enqueues no-op.
+            emit_error("stt-load-failed", f"{type(e).__name__}: {e!r}")
+            self._disabled = True
+            return
+        self._loop()
+
+    def _load_and_warmup(self) -> None:
+        # Import lazily — the worker thread is the only place we touch
+        # moonshine_onnx; bridge.init() doesn't import it.
+        from stt_moonshine import MoonshineTranscriber  # type: ignore[import-not-found]
+
+        log(f"loading Moonshine STT model: {self._model}...")
+        self._transcriber = MoonshineTranscriber(self._model)
+        self._transcriber.load()
+        log("running Moonshine numba JIT warmup (1s silence)...")
+        self._transcriber.warmup()
+        emit({"type": "stt_ready", "model": self._model})
+        self._ready = True
+
+    def _loop(self) -> None:
+        from stt_moonshine import int16_pcm_to_float32  # type: ignore[import-not-found]
+
+        while True:
+            # Drain finals first (priority)
+            while True:
+                with self._lock:
+                    if not self._pending_finals:
+                        break
+                    item = self._pending_finals.pop(0)
+                seq, pcm, t_ms, duration_ms = item
+                self._process(int16_pcm_to_float32, "final", seq, pcm, t_ms, duration_ms)
+            # Process at most one pending partial
+            with self._lock:
+                partial = self._pending_partial
+                self._pending_partial = None
+            if partial is not None:
+                seq, pcm, t_ms = partial
+                self._process(int16_pcm_to_float32, "partial", seq, pcm, t_ms, None)
+            # Exit when shutdown is set AND nothing more to do.
+            if self._shutdown_event.is_set():
+                with self._lock:
+                    nothing_left = (
+                        self._pending_partial is None
+                        and len(self._pending_finals) == 0
+                    )
+                if nothing_left:
+                    return
+            # Wait for next signal or timeout (10 Hz idle poll keeps us
+            # responsive to shutdown without busy-looping).
+            self._wake.wait(timeout=0.1)
+            self._wake.clear()
+
+    def _process(
+        self,
+        pcm_to_float,
+        kind: str,
+        seq: int,
+        pcm: bytes,
+        t_ms: int,
+        duration_ms: Optional[int],
+    ) -> None:
+        audio_f32 = pcm_to_float(pcm)
+        if audio_f32.size == 0:
+            text = ""
+        else:
+            try:
+                raw = self._transcriber.transcribe(audio_f32)
+            except Exception as e:  # noqa: BLE001
+                emit_error(
+                    "stt-transcribe-failed",
+                    f"{kind} seq={seq}: {type(e).__name__}: {e!r}",
+                )
+                return
+            text = self._vocab.apply(raw) if self._vocab is not None else raw
+        if kind == "partial":
+            emit({"type": "partial", "seq": seq, "text": text, "tMs": t_ms})
+        else:
+            emit({
+                "type": "final",
+                "seq": seq,
+                "text": text,
+                "tMs": t_ms,
+                "durationMs": duration_ms if duration_ms is not None else 0,
+            })
+
+
 # ---- main bridge loop ----------------------------------------------------
 
 
 class Bridge:
     """The bridge's event loop. Keeps audio iter + segmenter + stdin
-    reader in one object so threading lifetimes are obvious."""
+    reader + STT worker in one object so threading lifetimes are obvious."""
 
     def __init__(
         self,
@@ -292,6 +518,11 @@ class Bridge:
         vad_min_speech_ms: int,
         vad_min_silence_ms: int,
         force_backend: Optional[str],
+        stt_enabled: bool,
+        stt_model: str,
+        max_utterance_seconds: int,
+        partial_interval_ms: int,
+        stt_vocab_paths: list[str],
     ) -> None:
         self.input_mode = input_mode
         self.cfg = VadConfig(
@@ -308,9 +539,33 @@ class Bridge:
         self.backend_name = "stdin-pcm"
         self.shutdown_event = threading.Event()
         self._stdin_thread: Optional[threading.Thread] = None
+        # Phase 6B fields
+        self.stt_enabled = stt_enabled
+        self.stt_model = stt_model
+        self.max_utterance_seconds = max_utterance_seconds
+        self.partial_interval_ms = partial_interval_ms
+        self.stt_vocab_paths = stt_vocab_paths
+        self.stt_worker: Optional[SttWorker] = None
+        # Per-segment state
+        self.in_segment = False
+        self.segment_buffer = bytearray()
+        self.partial_seq = 0
+        self.last_partial_t_ms = 0
+        # Pre-roll ring buffer — holds the most recent N frames so we
+        # can prepend them to the segment buffer at speech_start. Without
+        # this, the first `min_speech_ms` of audio is lost (the run-up
+        # frames that triggered the segmenter). Sized to cover at least
+        # the run-up window + a small safety margin.
+        preroll_frames = max(1, (self.cfg.min_speech_ms + 30) // self._frame_ms())
+        self.preroll: collections.deque[bytes] = collections.deque(
+            maxlen=preroll_frames,
+        )
+
+    def _frame_ms(self) -> int:
+        return self.cfg.frame_samples * 1000 // self.cfg.sample_rate
 
     def init(self) -> None:
-        """Load Silero, open audio source, emit ready."""
+        """Load Silero, open audio source, emit ready. Kick off STT worker."""
         log("loading Silero VAD model...")
         try:
             prob_fn = make_silero_prob_fn(
@@ -353,16 +608,35 @@ class Bridge:
             }
         )
 
+        # Phase 6B: kick off STT worker. Load + warmup happens on the
+        # worker thread; `stt_ready` fires once warmup completes. While
+        # this is in flight, VAD events still emit normally.
+        if self.stt_enabled:
+            from voice_vocab import load_vocab  # type: ignore[import-not-found]
+
+            vocab_sub, vocab_stats = load_vocab(self.stt_vocab_paths)
+            loaded_count = sum(s.entry_count for s in vocab_stats if s.loaded)
+            if loaded_count > 0:
+                log(
+                    f"loaded {loaded_count} vocab substitution(s) from "
+                    f"{sum(1 for s in vocab_stats if s.loaded)} file(s)"
+                )
+            self.stt_worker = SttWorker(
+                model=self.stt_model,
+                vocab_sub=vocab_sub,
+                sample_rate=self.cfg.sample_rate,
+                shutdown_event=self.shutdown_event,
+            )
+            self.stt_worker.start()
+        else:
+            log("STT disabled (--no-stt) - VAD-only mode")
+
     def _stdin_reader(self) -> None:
-        """Read newline-delimited JSON commands from stdin.
+        """Read newline-delimited JSON commands from stdin (mic mode only).
 
         Runs on a daemon thread because reading stdin is blocking and
         we don't want to gate audio processing on it. Sets the shutdown
         event on EOF (stdin closed) OR explicit shutdown command.
-
-        Note: this only fires for input_mode='mic'. In stdin-pcm mode
-        stdin IS the audio source, so command-channel multiplexing is
-        not supported (kept simple for 6A's diagnose flow).
         """
         try:
             for line in sys.stdin:
@@ -394,27 +668,15 @@ class Bridge:
             self.shutdown_event.set()
 
     def run(self) -> int:
-        """Main loop. Returns the process exit code.
-
-        Audit-m6 note: in mic mode the audio iterator's `q.get()`
-        BLOCKS waiting for the next sounddevice callback. The
-        `shutdown_event` flag is checked AFTER each frame returns —
-        so the latency floor for honoring a shutdown command is one
-        frame (~32 ms at 16 kHz / 512-sample chunks). In practice
-        sounddevice keeps producing frames at the configured cadence
-        even during silence; if a future audio backend can pause its
-        callback stream, swap the queue's blocking `get()` to a
-        `get(timeout=0.1)` + Empty-catch loop so the flag is polled
-        at 10 Hz regardless of audio cadence.
-        """
+        """Main loop. Returns the process exit code."""
         assert self.segmenter is not None
         assert self.audio_iter is not None
 
         # Start stdin command reader for mic mode. In stdin-pcm mode
-        # stdin IS the audio source — no separate command channel.
+        # stdin IS the audio source - no separate command channel.
         if self.input_mode == "mic":
             self._stdin_thread = threading.Thread(
-                target=self._stdin_reader, daemon=True, name="voice-stdin"
+                target=self._stdin_reader, daemon=True, name="voice-stdin",
             )
             self._stdin_thread.start()
 
@@ -422,41 +684,168 @@ class Bridge:
             for frame in self.audio_iter:
                 if self.shutdown_event.is_set():
                     break
+                # Pre-roll ring buffer: always append the LATEST frame
+                # so on speech_start we can backfill the run-up audio
+                # that triggered the segmenter.
+                self.preroll.append(frame)
                 try:
-                    for event in self.segmenter.push(frame):
-                        if isinstance(event, SpeechStart):
-                            emit({"type": "speech_start", "tMs": event.t_ms})
-                        elif isinstance(event, SpeechEnd):
-                            emit(
-                                {
-                                    "type": "speech_end",
-                                    "tMs": event.t_ms,
-                                    "durationMs": event.duration_ms,
-                                }
-                            )
+                    events = list(self.segmenter.push(frame))
                 except ValueError as e:
-                    # Audit-m7 fix: fail-fast on first frame-shape error
-                    # rather than flooding every subsequent frame with the
-                    # same error. Frame-size mismatch is a configuration
-                    # bug (Node/Python disagree on frame_samples) — keep-
-                    # going just spammed N errors/sec while remaining broken.
+                    # Fail-fast on first frame-shape error rather than
+                    # flooding subsequent frames with the same error.
                     emit_error("frame-shape", str(e))
-                    log(f"frame-shape error: {e!r} — exiting; check --frame-samples alignment")
+                    log(
+                        f"frame-shape error: {e!r} - exiting; check --frame-samples alignment"
+                    )
                     self.shutdown_event.set()
                     break
+                # Process VAD events (these affect in_segment state)
+                started_this_frame = False
+                for event in events:
+                    if isinstance(event, SpeechStart):
+                        emit({"type": "speech_start", "tMs": event.t_ms})
+                        self._on_speech_start(event)
+                        started_this_frame = True
+                    elif isinstance(event, SpeechEnd):
+                        self._on_speech_end(event)
+                # Mid-segment frame accumulation. We avoid duplicating
+                # the current frame: when started_this_frame is True,
+                # _on_speech_start already pulled the trigger frame
+                # out of the preroll ring (it's the last entry).
+                if self.in_segment and not started_this_frame:
+                    self._on_mid_segment_frame(frame)
         finally:
+            # Flush any in-flight segment so a clean stdin EOF mid-utterance
+            # still produces a final event.
+            if self.in_segment and len(self.segment_buffer) > 0:
+                self._flush_open_segment()
+            # Stop STT worker (drains pending finals + latest partial,
+            # then exits).
+            if self.stt_worker is not None:
+                self.stt_worker.stop()
             if self.audio_close is not None:
                 self.audio_close()
 
-        # If we exited the loop without a shutdown command, this is a
-        # natural end-of-stream (stdin EOF in stdin-pcm mode). Emit ack
-        # and exit cleanly.
+        # Emit shutdown_ack AFTER the worker has drained, guaranteeing
+        # any pending final event lands BEFORE the ack.
         emit({"type": "shutdown_ack"})
         return 0
 
+    def _on_speech_start(self, event: SpeechStart) -> None:
+        """Initialize per-segment state. Pre-fill segment_buffer from preroll.
+
+        The preroll deque already contains the trigger frame (we append
+        it before calling segmenter.push). To avoid duplicating it when
+        the main loop appends the trigger frame after this returns, we
+        include ALL preroll frames here EXCEPT the last one. The caller
+        then appends the trigger frame via the normal mid-segment path,
+        wait no — actually the main loop tracks `started_this_frame`
+        and SKIPS the normal append for the trigger frame, so we
+        include the full preroll here.
+
+        Why: the trigger frame's contribution belongs at the END of the
+        run-up audio chronologically. The preroll deque already has it
+        as the most recent entry. Copying the full deque preserves the
+        natural order: run-up frames + trigger frame -> mid-segment frames.
+        """
+        self.in_segment = True
+        self.partial_seq = 0
+        self.last_partial_t_ms = event.t_ms
+        self.segment_buffer = bytearray()
+        for f in self.preroll:
+            self.segment_buffer.extend(f)
+
+    def _on_speech_end(self, event: SpeechEnd) -> None:
+        emit(
+            {
+                "type": "speech_end",
+                "tMs": event.t_ms,
+                "durationMs": event.duration_ms,
+            }
+        )
+        if self.stt_worker is not None and len(self.segment_buffer) > 0:
+            self.partial_seq += 1
+            self.stt_worker.enqueue_final(
+                seq=self.partial_seq,
+                pcm=bytes(self.segment_buffer),
+                t_ms=event.t_ms,
+                duration_ms=event.duration_ms,
+            )
+        self.in_segment = False
+        self.segment_buffer = bytearray()
+
+    def _on_mid_segment_frame(self, frame: bytes) -> None:
+        """Append frame to segment buffer; check hard-cap + partial cadence."""
+        self.segment_buffer.extend(frame)
+        assert self.segmenter is not None
+        # Hard-cap check
+        audio_ms = (len(self.segment_buffer) // 2) * 1000 // self.cfg.sample_rate
+        if audio_ms >= self.max_utterance_seconds * 1000:
+            self._force_flush_hard_cap(audio_ms)
+            return
+        # Partial-cadence check
+        if (self.segmenter.t_ms - self.last_partial_t_ms) >= self.partial_interval_ms:
+            self.last_partial_t_ms = self.segmenter.t_ms
+            if self.stt_worker is not None:
+                self.partial_seq += 1
+                self.stt_worker.enqueue_partial(
+                    seq=self.partial_seq,
+                    pcm=bytes(self.segment_buffer),
+                    t_ms=self.segmenter.t_ms,
+                )
+
+    def _force_flush_hard_cap(self, audio_ms: int) -> None:
+        """Emit warning BEFORE final inference round-trip.
+
+        Ordering is timing-sensitive UX: the warning fires AT the
+        truncation moment so the TUI can show "(cut at Ns)" within the
+        same frame, not 0.5s later when the final inference completes.
+        """
+        assert self.segmenter is not None
+        end_t = self.segmenter.t_ms
+        emit({"type": "warning", "code": "utterance-truncated", "tMs": end_t})
+        emit({"type": "speech_end", "tMs": end_t, "durationMs": audio_ms})
+        if self.stt_worker is not None:
+            self.partial_seq += 1
+            self.stt_worker.enqueue_final(
+                seq=self.partial_seq,
+                pcm=bytes(self.segment_buffer),
+                t_ms=end_t,
+                duration_ms=audio_ms,
+            )
+        # Reset PER-SEGMENT state so the next frame starts a fresh
+        # segment. Critically use `reset_segment_only` (audit-M1) — the
+        # full `reset()` would rewind the monotonic `_t_ms` timeline
+        # to zero, violating the "tMs is milliseconds since ready"
+        # wire contract documented in src/voice/types.ts.
+        self.segmenter.reset_segment_only()
+        self.in_segment = False
+        self.segment_buffer = bytearray()
+
+    def _flush_open_segment(self) -> None:
+        """On clean shutdown mid-segment, emit speech_end + final.
+
+        Better than losing the partial utterance. Called from `run()`'s
+        finally clause when `in_segment` is still True at EOF.
+        """
+        assert self.segmenter is not None
+        audio_ms = (len(self.segment_buffer) // 2) * 1000 // self.cfg.sample_rate
+        end_t = self.segmenter.t_ms
+        emit({"type": "speech_end", "tMs": end_t, "durationMs": audio_ms})
+        if self.stt_worker is not None:
+            self.partial_seq += 1
+            self.stt_worker.enqueue_final(
+                seq=self.partial_seq,
+                pcm=bytes(self.segment_buffer),
+                t_ms=end_t,
+                duration_ms=audio_ms,
+            )
+        self.in_segment = False
+        self.segment_buffer = bytearray()
+
 
 def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Symphony voice bridge (Phase 6A)")
+    p = argparse.ArgumentParser(description="Symphony voice bridge (Phase 6A/6B)")
     p.add_argument(
         "--input-mode",
         choices=("mic", "stdin-pcm"),
@@ -498,6 +887,41 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
         default=None,
         help="Force one audio backend (default: try sounddevice, fall back to pyaudio).",
     )
+    # Phase 6B flags
+    p.add_argument(
+        "--no-stt",
+        action="store_true",
+        help="Disable STT layer (VAD-only mode, 6A behavior).",
+    )
+    p.add_argument(
+        "--stt-model",
+        choices=("moonshine/base", "moonshine/tiny"),
+        default="moonshine/base",
+        help="Moonshine model id (default: moonshine/base).",
+    )
+    p.add_argument(
+        "--max-utterance-seconds",
+        type=int,
+        default=30,
+        help="Hard cap on utterance length; force-flush on cap (default: 30).",
+    )
+    p.add_argument(
+        "--partial-interval-ms",
+        type=int,
+        default=200,
+        help="Cadence for partial transcription events while recording (default: 200).",
+    )
+    p.add_argument(
+        "--stt-vocab-path",
+        dest="stt_vocab_paths",
+        action="append",
+        default=[],
+        help=(
+            "Path to a vocab substitution JSON file. Repeatable; layers "
+            "merge in order (later wins on key collision). Defaults to "
+            "[] - no substitutions."
+        ),
+    )
     return p.parse_args(argv)
 
 
@@ -511,6 +935,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         vad_min_speech_ms=args.vad_min_speech_ms,
         vad_min_silence_ms=args.vad_min_silence_ms,
         force_backend=args.force_backend,
+        stt_enabled=not args.no_stt,
+        stt_model=args.stt_model,
+        max_utterance_seconds=args.max_utterance_seconds,
+        partial_interval_ms=args.partial_interval_ms,
+        stt_vocab_paths=list(args.stt_vocab_paths),
     )
     bridge.init()
     return bridge.run()
@@ -520,7 +949,7 @@ if __name__ == "__main__":
     try:
         sys.exit(main())
     except KeyboardInterrupt:
-        # SIGINT from the parent process — Bridge.run() will have
+        # SIGINT from the parent process - Bridge.run() will have
         # already cleaned up via the iterator-close path. Exit clean.
         sys.exit(0)
     except SystemExit:
