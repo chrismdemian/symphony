@@ -345,6 +345,13 @@ export function applyPatchInMemory(
   if (patch.theme !== undefined) {
     next.theme = { ...current.theme, ...patch.theme };
   }
+  // Phase 6A — voice config. Partial-merge mirror of `mergePatch` in
+  // `src/utils/config.ts`. 5-site cascade (no runtime propagation —
+  // client-side only). Skipping any of the 5 sites silently drops the
+  // field on rewrites (3H.3 m1).
+  if (patch.voice !== undefined) {
+    next.voice = { ...current.voice, ...patch.voice };
+  }
   if (patch.keybindOverrides !== undefined) next.keybindOverrides = patch.keybindOverrides;
   if ('defaultProjectPath' in patch) {
     if (patch.defaultProjectPath === null) {

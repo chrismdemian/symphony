@@ -211,6 +211,11 @@ export function applyConfigEdits(existing: string, next: SymphonyConfig): string
     // Skipping any of the five sites silently drops the field on
     // rewrites (schema-default fills in on re-read, masking the regression).
     ['tuiProjectFilter', next.tuiProjectFilter],
+    // Phase 6A — voice config. 5-site cascade (no runtime propagation
+    // seam — voice config is client-side, dispatch doesn't read it).
+    // Skipping this site silently drops the field on rewrites — the
+    // schema-default fills in on re-read, masking the regression.
+    ['voice', next.voice],
     ['theme', next.theme],
     ['leaderTimeoutMs', next.leaderTimeoutMs],
     ['keybindOverrides', next.keybindOverrides],
@@ -361,6 +366,13 @@ export interface SymphonyConfigPatch {
   readonly activeProject?: SymphonyConfig['activeProject'] | null;
   readonly leaderTimeoutMs?: SymphonyConfig['leaderTimeoutMs'];
   readonly keybindOverrides?: SymphonyConfig['keybindOverrides'];
+  /**
+   * Phase 6A — voice input subsystem. Partial-merge over the nested
+   * object (like `theme` / `notifications`) so toggling `enabled`
+   * doesn't clobber the user's VAD-threshold setting. 5-site cascade
+   * (no runtime propagation seam — Maestro doesn't read voice config).
+   */
+  readonly voice?: Partial<SymphonyConfig['voice']>;
 }
 
 /**
@@ -439,6 +451,13 @@ function mergePatch(current: SymphonyConfig, patch: SymphonyConfigPatch): Sympho
   }
   if (patch.theme !== undefined) {
     next.theme = { ...current.theme, ...patch.theme };
+  }
+  // Phase 6A — voice config. Partial-merge so toggling one field
+  // (e.g. `enabled: true`) doesn't clobber the user's threshold.
+  // Mirror in `applyPatchInMemory` (config-context.tsx) and
+  // `applyConfigEdits` (this file, below).
+  if (patch.voice !== undefined) {
+    next.voice = { ...current.voice, ...patch.voice };
   }
   if (patch.keybindOverrides !== undefined) next.keybindOverrides = patch.keybindOverrides;
   if ('defaultProjectPath' in patch) {

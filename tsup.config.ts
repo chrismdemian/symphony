@@ -63,5 +63,14 @@ export default defineConfig({
       path.resolve('dist/droids/bundled'),
       (f) => f.endsWith('.md'),
     );
+    // Phase 6A — Python voice bridge files (`voice_bridge.py`,
+    // `vad_segmenter.py`, etc.). Loaded at runtime via
+    // `src/voice/path.ts:voicePythonPackageDir` which walks
+    // `import.meta.url` candidates and lands here in the built layout.
+    copyTree(
+      path.resolve('src/voice/python'),
+      path.resolve('dist/voice/python'),
+      (f) => f.endsWith('.py'),
+    );
   },
 });
