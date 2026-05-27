@@ -6,7 +6,12 @@ import type { Readable, Writable } from 'node:stream';
 
 import { resolveVoiceEnv, voiceBinDir } from './env.js';
 import type { VoiceInstallResult } from './types.js';
-import { voiceEnvDir } from './path.js';
+import {
+  voiceEnvDir,
+  voiceVocabSeedPath,
+  voiceVocabUserPath,
+  VoiceVocabSeedNotFoundError,
+} from './path.js';
 
 /**
  * Phase 6A — `~/.symphony/voice-env/` Python venv bootstrap.
@@ -127,13 +132,73 @@ export const defaultInstallerSpawner: InstallerSpawner = async (args) => {
 //     ModuleNotFoundError). Verified empirically on Win11 + Python 3.12.
 //   - sounddevice: audio capture (primary)
 //   - numpy: int16 -> float32 conversion in vad_segmenter's prob fn
+//   - useful-moonshine-onnx==20251121: Phase 6B STT model. Pinned to a
+//     specific version (per `research/voice-stack-research.md` 6B
+//     decision addendum) because the package versions are date-stamped
+//     and we want install reproducibility. Pulls numba/tokenizers/
+//     librosa/huggingface_hub transitively (pure-Python wheels on every
+//     OS).
 const REQUIRED_PIP_PACKAGES = [
   'silero-vad',
   'onnxruntime',
   'sounddevice',
   'numpy',
+  'useful-moonshine-onnx==20251121',
 ] as const;
 const OPTIONAL_PIP_PACKAGES = ['pyaudio'] as const;
+
+// pip-show key (no version pin). REQUIRED_PIP_PACKAGES carries the
+// install spec ("pkg==version"); pip show uses the bare package name.
+const PIP_SHOW_NAMES: Record<(typeof REQUIRED_PIP_PACKAGES)[number], string> = {
+  'silero-vad': 'silero-vad',
+  onnxruntime: 'onnxruntime',
+  sounddevice: 'sounddevice',
+  numpy: 'numpy',
+  'useful-moonshine-onnx==20251121': 'useful-moonshine-onnx',
+} as const;
+
+/**
+ * Build a default-shaped result with zero deps installed. Per-call
+ * sites override fields as appropriate. Centralizes the "every result
+ * carries the full field set" invariant; adding a new VoiceInstallResult
+ * field is a single touch here plus the merge call sites.
+ */
+function makeBaseResult(
+  venvPath: string,
+  pythonPath: string,
+): VoiceInstallResult {
+  return {
+    ok: false,
+    exitCode: 1,
+    venvPath,
+    pythonPath,
+    sileroVadInstalled: false,
+    onnxRuntimeInstalled: false,
+    soundDeviceInstalled: false,
+    numpyInstalled: false,
+    pyAudioInstalled: false,
+    moonshineInstalled: false,
+    moonshineImportOk: false,
+    moonshineModelWarmed: false,
+    voiceVocabSeeded: false,
+    warnings: [],
+    idempotent: false,
+  };
+}
+
+function failureResult(
+  base: VoiceInstallResult,
+  reason: VoiceInstallResult['reason'],
+  warnings: readonly string[],
+): VoiceInstallResult {
+  return {
+    ...base,
+    ok: false,
+    exitCode: 1,
+    reason,
+    warnings,
+  };
+}
 
 export async function runVoiceInstall(
   opts: RunVoiceInstallOptions = {},
@@ -156,39 +221,15 @@ export async function runVoiceInstall(
       args: ['--version'],
     });
     if (probe.exitCode !== 0) {
-      return {
-        ok: false,
-        exitCode: 1,
-        reason: 'python-not-found',
-        venvPath: venvDir,
-        pythonPath: '',
-        sileroVadInstalled: false,
-        onnxRuntimeInstalled: false,
-        soundDeviceInstalled: false,
-        numpyInstalled: false,
-        pyAudioInstalled: false,
-        warnings: [
-          `\`${pythonCmd} --version\` failed (exit ${probe.exitCode}): ${probe.stderr.slice(0, 500)}`,
-        ],
-        idempotent: false,
-      };
+      return failureResult(makeBaseResult(venvDir, ''), 'python-not-found', [
+        `\`${pythonCmd} --version\` failed (exit ${probe.exitCode}): ${probe.stderr.slice(0, 500)}`,
+      ]);
     }
     pythonVersion = (probe.stdout + probe.stderr).trim();
   } catch (cause) {
-    return {
-      ok: false,
-      exitCode: 1,
-      reason: 'python-not-found',
-      venvPath: venvDir,
-      pythonPath: '',
-      sileroVadInstalled: false,
-      onnxRuntimeInstalled: false,
-      soundDeviceInstalled: false,
-      numpyInstalled: false,
-      pyAudioInstalled: false,
-      warnings: [`Failed to invoke \`${pythonCmd}\`: ${describeError(cause)}`],
-      idempotent: false,
-    };
+    return failureResult(makeBaseResult(venvDir, ''), 'python-not-found', [
+      `Failed to invoke \`${pythonCmd}\`: ${describeError(cause)}`,
+    ]);
   }
 
   const versionMatch = /Python (\d+)\.(\d+)/.exec(pythonVersion);
@@ -199,28 +240,13 @@ export async function runVoiceInstall(
       major < MIN_PYTHON_MAJOR ||
       (major === MIN_PYTHON_MAJOR && minor < MIN_PYTHON_MINOR)
     ) {
-      return {
-        ok: false,
-        exitCode: 1,
-        reason: 'python-version-too-old',
-        venvPath: venvDir,
-        pythonPath: '',
-        sileroVadInstalled: false,
-        onnxRuntimeInstalled: false,
-        soundDeviceInstalled: false,
-        numpyInstalled: false,
-        pyAudioInstalled: false,
-        warnings: [
-          `${pythonVersion} too old — Symphony voice requires Python >= ${MIN_PYTHON_MAJOR}.${MIN_PYTHON_MINOR}.`,
-        ],
-        idempotent: false,
-      };
+      return failureResult(makeBaseResult(venvDir, ''), 'python-version-too-old', [
+        `${pythonVersion} too old — Symphony voice requires Python >= ${MIN_PYTHON_MAJOR}.${MIN_PYTHON_MINOR}.`,
+      ]);
     }
   }
 
-  // Detect Windows Store install. `sys.base_prefix` lands under
-  // `WindowsApps` for those installs; spawned subprocesses inherit a
-  // restricted execution model that breaks our long-lived bridge.
+  // Detect Windows Store install.
   if (platform === 'win32') {
     const basePrefix = await spawner({
       cmd: pythonCmd,
@@ -230,34 +256,26 @@ export async function runVoiceInstall(
       basePrefix.exitCode === 0 &&
       /\\WindowsApps\\/i.test(basePrefix.stdout)
     ) {
-      return {
-        ok: false,
-        exitCode: 1,
-        reason: 'python-store-install',
-        venvPath: venvDir,
-        pythonPath: '',
-        sileroVadInstalled: false,
-        onnxRuntimeInstalled: false,
-        soundDeviceInstalled: false,
-        numpyInstalled: false,
-        pyAudioInstalled: false,
-        warnings: [
-          `Windows Store Python detected at ${basePrefix.stdout.trim()} — install a real Python ` +
-            'from python.org or use winget (`winget install Python.Python.3.12`).',
-        ],
-        idempotent: false,
-      };
+      return failureResult(makeBaseResult(venvDir, ''), 'python-store-install', [
+        `Windows Store Python detected at ${basePrefix.stdout.trim()} — install a real Python ` +
+          'from python.org or use winget (`winget install Python.Python.3.12`).',
+      ]);
     }
   }
 
   progress(`Using ${pythonVersion}`);
 
   // 2. Probe existing venv. If python binary exists AND pip-show
-  // confirms every required dep, we're idempotent.
+  // confirms every required dep AND the Moonshine import smoke passes,
+  // we're idempotent (skip pip install + model warmup).
   const summary = resolveVoiceEnv(home);
   const venvPython =
     opts.venvDir !== undefined
-      ? path.join(opts.venvDir, platform === 'win32' ? 'Scripts' : 'bin', platform === 'win32' ? 'python.exe' : 'python')
+      ? path.join(
+          opts.venvDir,
+          platform === 'win32' ? 'Scripts' : 'bin',
+          platform === 'win32' ? 'python.exe' : 'python',
+        )
       : summary.pythonPath;
 
   const venvExists =
@@ -268,18 +286,31 @@ export async function runVoiceInstall(
   if (venvExists && opts.force !== true) {
     const depStatus = await probeDeps(spawner, venvPython);
     if (depStatus.allPresent) {
-      progress('voice-env exists, all deps present — idempotent.');
+      progress('voice-env exists, all deps present + Moonshine imports — idempotent.');
+      // Even on idempotent path, install the vocab seed if absent
+      // (cheap; user may have deleted ~/.symphony/voice-vocab.json).
+      const seeded = await tryInstallVocabSeed(home, warnings);
+      // Touch model warmup only if the HF cache is empty — but we can't
+      // easily probe that without invoking python. Set
+      // moonshineModelWarmed=true on the idempotent path because the
+      // import smoke already passed and the cache state is consistent
+      // with prior install runs. A future audit may want a stronger
+      // probe; today's contract is "model is ready on the idempotent
+      // path".
       return {
+        ...makeBaseResult(venvDir, venvPython),
         ok: true,
         exitCode: 0,
-        venvPath: venvDir,
-        pythonPath: venvPython,
         sileroVadInstalled: depStatus.silero,
         onnxRuntimeInstalled: depStatus.onnxruntime,
         soundDeviceInstalled: depStatus.sounddevice,
         numpyInstalled: depStatus.numpy,
         pyAudioInstalled: depStatus.pyaudio,
-        warnings: [],
+        moonshineInstalled: depStatus.moonshine,
+        moonshineImportOk: depStatus.moonshineImport,
+        moonshineModelWarmed: true,
+        voiceVocabSeeded: seeded,
+        warnings,
         idempotent: true,
       };
     }
@@ -288,7 +319,6 @@ export async function runVoiceInstall(
   // 3. Create venv (skip if it already exists)
   if (!venvExists) {
     progress(`Creating venv at ${venvDir}...`);
-    // Ensure the parent dir exists
     await fsp.mkdir(path.dirname(venvDir), { recursive: true, mode: 0o700 });
     const venvCreate = await spawner({
       cmd: pythonCmd,
@@ -296,23 +326,10 @@ export async function runVoiceInstall(
       onProgress: progress,
     });
     if (venvCreate.exitCode !== 0) {
-      return {
-        ok: false,
-        exitCode: 1,
-        reason: 'venv-creation-failed',
-        venvPath: venvDir,
-        pythonPath: '',
-        sileroVadInstalled: false,
-        onnxRuntimeInstalled: false,
-        soundDeviceInstalled: false,
-        numpyInstalled: false,
-        pyAudioInstalled: false,
-        warnings: [
-          `\`python -m venv ${venvDir}\` failed (exit ${venvCreate.exitCode}): ` +
-            (venvCreate.stderr || venvCreate.stdout).slice(0, 800),
-        ],
-        idempotent: false,
-      };
+      return failureResult(makeBaseResult(venvDir, ''), 'venv-creation-failed', [
+        `\`python -m venv ${venvDir}\` failed (exit ${venvCreate.exitCode}): ` +
+          (venvCreate.stderr || venvCreate.stdout).slice(0, 800),
+      ]);
     }
   } else {
     progress('voice-env exists, refreshing deps...');
@@ -342,29 +359,11 @@ export async function runVoiceInstall(
       onProgress: progress,
     });
     if (install.exitCode !== 0) {
-      const reason: VoiceInstallResult['reason'] =
-        pkg === 'silero-vad' || pkg === 'onnxruntime'
-          ? 'silero-install-failed'
-          : pkg === 'sounddevice'
-            ? 'sounddevice-install-failed'
-            : 'numpy-install-failed';
-      return {
-        ok: false,
-        exitCode: 1,
-        reason,
-        venvPath: venvDir,
-        pythonPath: venvPython,
-        sileroVadInstalled: false,
-        onnxRuntimeInstalled: false,
-        soundDeviceInstalled: false,
-        numpyInstalled: false,
-        pyAudioInstalled: false,
-        warnings: [
-          `\`pip install ${pkg}\` failed (exit ${install.exitCode}): ` +
-            (install.stderr || install.stdout).slice(0, 800),
-        ],
-        idempotent: false,
-      };
+      const reason: VoiceInstallResult['reason'] = pkgFailureReason(pkg);
+      return failureResult(makeBaseResult(venvDir, venvPython), reason, [
+        `\`pip install ${pkg}\` failed (exit ${install.exitCode}): ` +
+          (install.stderr || install.stdout).slice(0, 800),
+      ]);
     }
   }
 
@@ -384,21 +383,130 @@ export async function runVoiceInstall(
     }
   }
 
-  // 7. Re-probe
+  // 7. Moonshine import smoke (audit-m2 lesson applied in a different
+  // shape: `pip show` doesn't validate transitive deps load at import
+  // time — numba / tokenizers / librosa wheel issues surface here).
+  progress('Validating Moonshine import (transitive dep check)...');
+  const importOk = await runMoonshineImportSmoke(spawner, venvPython);
+  if (!importOk) {
+    return failureResult(makeBaseResult(venvDir, venvPython), 'moonshine-import-failed', [
+      `useful-moonshine-onnx installed but \`from moonshine_onnx import transcribe\` failed. ` +
+        'A transitive dep (numba / tokenizers / librosa) failed to load. ' +
+        'Try `pnpm rebuild` or check the voice-env Python version.',
+    ]);
+  }
+
+  // 8. Model warmup — download weights to HF cache + warm numba JIT.
+  // First call is slow (5-15s on a fresh cache); subsequent runs are
+  // cache hits (~1s). Surfaces network errors at install time rather
+  // than on first user utterance.
+  progress('Downloading Moonshine model weights (first run; ~120MB)...');
+  const warmup = await runMoonshineModelWarmup(spawner, venvPython, progress);
+  if (!warmup.ok) {
+    return failureResult(makeBaseResult(venvDir, venvPython), 'moonshine-download-failed', [
+      `Moonshine model warmup failed: ${warmup.stderr.slice(0, 800)}`,
+    ]);
+  }
+
+  // 9. Install the vocab seed atomically (only when target absent).
+  const seeded = await tryInstallVocabSeed(home, warnings);
+
+  // 10. Re-probe to populate the final result.
   const finalStatus = await probeDeps(spawner, venvPython);
   return {
+    ...makeBaseResult(venvDir, venvPython),
     ok: true,
     exitCode: 0,
-    venvPath: venvDir,
-    pythonPath: venvPython,
     sileroVadInstalled: finalStatus.silero,
     onnxRuntimeInstalled: finalStatus.onnxruntime,
     soundDeviceInstalled: finalStatus.sounddevice,
     numpyInstalled: finalStatus.numpy,
     pyAudioInstalled: finalStatus.pyaudio,
+    moonshineInstalled: finalStatus.moonshine,
+    moonshineImportOk: finalStatus.moonshineImport,
+    moonshineModelWarmed: true,
+    voiceVocabSeeded: seeded,
     warnings,
     idempotent: false,
   };
+}
+
+/**
+ * Map a required-package install failure to a typed `reason`. Keeps the
+ * mapping in one place so adding a new required dep with its own reason
+ * is one constant + one switch arm.
+ */
+function pkgFailureReason(
+  pkg: (typeof REQUIRED_PIP_PACKAGES)[number],
+): VoiceInstallResult['reason'] {
+  if (pkg === 'silero-vad' || pkg === 'onnxruntime') return 'silero-install-failed';
+  if (pkg === 'sounddevice') return 'sounddevice-install-failed';
+  if (pkg === 'numpy') return 'numpy-install-failed';
+  if (pkg === 'useful-moonshine-onnx==20251121') return 'moonshine-install-failed';
+  // Defensive: a new required pkg added without updating this switch
+  // surfaces here. Type-narrowing via `never` would also catch it at
+  // compile time when the spec literal is added to REQUIRED_PIP_PACKAGES.
+  return 'silero-install-failed';
+}
+
+/**
+ * Phase 6B — atomically install the bundled `vocab-seed.json` onto
+ * `~/.symphony/voice-vocab.json` ONLY when the target doesn't exist.
+ * Never overwrites user customizations. Returns true when the seed
+ * file was created on this call, false when it was already present
+ * (or when the seed source couldn't be located, in which case a
+ * warning is pushed).
+ *
+ * Uses `fs.open(..., 'wx', 0o600)` — atomic create-or-fail. The 'wx'
+ * flag is the canonical way to express "create new file, error if it
+ * exists" without a separate stat-then-write race.
+ */
+async function tryInstallVocabSeed(
+  home: string,
+  warnings: string[],
+): Promise<boolean> {
+  let seedPath: string;
+  try {
+    seedPath = voiceVocabSeedPath();
+  } catch (cause) {
+    if (cause instanceof VoiceVocabSeedNotFoundError) {
+      warnings.push(`vocab seed not found in package: ${cause.message}`);
+      return false;
+    }
+    throw cause;
+  }
+  const targetPath = voiceVocabUserPath(home);
+  let body: string;
+  try {
+    body = await fsp.readFile(seedPath, 'utf8');
+  } catch (cause) {
+    warnings.push(`vocab seed read failed: ${describeError(cause)}`);
+    return false;
+  }
+  // Ensure parent dir exists (it should, but defensive).
+  try {
+    await fsp.mkdir(path.dirname(targetPath), { recursive: true, mode: 0o700 });
+  } catch {
+    // Ignore — file open will surface the real error.
+  }
+  try {
+    const handle = await fsp.open(targetPath, 'wx', 0o600);
+    try {
+      await handle.writeFile(body, 'utf8');
+    } finally {
+      await handle.close();
+    }
+    return true;
+  } catch (cause) {
+    // EEXIST means user already has a vocab file — that's the
+    // intended NOT-overwriting behavior; don't warn, don't fail.
+    const code = (cause as NodeJS.ErrnoException)?.code;
+    if (code === 'EEXIST') {
+      return false;
+    }
+    warnings.push(`vocab seed install failed: ${describeError(cause)}`);
+    return false;
+  }
 }
 
 interface DepStatus {
@@ -407,16 +515,28 @@ interface DepStatus {
   readonly sounddevice: boolean;
   readonly numpy: boolean;
   readonly pyaudio: boolean;
-  /** All REQUIRED packages present; OPTIONAL `pyaudio` excluded. */
+  /** Phase 6B — `pip show useful-moonshine-onnx` exit 0. */
+  readonly moonshine: boolean;
+  /**
+   * Phase 6B — `python -c "from useful_moonshine_onnx import transcribe"`
+   * exit 0. Validates transitive deps (numba, tokenizers, huggingface_hub,
+   * librosa) load at import time. `pip show` doesn't catch a missing
+   * numba wheel; the import smoke does. Audit-m2 lesson applied.
+   */
+  readonly moonshineImport: boolean;
+  /** All REQUIRED packages present AND moonshine imports cleanly; OPTIONAL `pyaudio` excluded. */
   readonly allPresent: boolean;
 }
 
 /**
- * Probe each REQUIRED_PIP_PACKAGES entry + the OPTIONAL pyaudio.
- * `allPresent` reduces over the REQUIRED list dynamically so adding a new
- * required dep (e.g. `moonshine-onnx` in 6B) updates the check
- * automatically — defends against the 6A audit-m2 "silently omits one"
- * pattern recurring.
+ * Probe each REQUIRED_PIP_PACKAGES entry + the OPTIONAL pyaudio + the
+ * Moonshine import smoke.
+ *
+ * `allPresent` reduces over the REQUIRED list dynamically so adding a
+ * new required dep updates the check automatically — defends against
+ * the 6A audit-m2 "silently omits one" pattern recurring. Phase 6B
+ * adds the import smoke into `allPresent` because `pip show` alone
+ * doesn't validate transitive dep loadability.
  */
 async function probeDeps(
   spawner: InstallerSpawner,
@@ -430,18 +550,88 @@ async function probeDeps(
     return result.exitCode === 0;
   };
   const requiredResults = await Promise.all(
-    REQUIRED_PIP_PACKAGES.map(async (p) => [p, await check(p)] as const),
+    REQUIRED_PIP_PACKAGES.map(
+      async (p) => [p, await check(PIP_SHOW_NAMES[p])] as const,
+    ),
   );
   const required = new Map(requiredResults);
   const pyaudio = await check('pyaudio');
+  const moonshinePresent = required.get('useful-moonshine-onnx==20251121') === true;
+  // Import smoke runs ONLY when pip-show reports moonshine present
+  // (no point importing what isn't installed). Empty input avoids
+  // numba JIT compilation on this probe (saves ~3-8s); the import-only
+  // path is ~1-2s.
+  let moonshineImport = false;
+  if (moonshinePresent) {
+    moonshineImport = await runMoonshineImportSmoke(spawner, venvPython);
+  }
+  const requiredAllShown = requiredResults.every(([, present]) => present);
   return {
     silero: required.get('silero-vad') === true,
     onnxruntime: required.get('onnxruntime') === true,
     sounddevice: required.get('sounddevice') === true,
     numpy: required.get('numpy') === true,
     pyaudio,
-    allPresent: requiredResults.every(([, present]) => present),
+    moonshine: moonshinePresent,
+    moonshineImport,
+    allPresent: requiredAllShown && moonshineImport,
   };
+}
+
+/**
+ * Phase 6B — runs `python -c "from moonshine_onnx import ..."` and
+ * returns true on exit 0. Distinct from `pip show` because numba /
+ * tokenizers / librosa transitive wheels can fail at import time even
+ * when pip metadata says the package is installed (audit-m2 pattern in
+ * a different shape).
+ *
+ * Naming gotcha: the PyPI package name is `useful-moonshine-onnx` (with
+ * hyphens, pip's identifier) but the Python MODULE name is
+ * `moonshine_onnx` (underscores, NO `useful_` prefix). Don't confuse the
+ * two; the package name is what we install, the module name is what we
+ * import.
+ */
+async function runMoonshineImportSmoke(
+  spawner: InstallerSpawner,
+  venvPython: string,
+): Promise<boolean> {
+  const result = await spawner({
+    cmd: venvPython,
+    args: ['-c', 'from moonshine_onnx import transcribe'],
+  });
+  return result.exitCode === 0;
+}
+
+/**
+ * Phase 6B — runs a tiny inference to download the Moonshine model
+ * weights and warm the numba JIT. First call is slow (~5-15s — download
+ * ~120MB from HF Hub + JIT compile); subsequent calls are cache hits
+ * (~1s). Idempotent.
+ *
+ * Returns true on exit 0. Errors include network failures (HF unreachable)
+ * and numba compile failures (very rare on modern x86 with wheel-only
+ * mode).
+ *
+ * Naming: see `runMoonshineImportSmoke` — module name is `moonshine_onnx`,
+ * not `useful_moonshine_onnx`.
+ */
+async function runMoonshineModelWarmup(
+  spawner: InstallerSpawner,
+  venvPython: string,
+  onProgress: (line: string) => void,
+): Promise<{ ok: boolean; stderr: string }> {
+  // moonshine_onnx.transcribe wants a 1-D (N,) array (it adds the
+  // batch dim internally via `audio[None, ...]`). Passing (1, N)
+  // trips its `assert len(audio.shape) == 2`.
+  const py =
+    'import numpy, moonshine_onnx as m; ' +
+    "m.transcribe(numpy.zeros(16000, dtype=numpy.float32), 'moonshine/base')";
+  const result = await spawner({
+    cmd: venvPython,
+    args: ['-c', py],
+    onProgress,
+  });
+  return { ok: result.exitCode === 0, stderr: result.stderr };
 }
 
 async function pathExists(p: string): Promise<boolean> {

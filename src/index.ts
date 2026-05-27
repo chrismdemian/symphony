@@ -207,6 +207,55 @@ voice
     process.exit(result.exitCode);
   });
 
+voice
+  .command('transcribe <file>')
+  .description(
+    'Transcribe a 16kHz mono WAV or raw PCM file via Moonshine. Prints the joined transcript.',
+  )
+  .option('--json', 'Emit a single-line JSON summary instead of human output.')
+  .option('--stt-model <name>', 'Override the Moonshine model (moonshine/base | moonshine/tiny).')
+  .option('--partial-interval-ms <n>', 'Override the partial-transcription cadence (default: 200).', (v) =>
+    Number.parseInt(v, 10),
+  )
+  .option(
+    '--max-utterance-seconds <n>',
+    'Override the hard-cap utterance length (default: 30).',
+    (v) => Number.parseInt(v, 10),
+  )
+  .action(
+    async (
+      file: string,
+      opts: {
+        json?: boolean;
+        sttModel?: string;
+        partialIntervalMs?: number;
+        maxUtteranceSeconds?: number;
+      },
+    ) => {
+      const { runVoiceTranscribe } = await import('./cli/voice-transcribe.js');
+      const sttModel =
+        opts.sttModel === 'moonshine/base' || opts.sttModel === 'moonshine/tiny'
+          ? opts.sttModel
+          : undefined;
+      const partialIntervalMs =
+        opts.partialIntervalMs !== undefined && !Number.isNaN(opts.partialIntervalMs)
+          ? opts.partialIntervalMs
+          : undefined;
+      const maxUtteranceSeconds =
+        opts.maxUtteranceSeconds !== undefined && !Number.isNaN(opts.maxUtteranceSeconds)
+          ? opts.maxUtteranceSeconds
+          : undefined;
+      const result = await runVoiceTranscribe({
+        wavPath: file,
+        ...(opts.json === true ? { format: 'json' as const } : {}),
+        ...(sttModel !== undefined ? { sttModel } : {}),
+        ...(partialIntervalMs !== undefined ? { partialIntervalMs } : {}),
+        ...(maxUtteranceSeconds !== undefined ? { maxUtteranceSeconds } : {}),
+      });
+      process.exit(result.exitCode);
+    },
+  );
+
 program
   .command('mcp-server')
   .description('Run the Symphony orchestrator MCP server over stdio. Spawned as a child of claude -p.')

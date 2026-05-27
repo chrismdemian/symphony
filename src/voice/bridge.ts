@@ -32,8 +32,12 @@ import type {
  *     required.
  *   - `readline.createInterface` on stdout for newline-delimited JSON.
  *     `lineMaxLength` cap at 10 MB (1A scanner-buffer precedent). The
- *     largest 6A event is ~150 bytes; the 10 MB cap is defense against
- *     a stderr-via-stdout misroute or 6B partial-token bursts.
+ *     largest 6A event is ~150 bytes; 6B STT `partial` / `final` events
+ *     are short text (50-300 chars typical, bounded by Moonshine's own
+ *     output and the 30s hard-cap on utterance length). 10 MB cap is
+ *     defense against a stderr-via-stdout misroute. If a future change
+ *     pipes worker stdout through this readline, follow the audit-m1
+ *     raw-`data`-listener pattern (Multica scanner precedent).
  *   - Graceful shutdown: write `{"cmd":"shutdown"}\n`, await
  *     `shutdown_ack` event or 5 s deadline; then SIGTERM; then 1 s
  *     deadline; then SIGKILL (Win32: taskkill /T /F).
@@ -63,6 +67,21 @@ export interface VoiceBridgeStartOptions {
   readonly vadMinSilenceMs?: number;
   /** Force a specific audio backend (mic mode only). */
   readonly forceBackend?: 'sounddevice' | 'pyaudio';
+  /** Phase 6B — disable STT (VAD-only mode, 6A behavior). Default: STT enabled. */
+  readonly sttEnabled?: boolean;
+  /** Phase 6B — Moonshine model id. Default 'moonshine/base'. */
+  readonly sttModel?: 'moonshine/base' | 'moonshine/tiny';
+  /** Phase 6B — hard cap on utterance length before force-flush + warning. */
+  readonly maxUtteranceSeconds?: number;
+  /** Phase 6B — partial-cadence in ms while a segment is recording. */
+  readonly partialIntervalMs?: number;
+  /**
+   * Phase 6B — vocab substitution file paths. Repeated (NOT
+   * comma-joined; Windows paths can contain commas). Later layers
+   * override earlier ones on key collision (project overrides
+   * user-global). Default: [] (no substitutions).
+   */
+  readonly sttVocabPaths?: readonly string[];
   /** Override the venv directory (tests). */
   readonly venvDir?: string;
   /** Override the Python source package dir (tests). */
@@ -196,6 +215,29 @@ export class VoiceBridge extends EventEmitter {
     }
     if (opts.forceBackend !== undefined) {
       args.push('--force-backend', opts.forceBackend);
+    }
+    // Phase 6B — STT flags. Default STT enabled; passing
+    // `sttEnabled: false` adds the `--no-stt` flag for VAD-only mode
+    // (6A behavior).
+    if (opts.sttEnabled === false) {
+      args.push('--no-stt');
+    }
+    if (opts.sttModel !== undefined) {
+      args.push('--stt-model', opts.sttModel);
+    }
+    if (opts.maxUtteranceSeconds !== undefined) {
+      args.push('--max-utterance-seconds', String(opts.maxUtteranceSeconds));
+    }
+    if (opts.partialIntervalMs !== undefined) {
+      args.push('--partial-interval-ms', String(opts.partialIntervalMs));
+    }
+    if (opts.sttVocabPaths !== undefined) {
+      for (const p of opts.sttVocabPaths) {
+        // Repeated --stt-vocab-path (NOT comma-joined). Windows paths
+        // can contain commas/spaces; argparse `action='append'` handles
+        // this cleanly.
+        args.push('--stt-vocab-path', p);
+      }
     }
 
     const { env } = buildVoiceEnv({
@@ -627,10 +669,31 @@ function isVoiceBridgeEvent(value: unknown): value is VoiceBridgeEvent {
         typeof v.sampleRate === 'number' &&
         typeof v.vadThreshold === 'number'
       );
+    case 'stt_ready':
+      // Audit-m12: require non-empty model string. The Python bridge
+      // controls this so an empty string is not exploitable, but
+      // defense-in-depth keeps the validator's "shape AND content"
+      // contract honest.
+      return typeof v.model === 'string' && v.model.length > 0;
     case 'speech_start':
       return typeof v.tMs === 'number';
     case 'speech_end':
       return typeof v.tMs === 'number' && typeof v.durationMs === 'number';
+    case 'partial':
+      return (
+        typeof v.seq === 'number' &&
+        typeof v.text === 'string' &&
+        typeof v.tMs === 'number'
+      );
+    case 'final':
+      return (
+        typeof v.seq === 'number' &&
+        typeof v.text === 'string' &&
+        typeof v.tMs === 'number' &&
+        typeof v.durationMs === 'number'
+      );
+    case 'warning':
+      return v.code === 'utterance-truncated' && typeof v.tMs === 'number';
     case 'error':
       return typeof v.code === 'string' && typeof v.message === 'string';
     case 'shutdown_ack':
