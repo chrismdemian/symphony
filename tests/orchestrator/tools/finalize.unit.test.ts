@@ -114,6 +114,9 @@ const BASE_ARGS = {
   allow_untracked: undefined,
   force_finalize_while_running: undefined,
   audit_model: undefined,
+  // Phase 5E — added with the saga-partial gate. Existing tests pass
+  // undefined; the gate's behavior is exercised in `finalize-saga-gate.unit.test.ts`.
+  force_saga_partial: undefined,
 } as const;
 
 interface SpyFinalize {

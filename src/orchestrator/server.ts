@@ -10,6 +10,10 @@ import type { TaskSnapshot, TaskStore } from '../state/types.js';
 import type { SymphonyDatabase } from '../state/db.js';
 import { SqliteProjectStore } from '../state/sqlite-project-store.js';
 import { SqliteTaskStore } from '../state/sqlite-task-store.js';
+import { SagaRegistry } from '../state/saga-registry.js';
+import { SqliteSagaStore } from '../state/sqlite-saga-store.js';
+import { createSagaRollupListener } from '../state/saga-rollup.js';
+import type { SagaStore } from '../state/saga-types.js';
 import { SqliteQuestionStore } from '../state/sqlite-question-store.js';
 import { SqliteWaveStore } from '../state/sqlite-wave-store.js';
 import { SqliteWorkerStore, type WorkerStore } from '../state/sqlite-worker-store.js';
@@ -42,6 +46,10 @@ import { makeCreateTaskTool } from './tools/create-task.js';
 import { makeUpdateTaskTool } from './tools/update-task.js';
 import { makeTaskNotesTool } from './tools/task-notes.js';
 import { makeSetActiveProjectTool } from './tools/set-active-project.js';
+import { makeCreateSagaTool } from './tools/create-saga.js';
+import { makeUpdateSagaTool } from './tools/update-saga.js';
+import { makeListSagasTool } from './tools/list-sagas.js';
+import { makeGetSagaTool } from './tools/get-saga.js';
 import { createTaskNotesMirrorQueue } from '../state/task-notes-mirror-queue.js';
 import { makeAskUserTool } from './tools/ask-user.js';
 import { makeReviewDiffTool } from './tools/review-diff.js';
@@ -139,6 +147,14 @@ export interface OrchestratorServerOptions {
   projectStore?: ProjectStore;
   /** Override the task store. Defaults to an in-memory `TaskRegistry`. */
   taskStore?: TaskStore;
+  /**
+   * Phase 5E — override the saga store. Defaults to a SQLite-backed
+   * `SqliteSagaStore` when `database` is provided, else an in-memory
+   * `SagaRegistry`. The rollup listener (`createSagaRollupListener`) is
+   * always composed alongside the task-ready listener on
+   * `taskStore.onTaskStatusChange`.
+   */
+  sagaStore?: SagaStore;
   /** Override the question store. Defaults to an in-memory `QuestionRegistry`. */
   questionStore?: QuestionStore;
   /** Override the research-wave store. Defaults to an in-memory `WaveRegistry`. */
@@ -246,6 +262,8 @@ export interface OrchestratorServerHandle {
   worktreeManager: WorktreeManager;
   projectStore: ProjectStore;
   taskStore: TaskStore;
+  /** Phase 5E — exposed for tests + tools that need to read saga membership. */
+  sagaStore: SagaStore;
   questionStore: QuestionStore;
   waveStore: WaveStore;
   /** Phase 3H.3 — exposed for tests + the RPC layer's `flushAwayDigest`. */
@@ -449,16 +467,30 @@ export async function startOrchestratorServer(
         // mirror is best-effort; never re-throw.
       });
   };
+  // Phase 5E — saga store + rollup listener. The store is constructed
+  // BEFORE the task store so the rollup listener can close over it.
+  // The rollup listener composes with the task-ready listener via a
+  // simple fan-out (both fire on every status change).
+  const sagaStore: SagaStore =
+    options.sagaStore ??
+    (options.database
+      ? new SqliteSagaStore(options.database.db, { projectStore })
+      : new SagaRegistry({ projectStore }));
+  const sagaRollupListener = createSagaRollupListener({ sagaStore });
+  const fanOutTaskStatusChange = (snapshot: TaskSnapshot): void => {
+    taskReadyOnTaskStatusChange(snapshot);
+    sagaRollupListener(snapshot);
+  };
   const taskStore: TaskStore =
     options.taskStore ??
     (options.database
       ? new SqliteTaskStore(options.database.db, {
-          onTaskStatusChange: taskReadyOnTaskStatusChange,
+          onTaskStatusChange: fanOutTaskStatusChange,
           onNotesAppended: taskNotesOnAppend,
         })
       : new TaskRegistry({
           projectStore,
-          onTaskStatusChange: taskReadyOnTaskStatusChange,
+          onTaskStatusChange: fanOutTaskStatusChange,
           onNotesAppended: taskNotesOnAppend,
         }));
   // Phase 3H.3 — instantiate the notifications dispatcher BEFORE the
@@ -1019,6 +1051,17 @@ export async function startOrchestratorServer(
   );
   registry.register(makeUpdateTaskTool({ taskStore }));
   registry.register(makeTaskNotesTool({ taskStore, projectStore }));
+  // Phase 5E — cross-project sagas. `create_saga` writes both the saga
+  // row AND the member tasks atomically; downstream `spawn_worker
+  // (task_id=...)` claims members per the existing 3P pattern. The
+  // rollup listener (wired on `taskStore.onTaskStatusChange` above)
+  // keeps the saga row in sync with member transitions.
+  registry.register(
+    makeCreateSagaTool({ sagaStore, taskStore, projectStore }),
+  );
+  registry.register(makeUpdateSagaTool({ sagaStore }));
+  registry.register(makeListSagasTool({ sagaStore, projectStore }));
+  registry.register(makeGetSagaTool({ sagaStore }));
 
   registry.register(makeAskUserTool({ questionStore, projectStore }));
   registry.register(makeReviewDiffTool({ registry: workerRegistry }));
@@ -1069,6 +1112,10 @@ export async function startOrchestratorServer(
       // from the caller's promise — finalize's structured return is
       // unaffected by dispatcher-side throws.
       onFinalize: (result, ctx) => autoMergeDispatcher.onFinalize(result, ctx),
+      // Phase 5E — saga store powers the saga-partial gate. Finalize
+      // refuses to merge a saga slice when siblings are incomplete
+      // unless `force_saga_partial:true` (tier 3).
+      sagaStore,
     }),
   );
 
@@ -1262,6 +1309,7 @@ export async function startOrchestratorServer(
     worktreeManager,
     projectStore,
     taskStore,
+    sagaStore,
     questionStore,
     waveStore,
     notificationDispatcher,

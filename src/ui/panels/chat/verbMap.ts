@@ -52,6 +52,12 @@ export const TOOL_VERB: Readonly<Record<string, string>> = Object.freeze({
   propose_plan: 'Scoring',
   set_active_project: 'Cueing',
 
+  // Phase 5E — cross-project saga
+  create_saga: 'Composing', // saga is the "score" that holds movements
+  update_saga: 'Composing',
+  list_sagas: 'Listening',
+  get_saga: 'Listening',
+
   // Worktree
   create_worktree: 'Arranging',
 

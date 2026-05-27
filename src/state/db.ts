@@ -164,6 +164,28 @@ export function validateSchemaContract(db: BetterSqlite3Database, dbPath: string
     ])
       requireColumn('workers', col);
   }
+  // Phase 5E — sagas + saga_members. SqliteSagaStore reads/writes
+  // every column below; future migrations that swap-rebuild either
+  // table MUST carry these columns forward (mirror 4G.1 / 4G.2 / 5A
+  // hazard pattern).
+  if (requireTable('sagas')) {
+    for (const col of [
+      'id',
+      'description',
+      'status',
+      'result',
+      'notes',
+      'created_at',
+      'updated_at',
+      'completed_at',
+      'insertion_seq',
+    ])
+      requireColumn('sagas', col);
+  }
+  if (requireTable('saga_members')) {
+    for (const col of ['saga_id', 'task_id', 'project_id', 'status', 'added_at'])
+      requireColumn('saga_members', col);
+  }
   // Reserved tables — presence check only (no columns yet exercised).
   requireTable('conversations');
   requireTable('messages');

@@ -315,7 +315,7 @@ export function ConfigProvider(props: ConfigProviderProps): React.JSX.Element {
  * Mirrors the helper's `mergePatch` so the test path exercises identical
  * patch semantics. Pure; caller pipes through Zod.
  */
-function applyPatchInMemory(
+export function applyPatchInMemory(
   current: SymphonyConfig,
   patch: SymphonyConfigPatch,
 ): SymphonyConfig {
@@ -334,6 +334,11 @@ function applyPatchInMemory(
   // dispatcher's tier cursor is updated via `runtime.setAutonomyTier`
   // RPC. Mirror in `mergePatch` and `applyConfigEdits` (config.ts).
   if (patch.autonomyTier !== undefined) next.autonomyTier = patch.autonomyTier;
+  // Phase 5F — TUI project filter. Mirror of disk-side mergePatch
+  // (5-site invariant; client-only field, no runtime propagation seam).
+  if (patch.tuiProjectFilter !== undefined) {
+    next.tuiProjectFilter = patch.tuiProjectFilter;
+  }
   if (patch.notifications !== undefined) {
     next.notifications = { ...current.notifications, ...patch.notifications };
   }

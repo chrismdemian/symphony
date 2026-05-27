@@ -34,13 +34,25 @@ export function deriveDisplayName(projectPath: string): string {
  *
  * Pure helper exported for direct unit testing; the hook below wraps
  * it in `useMemo` so React renders amortize the work.
+ *
+ * Phase 5F — when `scopeToProjectPath` is set, only workers matching
+ * that path are bucketed. Other projects (and the `(unregistered)`
+ * bucket) are filtered out entirely. When `undefined` (the default),
+ * behavior is unchanged from pre-5F. The path comparison is exact
+ * string match (no `path.resolve` — caller is responsible for passing
+ * the canonical path; the `projectPath` field on snapshots is already
+ * normalized by the server).
  */
 export function buildProjectGroups(
   workers: readonly WorkerRecordSnapshot[],
+  scopeToProjectPath?: string,
 ): readonly ProjectGroup[] {
   const buckets = new Map<string, WorkerRecordSnapshot[]>();
   for (const w of workers) {
     const key = w.projectPath === '' ? UNREGISTERED : w.projectPath;
+    if (scopeToProjectPath !== undefined && key !== scopeToProjectPath) {
+      continue;
+    }
     const bucket = buckets.get(key);
     if (bucket === undefined) buckets.set(key, [w]);
     else bucket.push(w);
@@ -65,6 +77,10 @@ export function buildProjectGroups(
 
 export function useProjectGroups(
   workers: readonly WorkerRecordSnapshot[],
+  scopeToProjectPath?: string,
 ): readonly ProjectGroup[] {
-  return useMemo(() => buildProjectGroups(workers), [workers]);
+  return useMemo(
+    () => buildProjectGroups(workers, scopeToProjectPath),
+    [workers, scopeToProjectPath],
+  );
 }

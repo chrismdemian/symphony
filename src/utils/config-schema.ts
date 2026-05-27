@@ -159,6 +159,22 @@ export const SymphonyConfigSchema = z.object({
    * happens once at boot.
    */
   autonomyTier: z.union([z.literal(1), z.literal(2), z.literal(3)]).default(2),
+  /**
+   * Phase 5F — TUI project filter. `'all'` shows workers / queue / deps
+   * across every registered project (default, preserves pre-5F behavior).
+   * `'active'` scopes those panels to the active project's path
+   * (see `activeProject` above). When `activeProject` is `undefined`,
+   * `'active'` is a visual no-op — the chip annotates `(no active
+   * project)` so the user knows the filter is inert.
+   *
+   * Client-side only (5 cascade sites, NOT 6): no `runtime.setProjectFilter`
+   * RPC because Maestro doesn't read this — it's a TUI display concern.
+   * The 6-site pattern (3M `awayMode` / 3S `autonomyTier`) applies only
+   * when the dispatcher's context cursor reads the field on every tool
+   * call. The 5-site pattern (3O.1 `autoMergePolicy`) applies when the
+   * field stays disk-resident.
+   */
+  tuiProjectFilter: z.enum(['all', 'active']).default('all'),
 });
 
 export type SymphonyConfig = z.infer<typeof SymphonyConfigSchema>;

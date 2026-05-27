@@ -66,6 +66,10 @@ export const MAESTRO_FRAGMENT_FILES = [
   // about HOW Maestro speaks) because routing is a structural concern
   // that shapes every subsequent tool dispatch.
   'maestro-active-project.md',
+  // Phase 5E — cross-project saga protocol. Sits between active-project
+  // (single-project routing) and voice (HOW Maestro speaks) because
+  // cross-project coordination is also a structural routing concern.
+  'maestro-cross-project-saga.md',
   'maestro-voice.md',
   'maestro-autonomy-tiers.md',
   'maestro-model-selection.md',
