@@ -28,6 +28,7 @@ import type { DispatchContext } from '../types.js';
 import type { WorkerRegistry, WorkerRecord } from '../worker-registry.js';
 import type { SagaStore } from '../../state/saga-types.js';
 import { isTerminalStatus } from '../../state/types.js';
+import { SAGA_PARTIAL_ERROR_CODE } from '../audit-loop-constants.js';
 
 /**
  * `finalize` — the atomic-verb completion protocol. See
@@ -281,7 +282,7 @@ export function makeFinalizeTool(
               ],
               isError: true,
               structuredContent: {
-                code: 'saga-partial',
+                code: SAGA_PARTIAL_ERROR_CODE,
                 sagaId: member.sagaId,
                 incompleteTaskIds: incomplete.map((m) => m.taskId),
               },

@@ -126,6 +126,41 @@ export const TASK_NOTES_PROTOCOL =
 export const ACTIVE_PROJECT_PROTOCOL =
   '**Confident match → switch immediately.** When the USER names a project that resolves unambiguously to one registered entry, call `set_active_project(name)` BEFORE downstream tool calls. The switch persists to `~/.symphony/config.json` (survives restarts) and Symphony emits a chat row confirming the change. You do NOT need to announce the switch separately — the row IS the announcement.';
 
+/**
+ * Phase 5E — verbatim cross-project saga protocol Maestro follows when
+ * the USER's request explicitly names 2+ registered projects. Quoted in
+ * the v1 prompt's Cross-Project Sagas section (regenerated as fragment
+ * `maestro-cross-project-saga.md`). Drift-locked 4-ways against the
+ * fragment AND the regenerated v1 monolith AND the four saga MCP tool
+ * names (`create_saga`/`update_saga`/`list_sagas`/`get_saga`) AND the
+ * `force_saga_partial` finalize input flag by
+ * `tests/integration/5e-prompt-drift.integration.test.ts`.
+ *
+ * Renaming any of those four tools OR the finalize flag requires editing
+ * this constant + the v1 prompt + `pnpm gen:fragments`; the drift-lock
+ * test fails CI otherwise. Mirrors the 5D `ACTIVE_PROJECT_PROTOCOL`
+ * pattern, with one extra lock direction for the finalize input flag.
+ */
+export const CROSS_PROJECT_SAGA_PROTOCOL =
+  '**When to create a saga.** Two and only two conditions BOTH have to hold:';
+
+/**
+ * Phase 5E — verbatim sentinel string referenced by the finalize gate
+ * + the saga protocol fragment. Drift-locked against the `finalize.ts`
+ * Zod schema flag name. Renaming the flag requires editing this
+ * constant + the schema + the v1 prompt + `pnpm gen:fragments`.
+ */
+export const FORCE_SAGA_PARTIAL_FLAG_NAME = 'force_saga_partial';
+
+/**
+ * Phase 5E — verbatim structured-content code Symphony returns from the
+ * saga-partial gate. Drift-locked against the gate's return value AND
+ * the protocol fragment's documentation of the code Maestro should
+ * pattern-match on. Renaming requires editing this constant + the
+ * gate's return + the v1 prompt + `pnpm gen:fragments`.
+ */
+export const SAGA_PARTIAL_ERROR_CODE = 'saga-partial';
+
 
 export const UI_REVIEWER_TASK_BRIEF_TEMPLATE = `You are a skeptical UI reviewer for Symphony.
 
