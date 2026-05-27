@@ -26,6 +26,8 @@ import type { OneShotRunner } from '../one-shot.js';
 import type { ToolRegistration } from '../registry.js';
 import type { DispatchContext } from '../types.js';
 import type { WorkerRegistry, WorkerRecord } from '../worker-registry.js';
+import type { SagaStore } from '../../state/saga-types.js';
+import { isTerminalStatus } from '../../state/types.js';
 
 /**
  * `finalize` — the atomic-verb completion protocol. See
@@ -82,6 +84,12 @@ const shape = {
     .string()
     .optional()
     .describe('Model for the inline audit step. Defaults to project defaultModel.'),
+  force_saga_partial: z
+    .boolean()
+    .optional()
+    .describe(
+      'Phase 5E — bypass the saga-partial gate. When this worker\'s task is a member of a cross-project saga AND siblings are still incomplete, finalize normally refuses to ship the slice (the saga is the unit of intent). Pass `true` at tier 3 to ship anyway — e.g., the user has confirmed they\'re abandoning the other members.',
+    ),
 };
 
 /**
@@ -122,6 +130,14 @@ export interface FinalizeDeps {
    * test callers that don't pass it see zero behavior change.
    */
   readonly onFinalize?: OnFinalizeCallback;
+  /**
+   * Phase 5E — optional saga store for the saga-partial gate. When
+   * provided AND the worker's task is a saga member, finalize refuses
+   * to ship a slice whose siblings are incomplete (unless
+   * `force_saga_partial: true` + tier 3). Omitted in pre-5E test
+   * fakes — the gate is no-op when this is undefined.
+   */
+  readonly sagaStore?: SagaStore;
 }
 
 export function makeFinalizeTool(
@@ -145,6 +161,7 @@ export function makeFinalizeTool(
         allow_untracked,
         force_finalize_while_running,
         audit_model,
+        force_saga_partial,
       },
       ctx: DispatchContext,
     ) => {
@@ -217,6 +234,60 @@ export function makeFinalizeTool(
           ],
           isError: true,
         };
+      }
+      if (force_saga_partial === true && ctx.tier < 3) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `finalize(force_saga_partial=true) requires tier 3 (confirm). Current tier: ${ctx.tier}.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      // Phase 5E — saga-partial gate. When the worker's task is a saga
+      // member AND any sibling is still incomplete, refuse to merge
+      // a slice of a cross-project intent. The saga is the unit of
+      // intent — shipping half of it leaves the user with a hanging
+      // half-merged feature. `force_saga_partial: true` (tier 3)
+      // bypasses for cases where the user has abandoned the rest of
+      // the saga.
+      if (
+        deps.sagaStore !== undefined &&
+        record.taskId !== null &&
+        record.taskId !== undefined &&
+        force_saga_partial !== true
+      ) {
+        const member = deps.sagaStore.findMemberByTaskId(record.taskId);
+        if (member !== undefined) {
+          const siblings = deps.sagaStore
+            .listMembers(member.sagaId)
+            .filter((m) => m.taskId !== record.taskId);
+          const incomplete = siblings.filter((m) => !isTerminalStatus(m.status));
+          if (incomplete.length > 0) {
+            const incompleteList = incomplete
+              .map((m) => `${m.taskId} [${m.status}]`)
+              .join(', ');
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text:
+                    `finalize: worker '${worker_id}' belongs to saga '${member.sagaId}' with ${incomplete.length} sibling member(s) still in flight (${incompleteList}). ` +
+                    `Cross-project sagas finalize as a unit — wait for siblings to complete, or pass force_saga_partial:true at tier 3 to ship this slice anyway.`,
+                },
+              ],
+              isError: true,
+              structuredContent: {
+                code: 'saga-partial',
+                sagaId: member.sagaId,
+                incompleteTaskIds: incomplete.map((m) => m.taskId),
+              },
+            };
+          }
+        }
       }
 
       const branch = await currentBranch(record.worktreePath, ctx.signal);

@@ -1112,6 +1112,10 @@ export async function startOrchestratorServer(
       // from the caller's promise — finalize's structured return is
       // unaffected by dispatcher-side throws.
       onFinalize: (result, ctx) => autoMergeDispatcher.onFinalize(result, ctx),
+      // Phase 5E — saga store powers the saga-partial gate. Finalize
+      // refuses to merge a saga slice when siblings are incomplete
+      // unless `force_saga_partial:true` (tier 3).
+      sagaStore,
     }),
   );
 
