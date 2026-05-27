@@ -11,7 +11,7 @@
  * Uses a stub `finalizeRunner` so we never spawn real git. We assert
  * the runner WAS / WAS NOT called.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { makeFinalizeTool } from '../../../src/orchestrator/tools/finalize.js';
 import type {
