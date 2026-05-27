@@ -39,6 +39,12 @@ test-results/
 # Logs
 *.log
 
+# Python (Phase 6A voice bridge)
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
 # Codex
 AGENTS.md
 

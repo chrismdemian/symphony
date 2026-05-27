@@ -175,6 +175,38 @@ program
     },
   );
 
+const voice = program
+  .command('voice')
+  .description(
+    'Voice subsystem (Phase 6A) — install the local Python bridge or run a VAD diagnose.',
+  );
+
+voice
+  .command('install')
+  .description(
+    'Bootstrap the Python venv at ~/.symphony/voice-env (silero-vad + sounddevice + numpy; pyaudio best-effort).',
+  )
+  .option('--force', 'Reinstall even when deps are already present.')
+  .action(async (opts: { force?: boolean }) => {
+    const { runVoiceInstall } = await import('./cli/voice-install.js');
+    const result = await runVoiceInstall(opts.force === true ? { force: true } : {});
+    process.exit(result.exitCode);
+  });
+
+voice
+  .command('diagnose')
+  .description(
+    'Pipe a known PCM fixture through the bridge and assert VAD events fire. Exits 0 on PASS.',
+  )
+  .option('--json', 'Emit a single-line JSON summary instead of human output.')
+  .action(async (opts: { json?: boolean }) => {
+    const { runVoiceDiagnose } = await import('./cli/voice-diagnose.js');
+    const result = await runVoiceDiagnose(
+      opts.json === true ? { format: 'json' } : {},
+    );
+    process.exit(result.exitCode);
+  });
+
 program
   .command('mcp-server')
   .description('Run the Symphony orchestrator MCP server over stdio. Spawned as a child of claude -p.')

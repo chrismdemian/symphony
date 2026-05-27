@@ -175,6 +175,43 @@ export const SymphonyConfigSchema = z.object({
    * field stays disk-resident.
    */
   tuiProjectFilter: z.enum(['all', 'active']).default('all'),
+  /**
+   * Phase 6A — voice input subsystem.
+   *
+   * `enabled: false` is the default (opt-in feature). When false, the
+   * voice bridge does NOT auto-spawn from `symphony start`; only
+   * `symphony voice diagnose` boots it.
+   *
+   * VAD knobs:
+   *   - `vadThreshold` (0..1, default 0.5): Silero speech-probability
+   *     gate. Higher = louder environments. The Silero default.
+   *   - `vadMinSpeechMs` (50..2000, default 100): run-up before
+   *     emitting `speech_start` — filters single tongue-clicks.
+   *   - `vadMinSilenceMs` (100..3000, default 400): run-down before
+   *     emitting `speech_end` — keeps natural pauses inside one segment.
+   *
+   * 5-site cascade (NOT 6) — voice config is client-side; the
+   * dispatch-context cursor doesn't read it. Mirror of 5F
+   * `tuiProjectFilter` shape. The bridge re-reads thresholds fresh on
+   * each `set_threshold` RPC (deferred to 6E); 6A holds them at spawn
+   * time only.
+   *
+   * 5 sites: this schema definition, `SymphonyConfigPatch`, `mergePatch`,
+   * `applyPatchInMemory`, `applyConfigEdits` (every `voice.*` field).
+   */
+  voice: z
+    .object({
+      enabled: z.boolean().default(false),
+      vadThreshold: z.number().min(0).max(1).default(0.5),
+      vadMinSpeechMs: z.number().int().min(50).max(2000).default(100),
+      vadMinSilenceMs: z.number().int().min(100).max(3000).default(400),
+    })
+    .default({
+      enabled: false,
+      vadThreshold: 0.5,
+      vadMinSpeechMs: 100,
+      vadMinSilenceMs: 400,
+    }),
 });
 
 export type SymphonyConfig = z.infer<typeof SymphonyConfigSchema>;
