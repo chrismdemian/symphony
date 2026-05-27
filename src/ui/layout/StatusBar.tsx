@@ -238,13 +238,22 @@ export function StatusBar(props: StatusBarProps): React.JSX.Element {
        *   - tuiProjectFilter === 'active' (user explicitly scoped)
        *   - activeProject is set (otherwise the filter is inert; the
        *     `cycleProjectFilter` toast already names this case)
+       *   - activeProject still resolves to a registered project (else
+       *     the chip would lie — Layout.tsx degrades `scopeToProjectPath`
+       *     to undefined for unknown names so the WorkerPanel renders
+       *     UNFILTERED, but without this last gate the chip would still
+       *     read `Filter: projX` while nothing was actually scoped).
+       *     Post-5EF audit M2 fix.
        * The chip's mere presence signals "you are looking at a scoped
        * view" so the user doesn't wonder where the other projects'
        * workers/queue rows went. Accent gold matches the locked palette.
        */}
       {props.tuiProjectFilter === 'active' &&
         props.activeProject !== null &&
-        props.activeProject !== undefined && (
+        props.activeProject !== undefined &&
+        props.projects.some(
+          (p) => p.name === props.activeProject || p.id === props.activeProject,
+        ) && (
           <>
             <Text color={theme['border']}>{SEPARATOR}</Text>
             <Text color={theme['textMuted']}>Filter: </Text>

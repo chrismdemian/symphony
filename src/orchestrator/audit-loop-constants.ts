@@ -142,7 +142,36 @@ export const ACTIVE_PROJECT_PROTOCOL =
  * pattern, with one extra lock direction for the finalize input flag.
  */
 export const CROSS_PROJECT_SAGA_PROTOCOL =
-  '**When to create a saga.** Two and only two conditions BOTH have to hold:';
+  '**When to create a saga.** Two and only two conditions BOTH have to hold:\n\n1. The USER\'s request as stated REQUIRES coordinated changes in 2+ distinct registered projects. A single-project change with cross-cutting reasoning ("update the API — also make sure the docstring matches the new client behavior") is NOT cross-project; it\'s one task in one project.\n2. Failure of ANY member should NOT ship the others. The saga\'s value is the saga-partial gate: if A succeeds and B fails, A is held back. If shipping A independently of B\'s outcome is fine, you don\'t need a saga — bare `create_task` per project is the right shape.';
+
+/**
+ * Phase 5E — verbatim "saga creation + immutability" block Maestro
+ * must follow. Drift-locked alongside `CROSS_PROJECT_SAGA_PROTOCOL`.
+ * Splitting the protocol into multiple constants keeps each one
+ * checkable as a substring without making any single string unwieldy.
+ *
+ * Mirrors `audit-loop-constants` 5C / 5D pattern: each constant is a
+ * paragraph (or two) the drift-lock test asserts as a verbatim substring
+ * of both fragment + monolith.
+ */
+export const CROSS_PROJECT_SAGA_CREATION =
+  '**Saga creation.** Once both conditions hold, call `create_saga(description, members[])` with:';
+
+/**
+ * Phase 5E — verbatim "monitoring + rollup" rules. Locks the wire
+ * strings Maestro consults when polling saga progress.
+ */
+export const CROSS_PROJECT_SAGA_MONITORING =
+  '**Monitoring.** Poll `get_saga(saga_id)` while members are in flight (NOT every tick — sample at meaningful boundaries: worker completion, errors, USER status probe). The saga rollup writer automatically transitions the saga as members transition:';
+
+/**
+ * Phase 5E — verbatim "finalize gate response" rules. The two correct
+ * responses to a `saga-partial` code: wait vs explicit USER-confirmed
+ * abandon. This is the load-bearing safety guidance — if a future
+ * edit drops the "Default to waiting" line, the drift-lock catches it.
+ */
+export const CROSS_PROJECT_SAGA_GATE_RESPONSES =
+  'Default to waiting. `force_saga_partial` is the escape hatch, not the workflow.';
 
 /**
  * Phase 5E — verbatim sentinel string referenced by the finalize gate

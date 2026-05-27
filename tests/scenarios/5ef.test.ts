@@ -207,14 +207,37 @@ describe('Phase 5EF scenario — saga lifecycle (real fs + real server + real SQ
     expect(getResult.structuredContent.saga.status).toBe('in_progress');
 
     // ── When 4: assert saga's CURRENT member statuses via the live
-    //          SagaStore directly. The MCP SDK's response wrapper does
-    //          not consistently surface structured-content arrays when
-    //          read across the in-memory transport — orchestrator-side
-    //          state is the authoritative observable here. This is the
-    //          same `sagaStore` the rollup listener wrote to.
+    //          SagaStore directly.
+    //
+    // Post-audit M3 investigation: the audit-agent probe claimed the
+    // MCP wire surfaces `get_saga.structuredContent.saga.members[]`
+    // cleanly. Verification in this scenarios config showed two
+    // separate constraints make MCP-wire assertions on `get_saga`
+    // unreliable here:
+    //   1. The MCP SDK appears to silently drop `structuredContent`
+    //      payloads that nest `Record<string, unknown>` arrays for
+    //      tools without an explicit `outputSchema` (asymmetric with
+    //      `create_saga`, whose payload DOES surface — separate code
+    //      path because `create_saga.members` is a primitive shape).
+    //   2. `AgentSafetyGuard` flags repeated identical `get_saga(saga_id:X)`
+    //      calls as a similarity loop after 3 invocations, returning
+    //      the stuck-on-question intervention text instead of the
+    //      tool output. The scenario naturally re-calls `get_saga` at
+    //      every rollup checkpoint.
+    // Both constraints argue for using the authoritative server-side
+    // sagaStore as the observable; the MCP-wire shape is exercised
+    // independently by `tests/orchestrator/tools/saga-tools.unit.test.ts`.
     const sagaSnap = server.sagaStore.snapshot(sagaId)!;
-    const statuses = sagaSnap.members.map((m) => m.status).sort();
-    expect(statuses).toEqual(['completed', 'in_progress']);
+    expect(sagaSnap.members.find((m) => m.taskId === memberA.taskId)?.status).toBe(
+      'completed',
+    );
+    expect(sagaSnap.members.find((m) => m.taskId === memberB.taskId)?.status).toBe(
+      'in_progress',
+    );
+    expect(sagaSnap.members.map((m) => m.status).sort()).toEqual([
+      'completed',
+      'in_progress',
+    ]);
 
     // ── When 5: B-side to completed (rollup → completed) ────────────
     await client.callTool({
@@ -223,7 +246,8 @@ describe('Phase 5EF scenario — saga lifecycle (real fs + real server + real SQ
     });
 
     // ── Then 5+6: saga rolled to completed with completedAt ─────────
-    // Direct saga store read for the same reason as When 4 above.
+    // Store-side observable (see When 4 comment for the AgentSafetyGuard
+    // similarity-loop interaction with repeated get_saga calls).
     const finalSnap = server.sagaStore.snapshot(sagaId)!;
     expect(finalSnap.status).toBe('completed');
     expect(finalSnap.completedAt).toBeTruthy();
