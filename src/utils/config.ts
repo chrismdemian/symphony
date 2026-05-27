@@ -185,7 +185,7 @@ export async function saveConfig(config: SymphonyConfig, filePath?: string): Pro
  * do NOT walk individual key entries because that risks losing comments
  * inside the record. The whole record is a unit.
  */
-function applyConfigEdits(existing: string, next: SymphonyConfig): string {
+export function applyConfigEdits(existing: string, next: SymphonyConfig): string {
   const fields: ReadonlyArray<readonly [string, unknown]> = [
     ['schemaVersion', next.schemaVersion],
     ['modelMode', next.modelMode],
@@ -206,6 +206,11 @@ function applyConfigEdits(existing: string, next: SymphonyConfig): string {
     // server.ts (boot stamp + runtime.setAutonomyTier RPC). Missing
     // any site silently disconnects persistence from runtime.
     ['autonomyTier', next.autonomyTier],
+    // Phase 5F — TUI project filter. 5-site cascade (no runtime
+    // propagation seam — Maestro doesn't read this; the TUI does).
+    // Skipping any of the five sites silently drops the field on
+    // rewrites (schema-default fills in on re-read, masking the regression).
+    ['tuiProjectFilter', next.tuiProjectFilter],
     ['theme', next.theme],
     ['leaderTimeoutMs', next.leaderTimeoutMs],
     ['keybindOverrides', next.keybindOverrides],
@@ -337,6 +342,12 @@ export interface SymphonyConfigPatch {
    * dispatch.
    */
   readonly autonomyTier?: SymphonyConfig['autonomyTier'];
+  /**
+   * Phase 5F — TUI project filter. 5-site cascade (no runtime
+   * propagation seam — client-side only). See `tuiProjectFilter` in
+   * `config-schema.ts` for full rationale.
+   */
+  readonly tuiProjectFilter?: SymphonyConfig['tuiProjectFilter'];
   readonly theme?: Partial<SymphonyConfig['theme']>;
   readonly defaultProjectPath?: SymphonyConfig['defaultProjectPath'] | null;
   /**
@@ -421,6 +432,8 @@ function mergePatch(current: SymphonyConfig, patch: SymphonyConfigPatch): Sympho
   // Phase 3S — autonomy tier. Same shape as awayMode but for
   // dispatch-context tier-cursor rather than capability-gate boolean.
   if (patch.autonomyTier !== undefined) next.autonomyTier = patch.autonomyTier;
+  // Phase 5F — TUI project filter. Client-side only.
+  if (patch.tuiProjectFilter !== undefined) next.tuiProjectFilter = patch.tuiProjectFilter;
   if (patch.notifications !== undefined) {
     next.notifications = { ...current.notifications, ...patch.notifications };
   }

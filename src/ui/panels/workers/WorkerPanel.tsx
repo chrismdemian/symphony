@@ -80,6 +80,13 @@ export interface WorkerPanelProps {
    * compiling. Tests construct a minimal `UseQueueResult` stub.
    */
   readonly queueResult?: UseQueueResult;
+  /**
+   * Phase 5F — scope-to-project filter path. When set, the panel
+   * shows ONLY workers whose `projectPath` matches AND only pending
+   * queue rows whose `projectPath` matches. `undefined` (the default)
+   * means "show all" — pre-5F behavior preserved.
+   */
+  readonly scopeToProjectPath?: string;
 }
 
 const EMPTY_QUEUE: UseQueueResult = {
@@ -93,6 +100,7 @@ export function WorkerPanel({
   rpc,
   workersResult,
   queueResult,
+  scopeToProjectPath,
 }: WorkerPanelProps): React.JSX.Element {
   const queue = queueResult ?? EMPTY_QUEUE;
   const theme = useTheme();
@@ -102,7 +110,10 @@ export function WorkerPanel({
   // panel. Symmetry with ChatPanel's same change.
   const isFocused = focus.currentScope === SCOPE;
   const { workers, error } = workersResult;
-  const groups = useProjectGroups(workers);
+  // Phase 5F — thread the scope filter through `useProjectGroups` so
+  // panel rendering bucketing matches the user-visible scope. The hook
+  // is no-op when `scopeToProjectPath` is undefined.
+  const groups = useProjectGroups(workers, scopeToProjectPath);
   const instruments = useInstrumentNames(workers);
   const selection = useWorkerSelection();
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
@@ -125,16 +136,27 @@ export function WorkerPanel({
         ids.push(w.id);
       }
     }
-    if (queue.pending.length > 0) {
-      rows.push({ kind: 'queue-header', count: queue.pending.length });
+    // Phase 5F — filter the pending queue by scope so queue rows
+    // mirror the worker grouping. `PendingSpawnSnapshot.projectPath`
+    // is already path.resolve'd by the lifecycle (mirrors the worker
+    // record's projectPath). When `scopeToProjectPath` is undefined,
+    // the filter is a no-op. The ordinal is computed from the FILTERED
+    // index so the user sees a contiguous 1, 2, 3 even when other-project
+    // queued spawns are hidden.
+    const filteredPending =
+      scopeToProjectPath !== undefined
+        ? queue.pending.filter((p) => p.projectPath === scopeToProjectPath)
+        : queue.pending;
+    if (filteredPending.length > 0) {
+      rows.push({ kind: 'queue-header', count: filteredPending.length });
       if (!collapsed.has(QUEUE_KEY)) {
-        queue.pending.forEach((pending, idx) => {
+        filteredPending.forEach((pending, idx) => {
           rows.push({ kind: 'queue-item', pending, ordinal: idx + 1 });
         });
       }
     }
     return { visibleRows: rows, visibleWorkerIds: ids };
-  }, [groups, collapsed, queue.pending]);
+  }, [groups, collapsed, queue.pending, scopeToProjectPath]);
 
   // Reconcile selection when the worker id set changes.
   useEffect(() => {

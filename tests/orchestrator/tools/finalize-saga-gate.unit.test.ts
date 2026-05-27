@@ -108,9 +108,7 @@ const BASE_ARGS = {
 
 const okRunResult: FinalizeRunResult = {
   ok: true,
-  branch: 'feature/x',
-  workerId: 'wk-1',
-  worktreePath: '',
+  featureBranch: 'feature/x',
   steps: [],
 };
 
@@ -130,9 +128,9 @@ describe('finalize — saga-partial gate', () => {
     workers = new WorkerRegistry();
     sagas = new SagaRegistry();
     runnerSpy = { calls: 0 };
-    stubRunner = (async (_opts) => {
+    stubRunner = (async () => {
       runnerSpy.calls += 1;
-      return { ...okRunResult, worktreePath: dir };
+      return { ...okRunResult };
     }) as unknown as typeof runFinalize;
   });
 

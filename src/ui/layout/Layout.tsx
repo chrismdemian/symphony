@@ -76,6 +76,13 @@ export interface LayoutProps {
    * from `useConfig().config.activeProject` at the App level.
    */
   readonly activeProject?: string | null;
+  /**
+   * Phase 5F — TUI project filter ('all' | 'active'). When 'active' AND
+   * `activeProject` resolves to a registered project, the WorkerPanel,
+   * queue rows, and DepsPanel scope to that project's path. Plumbed
+   * from `useConfig().config.tuiProjectFilter`.
+   */
+  readonly tuiProjectFilter?: 'all' | 'active';
 }
 
 function getPopupOnTopKey(stack: readonly FocusContext[]): string | null {
@@ -88,11 +95,29 @@ export function Layout(props: LayoutProps): React.JSX.Element {
   const focus = useFocus();
   const wide = columns >= NARROW_THRESHOLD;
   const popupKey = getPopupOnTopKey(focus.state.stack);
+  // Phase 5F — resolve the scope path. The TUI panels need a PATH
+  // (workers carry projectPath, not projectName) so we look up the
+  // active project's record. Falls back to `undefined` (no scope) when
+  // the filter is 'all', the active project is unset, or the active
+  // project is no longer registered (stale config — same edge case 5D
+  // documented for the StatusBar chip; the filter is inert rather than
+  // misleading).
+  const scopeToProjectPath = React.useMemo(() => {
+    if (props.tuiProjectFilter !== 'active') return undefined;
+    if (props.activeProject === undefined || props.activeProject === null) {
+      return undefined;
+    }
+    const match = props.projects.find(
+      (p) => p.name === props.activeProject || p.id === props.activeProject,
+    );
+    return match?.path;
+  }, [props.tuiProjectFilter, props.activeProject, props.projects]);
   const workersPanel = (
     <WorkerPanel
       rpc={props.rpc}
       workersResult={props.workersResult}
       queueResult={props.queueResult}
+      scopeToProjectPath={scopeToProjectPath}
     />
   );
   const outputPanel = <OutputPanel rpc={props.rpc} />;
@@ -112,6 +137,7 @@ export function Layout(props: LayoutProps): React.JSX.Element {
         pendingQueueCount={props.queueResult?.pending.length ?? 0}
         autonomyTier={props.autonomyTier ?? 2}
         activeProject={props.activeProject ?? null}
+        tuiProjectFilter={props.tuiProjectFilter}
         {...(props.sessionTotals !== undefined ? { sessionTotals: props.sessionTotals } : {})}
       />
       {/*

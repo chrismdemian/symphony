@@ -395,6 +395,32 @@ function AppShell(props: AppProps): React.JSX.Element {
     }
   }, [setConfig, showToast, tierLabel]);
 
+  // Phase 5F — `<leader>f` cycles the TUI project filter. setConfig
+  // function-patch is race-safe (mirrors cycleAutonomyTier / awayMode
+  // patterns). When the new value is `'active'` but no active project
+  // is set, surface a hint so the user knows the filter is inert.
+  const cycleProjectFilter = useCallback(async () => {
+    try {
+      const next = await setConfig((current) => {
+        const current_ = current.tuiProjectFilter;
+        const advanced = current_ === 'all' ? 'active' : 'all';
+        return { tuiProjectFilter: advanced };
+      });
+      const hasActive =
+        next.activeProject !== undefined && next.activeProject.length > 0;
+      const message =
+        next.tuiProjectFilter === 'all'
+          ? 'Filter: All projects.'
+          : hasActive
+            ? `Filter: Active project (${next.activeProject}).`
+            : 'Filter: Active — but no active project set. Use `set_active_project` first.';
+      showToast(message, { tone: 'info', ttlMs: 3_000 });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      showToast(`Project filter cycle failed: ${msg}`, { tone: 'error' });
+    }
+  }, [setConfig, showToast]);
+
   // Phase 3S — autonomy tier propagation. Mirrors awayMode's effect
   // shape: any state change pushes the new value to the server's
   // dispatch context via `runtime.setAutonomyTier`. Server-side closure
@@ -554,6 +580,8 @@ function AppShell(props: AppProps): React.JSX.Element {
           toggleAwayMode,
           // Phase 3S — Ctrl+Y chord cycles autonomy tier.
           cycleAutonomyTier,
+          // Phase 5F — `<leader>f` cycles the TUI project filter.
+          cycleProjectFilter,
           // Phase 3N.3 — palette entry "show session stats". Slash
           // command `/stats` is wired in ChatPanel.
           openStats: () => focus.pushPopup('stats'),
@@ -582,6 +610,7 @@ function AppShell(props: AppProps): React.JSX.Element {
       toggleThemeFallback,
       toggleAwayMode,
       cycleAutonomyTier,
+      cycleProjectFilter,
       pivotInterruptEsc,
       pivotInterruptCtrlC,
       pivotEligible,
@@ -618,6 +647,7 @@ function AppShell(props: AppProps): React.JSX.Element {
               awayMode={awayMode}
               autonomyTier={autonomyTier}
               activeProject={activeProject}
+              tuiProjectFilter={config.tuiProjectFilter}
               sessionTotals={sessionTotalsResult.totals}
             />
           </Box>

@@ -77,6 +77,14 @@ export interface StatusBarProps {
    * chip surfaces routing state without invasive layout changes.
    */
   readonly activeProject?: string | null;
+  /**
+   * Phase 5F — TUI project filter chip. Renders ONLY when `'active'`
+   * AND `activeProject` is set; otherwise the filter is in default
+   * (all) state and the chip is suppressed to keep the bar clean.
+   * Sourced from `config.tuiProjectFilter` at the App level. Cycled
+   * via `<leader>f` (Ctrl+X f).
+   */
+  readonly tuiProjectFilter?: 'all' | 'active';
 }
 
 function activeCount(workers: readonly WorkerRecordSnapshot[]): number {
@@ -225,6 +233,24 @@ export function StatusBar(props: StatusBarProps): React.JSX.Element {
           <Text color={theme['accent']}>{props.activeProject}</Text>
         </>
       )}
+      {/*
+       * Phase 5F — TUI project filter chip. Only renders when ALL of:
+       *   - tuiProjectFilter === 'active' (user explicitly scoped)
+       *   - activeProject is set (otherwise the filter is inert; the
+       *     `cycleProjectFilter` toast already names this case)
+       * The chip's mere presence signals "you are looking at a scoped
+       * view" so the user doesn't wonder where the other projects'
+       * workers/queue rows went. Accent gold matches the locked palette.
+       */}
+      {props.tuiProjectFilter === 'active' &&
+        props.activeProject !== null &&
+        props.activeProject !== undefined && (
+          <>
+            <Text color={theme['border']}>{SEPARATOR}</Text>
+            <Text color={theme['textMuted']}>Filter: </Text>
+            <Text color={theme['accent']}>{props.activeProject}</Text>
+          </>
+        )}
       {awayMode && (
         <>
           <Text color={theme['border']}>{SEPARATOR}</Text>

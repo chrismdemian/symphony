@@ -133,6 +133,19 @@ export interface GlobalCommandHandlers {
    */
   cycleAutonomyTier?(): Promise<void> | void;
   /**
+   * Phase 5F — `<leader>f` (Ctrl+X f) cycles the TUI project filter
+   * (all → active → all). Client-side only; updates `config.tuiProjectFilter`
+   * via `setConfig` function-patch (race-safe), then the WorkerPanel /
+   * Queue / DepsPanel re-render with the new scope.
+   *
+   * Surfaces a toast naming the new mode. When `'active'` and the user
+   * has no active project set, the toast notes the filter is inert
+   * until they set one.
+   *
+   * Optional during 5F transition; falls back to a toast when omitted.
+   */
+  cycleProjectFilter?(): Promise<void> | void;
+  /**
    * Phase 3T — Esc during Maestro streaming = pivot signal. Handler:
    *   - calls `rpc.call.runtime.interrupt()`
    *   - calls `data.markInterrupted(result)` (chat row + envelope arm)
@@ -297,6 +310,19 @@ export function buildGlobalCommands(
       onSelect: () =>
         handlers.toggleAwayMode?.() ??
         handlers.showLeaderToast?.('Away mode toggle — handler not wired.'),
+    },
+    // Phase 5F — `<leader>f` (Ctrl+X f) cycles the TUI project filter
+    // between `all` (default) and `active`. Surfaces via the WhichKey
+    // hint when Ctrl+X is armed.
+    {
+      id: 'leader.cycleProjectFilter',
+      title: 'cycle project filter',
+      key: { kind: 'leader', lead: { kind: 'ctrl', char: 'x' }, second: { kind: 'char', char: 'f' } },
+      scope: 'global',
+      displayOnScreen: false,
+      onSelect: () =>
+        handlers.cycleProjectFilter?.() ??
+        handlers.showLeaderToast?.('Project filter cycle — handler not wired.'),
     },
     // Phase 3H.1 — settings popup. Hotkey is Ctrl+, (the editor-standard
     // settings shortcut). Listed in the bottom keybind bar so it's
