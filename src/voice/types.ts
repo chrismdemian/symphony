@@ -139,7 +139,8 @@ export interface VoiceInstallResult {
     | 'moonshine-import-failed'
     | 'moonshine-download-failed'
     | 'openwakeword-install-failed'
-    | 'openwakeword-import-failed';
+    | 'openwakeword-import-failed'
+    | 'openwakeword-download-failed';
   readonly venvPath: string;
   readonly pythonPath: string;
   readonly sileroVadInstalled: boolean;

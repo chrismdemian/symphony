@@ -852,6 +852,82 @@ describe('runVoiceInstall — Phase 6C openWakeWord', () => {
     expect(result.reason).toBe('openwakeword-import-failed');
   });
 
+  it('fails with openwakeword-download-failed when backbone download fails', async () => {
+    // Regression: the import smoke passes (class imports) but the backbone
+    // (melspectrogram/embedding .onnx) download fails. Without this step the
+    // bridge crashes at runtime with NO_SUCHFILE. The download is a distinct
+    // failure path from the import smoke.
+    const venvDir = makeTmp('voice-installer-');
+    const spawner: InstallerSpawner = async (req) => {
+      if (req.args[0] === '--version') {
+        return { stdout: 'Python 3.11.5', stderr: '', exitCode: 0, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'show') {
+        return { stdout: '', stderr: '', exitCode: 1, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'install') {
+        return { stdout: 'installed', stderr: '', exitCode: 0, signal: null };
+      }
+      // moonshine import + warmup OK
+      if (req.args[0] === '-c' && req.args[1]?.includes('moonshine_onnx')) {
+        return { stdout: '', stderr: '', exitCode: 0, signal: null };
+      }
+      // openwakeword import smoke OK
+      if (req.args[0] === '-c' && req.args[1]?.startsWith('from openwakeword')) {
+        return { stdout: '', stderr: '', exitCode: 0, signal: null };
+      }
+      // backbone download FAILS
+      if (req.args[0] === '-c' && req.args[1]?.includes('download_models')) {
+        return {
+          stdout: '',
+          stderr: 'ConnectionError: could not fetch melspectrogram.onnx',
+          exitCode: 1,
+          signal: null,
+        };
+      }
+      return { stdout: '', stderr: '', exitCode: 0, signal: null };
+    };
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: makeTmp('home-'),
+      spawner,
+      force: true,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.reason).toBe('openwakeword-download-failed');
+  });
+
+  it('happy path invokes the backbone download (download_models)', async () => {
+    const venvDir = makeTmp('voice-installer-');
+    const calls: Array<{ args: readonly string[] }> = [];
+    const spawner: InstallerSpawner = async (req) => {
+      calls.push({ args: req.args });
+      if (req.args[0] === '--version') {
+        return { stdout: 'Python 3.11.5', stderr: '', exitCode: 0, signal: null };
+      }
+      if (req.args[0] === '-m' && req.args[1] === 'pip' && req.args[2] === 'show') {
+        return { stdout: '', stderr: '', exitCode: 1, signal: null };
+      }
+      return { stdout: '', stderr: '', exitCode: 0, signal: null };
+    };
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: makeTmp('home-'),
+      spawner,
+      force: true,
+    });
+    expect(result.ok).toBe(true);
+    const ranDownload = calls.some(
+      (c) =>
+        c.args[0] === '-c' &&
+        typeof c.args[1] === 'string' &&
+        c.args[1].includes('download_models'),
+    );
+    expect(ranDownload).toBe(true);
+  });
+
   it('wakeModelBundled probe returns false when no .onnx exists; warning surfaced', async () => {
     // The bundled-model probe is non-fatal — install still succeeds with
     // a warning. Verifies the wakeModelBundled field shape AND the

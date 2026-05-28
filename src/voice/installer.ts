@@ -305,6 +305,21 @@ export async function runVoiceInstall(
       // (cheap; user may have deleted ~/.symphony/voice-vocab.json).
       const seeded = await tryInstallVocabSeed(home, warnings);
       const wakeBundled = wakeModelBundledOnDisk(warnings);
+      // CRITICAL on the idempotent path too: the import smoke passes even
+      // when the openWakeWord backbone (melspectrogram/embedding .onnx) is
+      // MISSING — it only checks the class imports. A venv that pip-shows
+      // + imports openwakeword but lacks the backbone (e.g. installed before
+      // this download step existed) would idempotent-skip here and then fail
+      // at runtime with NO_SUCHFILE. download_models is idempotent (skips
+      // present files), so running it here is a cheap no-op when the backbone
+      // already exists and a self-heal when it doesn't.
+      const owwDl = await runOpenWakeWordModelDownload(spawner, venvPython);
+      if (!owwDl.ok) {
+        warnings.push(
+          'openWakeWord backbone download failed on idempotent path; ' +
+            `wake-word may fail at runtime. ${owwDl.stderr.slice(0, 300)}`,
+        );
+      }
       // Touch model warmup only if the HF cache is empty — but we can't
       // easily probe that without invoking python. Set
       // moonshineModelWarmed=true on the idempotent path because the
@@ -441,6 +456,29 @@ export async function runVoiceInstall(
         'openwakeword installed but `from openwakeword.model import Model` failed. ' +
           'A transitive dep (onnxruntime / scipy / openwakeword shared model) ' +
           'failed to load. Try `pnpm rebuild` or check the voice-env Python version.',
+      ],
+    );
+  }
+
+  // 9b. Download openWakeWord's SHARED BACKBONE (melspectrogram.onnx +
+  // embedding_model.onnx) into the venv's resources dir. CRITICAL: the
+  // import smoke only constructs the Model CLASS — it does NOT fetch the
+  // backbone. Without this, loading ANY wake-word model at runtime fails
+  // with `NO_SUCHFILE: ...melspectrogram.onnx`. openwakeword.utils.
+  // download_models() pulls the feature backbone (it also pulls the
+  // upstream CC BY-NC-SA pretrained wake models, which we never load —
+  // only the Apache-2.0 backbone is used). Analogue of the Moonshine
+  // model warmup. Idempotent (skips already-present files).
+  progress('Downloading openWakeWord feature backbone (~3MB; first run)...');
+  const owwDownload = await runOpenWakeWordModelDownload(spawner, venvPython);
+  if (!owwDownload.ok) {
+    return failureResult(
+      makeBaseResult(venvDir, venvPython),
+      'openwakeword-download-failed',
+      [
+        'openwakeword.utils.download_models() failed — the shared feature ' +
+          'backbone (melspectrogram.onnx / embedding_model.onnx) could not be ' +
+          `fetched. Wake-word detection will fail at runtime. ${owwDownload.stderr.slice(0, 600)}`,
       ],
     );
   }
@@ -694,6 +732,29 @@ async function runOpenWakeWordImportSmoke(
     args: ['-c', 'from openwakeword.model import Model'],
   });
   return result.exitCode === 0;
+}
+
+/**
+ * Phase 6C — download openWakeWord's shared feature backbone
+ * (`melspectrogram.onnx` + `embedding_model.onnx`) into the venv's
+ * `openwakeword/resources/models/` dir via `openwakeword.utils.
+ * download_models()`. REQUIRED: constructing a `Model(...)` at runtime
+ * loads the backbone, and without it the load fails with
+ * `NO_SUCHFILE: ...melspectrogram.onnx`. The import smoke does NOT fetch
+ * these — it only validates the class imports. Idempotent (download_models
+ * skips files already present). Pulls the upstream CC BY-NC-SA pretrained
+ * wake models too, but Symphony never loads those — only the Apache-2.0
+ * backbone is used by the bundled hey-symphony model.
+ */
+async function runOpenWakeWordModelDownload(
+  spawner: InstallerSpawner,
+  venvPython: string,
+): Promise<{ ok: boolean; stderr: string }> {
+  const result = await spawner({
+    cmd: venvPython,
+    args: ['-c', 'import openwakeword.utils as u; u.download_models()'],
+  });
+  return { ok: result.exitCode === 0, stderr: result.stderr };
 }
 
 /**
