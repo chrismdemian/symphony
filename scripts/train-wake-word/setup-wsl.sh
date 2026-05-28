@@ -64,16 +64,20 @@ echo "[setup] Using interpreter: ${PY_BIN} ($(${PY_BIN} --version 2>&1))"
 # UNATTENDED when the deps were pre-installed (sudo needs an interactive
 # password on most WSL setups). The pre-install one-liner is in README
 # Path B prerequisites.
-APT_PKGS=(python3-venv python3-dev python3-pip ffmpeg libsndfile1 build-essential git wget)
+# NOTE: probe the VERSIONED venv package (python3.12-venv), NOT the bare
+# `python3-venv` metapackage. On Ubuntu 24.04 the versioned one is what
+# provides ensurepip for `python3 -m venv`; users commonly install just
+# that. Requiring the metapackage caused a false-missing → sudo hang.
+APT_PKGS=(python3-dev python3-pip ffmpeg libsndfile1 build-essential git wget)
 MISSING_PKGS=()
 for p in "${APT_PKGS[@]}"; do
   dpkg -s "${p}" >/dev/null 2>&1 || MISSING_PKGS+=("${p}")
 done
-# python3.12-venv (or matching minor) is what `python3 -m venv` actually
-# needs for ensurepip; the python3-venv metapackage pulls it, but probe the
-# versioned name too on 24.04.
 ver_venv="python${sys_ver}-venv"
-dpkg -s "${ver_venv}" >/dev/null 2>&1 || MISSING_PKGS+=("${ver_venv}")
+# Accept EITHER the versioned package OR the metapackage as satisfying venv.
+if ! dpkg -s "${ver_venv}" >/dev/null 2>&1 && ! dpkg -s "python3-venv" >/dev/null 2>&1; then
+  MISSING_PKGS+=("${ver_venv}")
+fi
 if [[ ${#MISSING_PKGS[@]} -gt 0 ]]; then
   echo "[setup] Installing missing system packages (needs sudo): ${MISSING_PKGS[*]}"
   sudo apt-get update -qq
@@ -105,10 +109,21 @@ print(f"[setup] CUDA OK: {torch.cuda.get_device_name(0)}")
 PY
 
 # --- clone piper-sample-generator + its voice model -----------------------
+# MUST pin the v2.0.0 TAG. The repo's main branch restructured and no longer
+# has `generate_samples.py` / `piper_train/` at root — but openWakeWord's
+# train.py hardcodes `from generate_samples import generate_samples`, which
+# only works with the v2.0.0 layout. v2.0.0 also matches the voice model
+# release we download below.
 cd "${WORK_DIR}"
-if [[ ! -d piper-sample-generator ]]; then
-  echo "[setup] Cloning piper-sample-generator..."
-  git clone --depth 1 https://github.com/rhasspy/piper-sample-generator
+PSG_OK=0
+if [[ -f piper-sample-generator/generate_samples.py ]]; then
+  PSG_OK=1
+fi
+if [[ "${PSG_OK}" -ne 1 ]]; then
+  echo "[setup] Cloning piper-sample-generator @ v2.0.0 (correct layout)..."
+  rm -rf piper-sample-generator
+  git clone --depth 1 --branch v2.0.0 \
+    https://github.com/rhasspy/piper-sample-generator
 fi
 mkdir -p piper-sample-generator/models
 if [[ ! -f piper-sample-generator/models/en_US-libritts_r-medium.pt ]]; then
@@ -130,12 +145,27 @@ fi
 # which errors harmlessly AFTER the .onnx is saved.
 echo "[setup] Installing training deps (ONNX path)..."
 python -m pip install --quiet -e ./openwakeword
+# numpy<2 FIRST — the 2024-era stack (numba/librosa/openwakeword) breaks on
+# numpy 2.x. piper-phonemize-cross replaces piper-phonemize (no cp312 wheel
+# for the latter; the -cross fork provides the same `piper_phonemize` module
+# WITH a cp312 wheel). audiomentations pinned to the version
+# piper-sample-generator v2.0.0 requires.
+python -m pip install --quiet 'numpy<2'
 python -m pip install --quiet \
-  piper-phonemize webrtcvad \
+  piper-phonemize-cross webrtcvad \
   mutagen torchinfo torchmetrics \
-  audiomentations torch-audiomentations acoustics \
+  'audiomentations==0.33.0' torch-audiomentations acoustics \
   pronouncing datasets scipy tqdm pyyaml \
   'deep-phonemizer'
+# Verify the piper_phonemize module (provided by -cross) imports + exposes
+# the symbol generate_samples.py needs.
+python - <<'PY'
+try:
+    from piper_phonemize import phonemize_espeak  # noqa: F401
+    print("[setup] piper_phonemize.phonemize_espeak OK (via piper-phonemize-cross)")
+except Exception as e:
+    raise SystemExit(f"[setup] ERROR: piper_phonemize import failed: {e!r}")
+PY
 # speechbrain is used for some augmentation paths; install best-effort
 # (its old pins can conflict on 3.11 — failure here is non-fatal for the
 # core ONNX training path).
