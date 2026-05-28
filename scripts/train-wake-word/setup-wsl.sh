@@ -146,17 +146,37 @@ fi
 echo "[setup] Installing training deps (ONNX path)..."
 python -m pip install --quiet -e ./openwakeword
 # numpy<2 FIRST — the 2024-era stack (numba/librosa/openwakeword) breaks on
-# numpy 2.x. piper-phonemize-cross replaces piper-phonemize (no cp312 wheel
-# for the latter; the -cross fork provides the same `piper_phonemize` module
-# WITH a cp312 wheel). audiomentations pinned to the version
-# piper-sample-generator v2.0.0 requires.
+# numpy 2.x; piper v2.0.0 + datasets 2.x also require it.
 python -m pip install --quiet 'numpy<2'
+# PIN the whole dep set to openWakeWord's automatic_model_training.ipynb
+# versions (the proven-good 2024 combo) — installing UNPINNED pulls 2026
+# latest which has accumulated breaking changes (datasets 4.x now needs
+# torchcodec for audio; torch-audiomentations needs the removed torchaudio
+# backend API; etc.). Substitutions from the notebook pins:
+#   - piper-phonemize==1.1.0 → piper-phonemize-cross (cp312 wheel; the
+#     original has no 3.12 distribution). Same `piper_phonemize` module.
+#   - SKIP tensorflow-cpu / tensorflow_probability / onnx_tf — those are
+#     ONLY for the optional .tflite export; Symphony ships .onnx. The
+#     trainer writes the .onnx before that step.
 python -m pip install --quiet \
   piper-phonemize-cross webrtcvad \
-  mutagen torchinfo torchmetrics \
-  'audiomentations==0.33.0' torch-audiomentations acoustics \
-  pronouncing datasets scipy tqdm pyyaml \
-  'deep-phonemizer'
+  'mutagen==1.47.0' 'torchinfo==1.8.0' 'torchmetrics==1.2.0' \
+  'audiomentations==0.33.0' 'torch-audiomentations==0.11.0' 'acoustics==0.2.6' \
+  'pronouncing==0.2.0' 'datasets==2.20.0' 'deep-phonemizer==0.0.19' \
+  scipy tqdm pyyaml
+# datasets==2.20.0 is the goldilocks pick for Python 3.12:
+#   - the notebook's 2.14.6 references pa.PyExtensionType (removed in
+#     pyarrow 14; old pyarrow has no cp312 wheel + won't build from source)
+#   - datasets >=3.0 requires torchcodec for audio decode (heavy, finicky)
+#   - 2.20.0 supports 3.12 + modern pyarrow AND still uses soundfile for the
+#     Audio feature (torchcodec only became required in 3.0). It's used ONLY
+#     by download-data.sh for RIR/AudioSet resampling — openWakeWord's
+#     training code imports no datasets, verified.
+# Verify the datasets import chain resolves before proceeding.
+python - <<'PY'
+import datasets  # noqa: F401
+print(f"[setup] datasets {datasets.__version__} import OK")
+PY
 # Verify the piper_phonemize module (provided by -cross) imports + exposes
 # the symbol generate_samples.py needs.
 python - <<'PY'

@@ -23,7 +23,9 @@ source "${VENV_DIR}/bin/activate"
 cd "${WORK_DIR}"
 
 # --- MIT environmental impulse responses ----------------------------------
-if [[ ! -d mit_rirs ]]; then
+# Re-attempt when the dir is missing OR empty (a prior partial/failed run
+# leaves an empty mit_rirs/ that a bare -d test would wrongly treat as done).
+if [[ ! -d mit_rirs || -z "$(ls -A mit_rirs 2>/dev/null)" ]]; then
   echo "[data] Downloading MIT RIRs via HuggingFace datasets..."
   python - <<'PY'
 import os
@@ -49,7 +51,7 @@ PY
 fi
 
 # --- AudioSet background slice (one balanced-train tar) --------------------
-if [[ ! -d audioset_16k ]]; then
+if [[ ! -d audioset_16k || -z "$(ls -A audioset_16k 2>/dev/null)" ]]; then
   echo "[data] Downloading AudioSet slice (bal_train09.tar)..."
   mkdir -p audioset
   wget -q -O audioset/bal_train09.tar \
