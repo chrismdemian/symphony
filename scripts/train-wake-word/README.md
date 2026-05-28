@@ -1,113 +1,129 @@
 # Training `hey-symphony.onnx`
 
-Operational runbook for producing `assets/wake-models/hey-symphony.onnx`. This is a **one-time** operation per model revision — the resulting `.onnx` ships with Symphony, so end-users never run this. Re-run only when you want to retrain (e.g. adding 50 real recordings for FRR improvement, or upgrading the architecture).
+Operational runbook for producing `assets/wake-models/hey-symphony.onnx`. **One-time** op per model revision — the resulting `.onnx` ships with Symphony, so end-users never run this.
 
-## Prerequisites
+openWakeWord's trainer is an **integrated command** (`python -m openwakeword.train --training_config <yaml> --generate_clips --augment_clips --train_model`). It clones Piper for synthetic TTS, mixes RIR + background noise, and trains an FCN head against ~2000 hrs of pre-computed negative features. We do NOT reimplement any of that — `training_config.yml` is the only Symphony-specific artifact.
 
-| Requirement | Verified by |
-|---|---|
-| WSL2 + Ubuntu (22.04 or newer) | `wsl --status` shows `Default Version: 2` |
-| GPU visible inside WSL | `wsl -d Ubuntu --exec /usr/lib/wsl/lib/nvidia-smi` shows your GPU |
-| ≥8 GB VRAM | RTX 3060 12 GB explicitly called out as baseline; RTX 4060 8 GB confirmed sufficient |
-| ≥40 GB free disk on `~` (WSL side) | TTS positives ~2 GB + negatives ~5 GB + checkpoints ~2 GB |
-| Internet | piper voice download (~100 MB), HF dataset (~5 GB), pip deps (~3 GB) |
+The resulting model is **Apache-2.0** (self-trained on the Apache-2.0 backbone + permissive data — NOT derived from the CC BY-NC-SA bundled models). See `assets/wake-models/LICENSE.md`.
 
-If `nvidia-smi` inside WSL fails with `NVML init failed`, run **`wsl --shutdown`** from PowerShell (NOT a full Windows restart — `wsl --shutdown` only restarts the WSL VM in ~10 s) and re-probe. This fixes the most common transient GPU-in-WSL bug.
+---
 
-## End-to-end runbook (one shell session)
+## Two paths
+
+| | Colab (recommended) | Local WSL GPU |
+|---|---|---|
+| Setup | Zero — browser only | `setup-wsl.sh` + `download-data.sh` |
+| GPU | Free T4 (cloud) | Your RTX 4060 |
+| Python | 3.10 (Colab default — all upstream pins work) | 3.11 via deadsnakes (3.12 breaks the pins) |
+| Time | ~15 min | ~1–2 hrs (incl. ~4 GB download + deps) |
+| Risk | Low — the notebook is the upstream-maintained path | Medium — dependency-version friction on WSL |
+
+**Why Colab is recommended:** openWakeWord's training stack pins `tensorflow-cpu==2.8.1`, `speechbrain==0.5.14`, etc. — all targeting Python 3.10/Colab. On WSL Python 3.12 they fail to build. The local path works around this with a 3.11 venv + skipping the TFLite-export deps, but it's more moving parts. The trained `.onnx` is identical either way — it's a one-time artifact, so the fastest reliable path wins.
+
+---
+
+## Path A — Google Colab (recommended)
+
+1. Open the official notebook: <https://github.com/dscripka/openWakeWord/blob/main/notebooks/automatic_model_training.ipynb> → "Open in Colab".
+2. Runtime → Change runtime type → **T4 GPU**.
+3. Run the environment-setup + data-download cells as-is (cells 1–10).
+4. In the **config cell** (the one with `config["target_phrase"] = [...]`), set:
+   ```python
+   config["target_phrase"] = ["hey symphony"]
+   config["model_name"] = "hey-symphony"
+   config["n_samples"] = 10000          # bump to 50000+ for production accuracy
+   config["n_samples_val"] = 2000
+   config["steps"] = 50000
+   config["target_false_positives_per_hour"] = 0.2
+   config["max_negative_weight"] = 1500
+   ```
+   (These mirror `training_config.yml` in this dir — keep them in sync.)
+5. Run the training cells. ~10–15 min on T4.
+6. Download `my_custom_model/hey-symphony.onnx` (the notebook's output dir) to your machine, e.g. `~/Downloads/hey-symphony.onnx`.
+7. From WSL, commit it into the repo:
+   ```bash
+   wsl -d Ubuntu
+   cd /mnt/c/Users/chris/projects/symphony/scripts/train-wake-word
+   bash export-and-commit.sh /mnt/c/Users/chris/Downloads/hey-symphony.onnx
+   ```
+8. From PowerShell:
+   ```powershell
+   git add assets/wake-models/
+   git commit -m "feat(voice): hey-symphony.onnx — trained model"
+   git push
+   ```
+
+## Path B — Local WSL GPU
+
+Prereqs: WSL2 + Ubuntu, GPU visible inside WSL (`wsl -d Ubuntu --exec /usr/lib/wsl/lib/nvidia-smi` shows your card; if it fails with `NVML init`, run `wsl --shutdown` from PowerShell — that restarts only the WSL VM, NOT Windows). ~15 GB free disk on the WSL side.
 
 ```bash
-# Open a WSL Ubuntu shell from PowerShell:
 wsl -d Ubuntu
-
-# Inside WSL:
 cd /mnt/c/Users/chris/projects/symphony/scripts/train-wake-word
 
-# 1. Install deps (~5 min, idempotent). Creates ~/.symphony-train/venv/
+# 1. Environment: 3.11 venv + git clones + deps + embedding backbone (~10 min)
 bash setup-wsl.sh
 
-# 2. Generate ~8k synthetic positives via piper-sample-generator (~80 s on RTX 4060).
-#    Output: ~/.symphony-train/positives/*.wav
-bash -c "source ~/.symphony-train/venv/bin/activate && python generate-positives.py"
+# 2. Datasets: MIT RIRs + AudioSet slice + ~2 GB negative features (~10 min)
+bash download-data.sh
 
-# 3. Augment 3x via audiomentations (RIR + noise + pitch + codec) (~3-5 min).
-#    Output: ~/.symphony-train/positives-aug/*.wav (~27k clips)
-bash -c "source ~/.symphony-train/venv/bin/activate && python augment-positives.py"
+# 3. Train: generate → augment → train. ~1-2 hrs on RTX 4060.
+bash train.sh
 
-# 4. Download HuggingFace pre-embedded negatives (~5 GB, ~3-5 min on broadband).
-#    Output: ~/.symphony-train/negatives/*.npy
-bash download-negatives.sh
-
-# 5. Train the model (~1-2 hrs on RTX 4060 8 GB).
-#    Output: ~/.symphony-train/output/hey-symphony.onnx + .onnx.data
-bash -c "source ~/.symphony-train/venv/bin/activate && python train.py"
-
-# 6. Validate + export to the repo (~5 s).
-#    Output: <repo>/assets/wake-models/hey-symphony.onnx + .onnx.data + CHECKSUMS.txt
+# 4. Export into the repo.
 bash export-and-commit.sh
-
-# 7. From Windows side (NOT WSL): commit the new artifacts
-exit  # leave WSL
+exit
 ```
 
 ```powershell
-# Back in PowerShell at the repo root:
+# From PowerShell:
 git add assets/wake-models/
-git commit -m "feat(voice): hey-symphony.onnx — Apache-2.0-clean wake-word model"
+git commit -m "feat(voice): hey-symphony.onnx — trained model"
 git push
 ```
 
-## What gets installed (WSL Ubuntu side, none on Windows)
+---
 
-Inside `~/.symphony-train/venv/`:
-- `piper-sample-generator` — Rhasspy's TTS sample generator, 904 LibriTTS-R speakers
-- `audiomentations` — augmentation pipeline (RIR, noise, pitch, codec artifacts)
-- `openwakeword[training]` — training extras (PyTorch CUDA, scikit-learn, librosa, mutagen)
-- `huggingface_hub` — for downloading pre-embedded negatives
+## After committing the model
 
-The `~/.symphony-train/` directory is **isolated from `~/.symphony/`** (Symphony's runtime data dir, shared with Windows side). Training artifacts NEVER touch the Windows-side Symphony install.
+The model lands at `assets/wake-models/hey-symphony.onnx`. Verify the full pipeline:
 
-Total WSL disk footprint at peak: ~15 GB (venv ~3 GB + positives ~2 GB + negatives ~5 GB + checkpoints ~2 GB + scratch ~3 GB). All under `~/.symphony-train/`, cleanly removable.
+```powershell
+pnpm build                                       # tsup copies it into dist/assets/wake-models/
+node dist/index.js voice diagnose --wake-word --json   # PASS if ≥1 wake_word fires on the fixture
+node dist/index.js voice listen --threshold 0.6        # live mic — say "Hey Symphony" 5x
+```
+
+The Phase 6C integration + scenario tests (`tests/integration/6c-wake-word`, `tests/scenarios/6c`) skip-gracefully until the model exists, then activate automatically.
+
+---
 
 ## Cleanup after success
 
 ```bash
-# Inside WSL — keeps the venv for future retrains, removes raw data:
-rm -rf ~/.symphony-train/positives ~/.symphony-train/positives-aug ~/.symphony-train/negatives
-# Total recovered: ~12 GB
+# WSL side — keep the venv for future retrains, drop the bulky data:
+rm -rf ~/.symphony-train/work/audioset* ~/.symphony-train/work/mit_rirs \
+       ~/.symphony-train/work/*.npy ~/.symphony-train/work/hey-symphony-out/clips
+# Full purge before a clean retrain:
+# rm -rf ~/.symphony-train
 ```
 
-To fully purge the training env (e.g. before a clean retrain):
-```bash
-rm -rf ~/.symphony-train
-```
-
-## Licensing
-
-The trained `hey-symphony.onnx` is **Apache-2.0-equivalent**. The openWakeWord pre-trained models (`hey_jarvis`, `alexa`, etc.) ship under CC BY-NC-SA 4.0, but **only those pretrained-by-upstream weights** carry that license. When you train from scratch using:
-
-- Apache-2.0 openWakeWord backbone (the embedding model + classifier architecture)
-- Symphony-generated synthetic TTS data (piper voices are also permissively licensed)
-- Pre-embedded HuggingFace negative features (Apache-2.0 dataset)
-
-…the resulting model is **yours**, with no CC BY-NC-SA encumbrance. The repo's `assets/wake-models/LICENSE.md` documents this.
+---
 
 ## Failure modes
 
 | Symptom | Fix |
 |---|---|
-| `nvidia-smi` fails inside WSL | `wsl --shutdown` then retry. If persists: update NVIDIA driver on Windows side (≥530.x for WSL GPU). |
-| `pip install openwakeword[training]` fails on torch | Manual: `pip install torch --index-url https://download.pytorch.org/whl/cu121` first. |
-| Piper sample-generator fails on a voice | The `--voice <name>` flag is fragile — fall back to `en_US-lessac-medium` only. |
-| Training OOMs at batch 25 | Edit `train.py` → `BATCH_SIZE = 10` (4060 8 GB should handle 25; reduce if you see OOM). |
-| ONNX export errors at "tflite step" | The TFLite-export step in upstream training notebooks fails harmlessly after ONNX is saved. Check `~/.symphony-train/output/hey-symphony.onnx` exists; if so, ignore the TFLite error. |
-| `lgpearson1771/openwakeword-trainer` git pull fails | Falls back to upstream `dscripka/openWakeWord` notebooks (see `train.py` comments). |
+| `nvidia-smi` fails inside WSL | `wsl --shutdown` from PowerShell, retry. NOT a full Windows reboot. |
+| `tensorflow` / `onnx_tf` install fails on WSL | Expected on 3.12 — that's why `setup-wsl.sh` uses 3.11 + skips those deps. The `.onnx` is written before the TFLite step. |
+| `train.sh` reports exit ≠ 0 but `.onnx` exists | The optional `.tflite` export failed (no tensorflow). The `.onnx` is valid; proceed. `train.sh` already detects + tolerates this. |
+| Piper generation fails / hangs | Confirm `piper-sample-generator/models/en_US-libritts_r-medium.pt` downloaded (~60 MB). Re-run `setup-wsl.sh` (idempotent). |
+| HF download stalls | Set `HF_HUB_ENABLE_HF_TRANSFER=1` for faster pulls, or retry — `download-data.sh` skips already-downloaded files. |
 
-## Retraining with real recordings (deferred — 6C.5 follow-up)
+## Retraining with real recordings (FRR improvement — deferred)
 
-If the synthetic-only model's FRR is too high in real-world use:
+If the synthetic-only model misses your voice too often:
 
-1. Record 50–100 varied "Hey Symphony" samples on your hardware (`arecord -f S16_LE -r 16000 -c 1 ~/.symphony-train/positives-real/sample_001.wav` from WSL; or any mic recording app, then convert to 16 kHz mono PCM WAV).
-2. Vary: volume (whisper/normal/loud), speed (slow/normal/fast), position (close mic / far / side), mood (calm/excited/tired). Same word every time is fine — varied prosody is what matters.
-3. Re-run from step 3 (augment-positives.py — it auto-picks up `positives-real/` if present and weights them 3× in training loss).
-4. Commit the new `.onnx`. Worktree-clean; non-destructive.
+1. Record 50–100 varied "Hey Symphony" clips (16 kHz mono WAV). Vary volume/speed/position/mood — same word is fine, varied prosody is what matters.
+2. Colab notebook: drop them into the positive clips dir + bump their loss weight (the notebook documents a `positive` weight knob). Local: place under `~/.symphony-train/work/hey-symphony-out/positive_features/` per the openWakeWord docs.
+3. Retrain + re-export. Non-destructive — same commands, better model.

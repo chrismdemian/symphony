@@ -13,14 +13,23 @@
 set -euo pipefail
 
 TRAIN_DIR="${HOME}/.symphony-train"
-OUTPUT_DIR="${TRAIN_DIR}/output"
+OUTPUT_DIR="${TRAIN_DIR}/work/hey-symphony-out"
 REPO_ASSETS="/mnt/c/Users/chris/projects/symphony/assets/wake-models"
 
 ONNX_SRC="${OUTPUT_DIR}/hey-symphony.onnx"
 ONNX_DATA_SRC="${OUTPUT_DIR}/hey-symphony.onnx.data"
 
+# Allow overriding the source .onnx (e.g. a Colab-trained model downloaded
+# to ~/Downloads). Usage: bash export-and-commit.sh /path/to/hey-symphony.onnx
+if [[ -n "${1:-}" ]]; then
+  ONNX_SRC="$1"
+  ONNX_DATA_SRC="${1}.data"
+fi
+
 if [[ ! -f "${ONNX_SRC}" ]]; then
-  echo "[export] ERROR: ${ONNX_SRC} missing. Run train.py first." >&2
+  echo "[export] ERROR: ${ONNX_SRC} missing." >&2
+  echo "[export]   Local path: run train.sh first." >&2
+  echo "[export]   Colab path: bash export-and-commit.sh /path/to/downloaded/hey-symphony.onnx" >&2
   exit 1
 fi
 
@@ -40,8 +49,9 @@ fi
 } > "${REPO_ASSETS}/CHECKSUMS.txt"
 
 # Snapshot the training config alongside the model for audit trail.
-if [[ -f "${OUTPUT_DIR}/training_config.json" ]]; then
-  cp "${OUTPUT_DIR}/training_config.json" "${REPO_ASSETS}/training-config.json"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "${SCRIPT_DIR}/training_config.yml" ]]; then
+  cp "${SCRIPT_DIR}/training_config.yml" "${REPO_ASSETS}/training-config.yml"
 fi
 
 size=$(stat -c '%s' "${REPO_ASSETS}/hey-symphony.onnx")

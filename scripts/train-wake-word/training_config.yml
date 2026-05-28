@@ -1,0 +1,67 @@
+# Symphony "Hey Symphony" wake-word training config.
+#
+# Consumed by openWakeWord's integrated trainer:
+#   python -m openwakeword.train --training_config training_config.yml \
+#     --generate_clips --augment_clips --train_model
+#
+# Derived from openWakeWord's example custom_model.yml (dscripka/openWakeWord
+# examples/custom_model.yml) with Symphony's phrase + naming. Paths are
+# RELATIVE to the training working directory (~/.symphony-train/work by the
+# runbook). Adjust n_samples up (toward 50k-100k) for a production-grade
+# model once the 10k pilot validates end-to-end.
+
+model_name: "hey-symphony"
+
+target_phrase:
+  - "hey symphony"
+
+# Phrases to explicitly NOT activate on (phoneme-overlap false positives).
+# Seed empty; add observed false-positive phrases after real-mic testing.
+custom_negative_phrases: []
+
+# Pilot run: 10k positives. Bump to 50k+ for production accuracy.
+n_samples: 10000
+n_samples_val: 2000
+
+tts_batch_size: 50
+augmentation_batch_size: 16
+augmentation_rounds: 1
+
+# Cloned piper-sample-generator (dscripka or rhasspy fork). setup-wsl.sh
+# clones rhasspy/piper-sample-generator into this relative path.
+piper_sample_generator_path: "./piper-sample-generator"
+
+output_dir: "./hey-symphony-out"
+
+# MIT environmental impulse responses (downloaded by setup-wsl.sh).
+rir_paths:
+  - "./mit_rirs"
+
+# Background noise/music mixed into positives during augmentation.
+background_paths:
+  - "./audioset_16k"
+  - "./fma"
+background_paths_duplication_rate:
+  - 1
+  - 1
+
+# Pre-computed false-positive validation features (~11 hrs).
+false_positive_validation_data_path: "./validation_set_features.npy"
+
+# Pre-computed negative training features (~2000 hrs ACAV100M).
+feature_data_files:
+  "ACAV100M_sample": "./openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
+
+batch_n_per_class:
+  "ACAV100M_sample": 1024
+  "adversarial_negative": 50
+  "positive": 50
+
+# FCN classifier head. 32 is the upstream default; works well for most phrases.
+model_type: "dnn"
+layer_size: 32
+
+# Training control.
+steps: 50000
+max_negative_weight: 1500
+target_false_positives_per_hour: 0.2

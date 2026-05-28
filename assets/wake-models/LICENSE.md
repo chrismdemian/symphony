@@ -14,6 +14,10 @@ This file is a model trained from scratch using:
 
 Apache-2.0 means: commercial use OK, modification OK, redistribution OK, sublicensing OK. Requires preserving the LICENSE notice and contributor attribution. See the [Apache 2.0 text](https://www.apache.org/licenses/LICENSE-2.0).
 
+## Runtime backbone (not redistributed by Symphony)
+
+At runtime, the `openwakeword` Python package downloads its shared feature backbone — `embedding_model.onnx` + `melspectrogram.onnx` — from the upstream openWakeWord GitHub releases into the local cache on first use. Those two files are **Apache-2.0** per the upstream repo. Symphony does **not** redistribute them — they are fetched on demand by `openwakeword.Model(...)`. So the only model artifact Symphony ships is the self-trained `hey-symphony.onnx` documented above.
+
 ## Reproducibility
 
 To retrain from the same recipe:
