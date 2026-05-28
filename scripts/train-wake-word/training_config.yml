@@ -37,12 +37,12 @@ output_dir: "./hey-symphony-out"
 rir_paths:
   - "./mit_rirs"
 
-# Background noise/music mixed into positives during augmentation.
+# Background noise mixed into positives during augmentation. ESC-50
+# (2000 environmental-sound clips) — the notebook's AudioSet source is now
+# HTTP 404; download-data.sh fetches ESC-50 into ./background instead.
 background_paths:
-  - "./audioset_16k"
-  - "./fma"
+  - "./background"
 background_paths_duplication_rate:
-  - 1
   - 1
 
 # Pre-computed false-positive validation features (~11 hrs).

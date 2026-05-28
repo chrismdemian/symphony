@@ -50,60 +50,72 @@ print("[data] MIT RIRs done.")
 PY
 fi
 
-# --- AudioSet background slice (one balanced-train tar) --------------------
-if [[ ! -d audioset_16k || -z "$(ls -A audioset_16k 2>/dev/null)" ]]; then
-  echo "[data] Downloading AudioSet slice (bal_train09.tar)..."
-  mkdir -p audioset
-  wget -q -O audioset/bal_train09.tar \
-    "https://huggingface.co/datasets/agkphysics/AudioSet/resolve/main/data/bal_train09.tar"
-  (cd audioset && tar -xf bal_train09.tar)
-  python - <<'PY'
-import os
-from pathlib import Path
+# --- Background noise: ESC-50 (NON-FATAL) ---------------------------------
+# The notebook's AudioSet source (agkphysics/AudioSet bal_train09.tar) is
+# now HTTP 404. ESC-50 (2000 environmental-sound clips, ~600 MB, stable
+# GitHub release) is the replacement. The WHOLE block is best-effort: a
+# failure here must NOT block the critical feature download below, so we
+# drop `set -e` around it. The trainer's mix_clips_batch needs a non-empty
+# background list — without it, augmentation can't run — so we warn loudly
+# if this fails, but features (the negative TRAINING data) are downloaded
+# regardless and a model can still be produced (less noise-robust).
+if [[ ! -d background || -z "$(ls -A background 2>/dev/null)" ]]; then
+  echo "[data] Downloading ESC-50 background noise (~600 MB)..."
+  set +e
+  if wget -q -O esc50.zip \
+      "https://github.com/karolpiczak/ESC-50/archive/refs/heads/master.zip"; then
+    python - <<'PY'
+import os, glob, zipfile
 import numpy as np
 import scipy.io.wavfile
 import datasets
 from tqdm import tqdm
 
-out = "./audioset_16k"
+with zipfile.ZipFile("esc50.zip") as z:
+    z.extractall(".")
+out = "./background"
 os.makedirs(out, exist_ok=True)
-files = [str(p) for p in Path("audioset/audio").glob("**/*.flac")]
+files = glob.glob("ESC-50-master/audio/*.wav")
+# Reuse the SAME datasets Audio resampling path that worked for MIT RIRs.
 ds = datasets.Dataset.from_dict({"audio": files}).cast_column(
     "audio", datasets.Audio(sampling_rate=16000),
 )
 for row in tqdm(ds):
-    name = row["audio"]["path"].split("/")[-1].replace(".flac", ".wav")
+    name = os.path.basename(row["audio"]["path"])
     scipy.io.wavfile.write(
         os.path.join(out, name), 16000,
         (row["audio"]["array"] * 32767).astype(np.int16),
     )
-print("[data] AudioSet slice done.")
+print(f"[data] ESC-50 background: {len(files)} clips resampled to 16kHz.")
 PY
+    bg_rc=$?
+  else
+    echo "[data] WARNING: ESC-50 download failed (network?). Continuing WITHOUT background."
+    bg_rc=1
+  fi
+  set -e
+  if [[ "${bg_rc:-1}" -ne 0 ]]; then
+    echo "[data] WARNING: background prep failed; the model will train without"
+    echo "[data]          noise augmentation (less robust). Features still download."
+  fi
 fi
 
-# --- FMA music (optional second background source) -------------------------
-# The notebook also pulls FMA-small. It's ~7 GB; for a pilot the AudioSet
-# slice alone is enough background variety. Uncomment to add FMA.
-# (Left out by default to keep the download manageable. The training config
-#  lists ./fma but the trainer tolerates a missing/empty background dir.)
-if [[ ! -d fma ]]; then
-  mkdir -p fma
-  echo "[data] (skipping FMA-small — ~7GB; AudioSet slice is enough for a pilot.)"
-fi
-
-# --- pre-computed openWakeWord features ------------------------------------
-if [[ ! -f openwakeword_features_ACAV100M_2000_hrs_16bit.npy ]]; then
+# --- pre-computed openWakeWord features (CRITICAL — always runs) ----------
+# These are the negative TRAINING data + FP-validation set. Verified
+# reachable (HTTP 200). Use --continue so a partial file from an
+# interrupted run resumes instead of being skipped as "present".
+if [[ ! -s openwakeword_features_ACAV100M_2000_hrs_16bit.npy ]]; then
   echo "[data] Downloading ACAV100M negative features (~2 GB)..."
-  wget -q --show-progress \
+  wget -q --show-progress -c \
     "https://huggingface.co/datasets/davidscripka/openwakeword_features/resolve/main/openwakeword_features_ACAV100M_2000_hrs_16bit.npy"
 fi
-if [[ ! -f validation_set_features.npy ]]; then
+if [[ ! -s validation_set_features.npy ]]; then
   echo "[data] Downloading validation features (~0.3 GB)..."
-  wget -q --show-progress \
+  wget -q --show-progress -c \
     "https://huggingface.co/datasets/davidscripka/openwakeword_features/resolve/main/validation_set_features.npy"
 fi
 
 echo ""
 echo "[data] ✓ Datasets ready in ${WORK_DIR}:"
-du -sh mit_rirs audioset_16k *.npy 2>/dev/null | sed 's/^/[data]   /'
+du -sh mit_rirs background *.npy 2>/dev/null | sed 's/^/[data]   /'
 echo "[data] Next: bash train.sh"
