@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
+// Type-only import — erased at compile, zero startup cost. The runtime
+// `VoiceBridge` is still dynamic-imported inside the `voice listen` action
+// to keep the CLI's cold-start fast.
+import type { VoiceBridge } from './voice/bridge.js';
 
 const program = new Command();
 
@@ -285,14 +289,35 @@ voice
         opts.maxEvents !== undefined && !Number.isNaN(opts.maxEvents)
           ? opts.maxEvents
           : undefined;
-      // SIGINT (Ctrl-C) abort signal — gives the bridge a chance to stop
-      // cleanly + release the mic before the process exits. Without
-      // this, Ctrl-C would race with the running bridge and leak the
-      // Python subprocess + audio device handle.
+      // SIGINT (Ctrl-C) handling (audit-M3, mirrors the 3T two-tap pattern).
+      // First Ctrl-C: abort the signal → runVoiceListen calls bridge.stop()
+      // for a graceful mic release. Second Ctrl-C (impatient user during
+      // the 2 s grace): force-kill the bridge's Python subprocess
+      // synchronously, then exit 130. Without the second-tap force path,
+      // a double Ctrl-C on Win32 (where SIGINT isn't delivered to the
+      // child) orphans python.exe with the mic still open — a CLAUDE.md
+      // cleanup violation.
       const abortController = new AbortController();
-      const onSigint = (): void => abortController.abort();
-      process.once('SIGINT', onSigint);
+      let sigintCount = 0;
+      let listenBridge: VoiceBridge | undefined;
+      const onSigint = (): void => {
+        sigintCount += 1;
+        if (sigintCount === 1) {
+          abortController.abort();
+        } else {
+          // Second press — don't wait for graceful stop. Force-kill the
+          // child tree (Win32 taskkill / POSIX SIGKILL via forceStop) then
+          // bail with the conventional 128+SIGINT(2) = 130 code.
+          if (listenBridge !== undefined) {
+            void listenBridge.stop({ graceMs: 0 }).catch(() => undefined);
+          }
+          process.exit(130);
+        }
+      };
+      process.on('SIGINT', onSigint);
       try {
+        const { VoiceBridge } = await import('./voice/bridge.js');
+        listenBridge = new VoiceBridge();
         const result = await runVoiceListen({
           ...(opts.json === true ? { format: 'json' as const } : {}),
           ...(threshold !== undefined ? { threshold } : {}),
@@ -300,6 +325,7 @@ voice
           ...(sustainFrames !== undefined ? { sustainFrames } : {}),
           ...(maxEvents !== undefined ? { maxEvents } : {}),
           ...(opts.model !== undefined ? { modelName: opts.model } : {}),
+          bridgeFactory: () => listenBridge!,
           signal: abortController.signal,
         });
         process.exit(result.exitCode);

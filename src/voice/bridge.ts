@@ -733,7 +733,10 @@ function isVoiceBridgeEvent(value: unknown): value is VoiceBridgeEvent {
         typeof v.durationMs === 'number'
       );
     case 'warning':
-      return v.code === 'utterance-truncated' && typeof v.tMs === 'number';
+      return (
+        (v.code === 'utterance-truncated' || v.code === 'wake-word-disabled') &&
+        typeof v.tMs === 'number'
+      );
     case 'wake_word':
       // Phase 6C — wake_word event shape: model + score + tMs all required.
       // Defense-in-depth: model is a non-empty string, score is a finite

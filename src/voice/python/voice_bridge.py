@@ -713,6 +713,8 @@ class Bridge:
                     self.shutdown_event.set()
                     return
                 elif cmd == "set_threshold":
+                    # VAD threshold (Silero). Distinct from the wake-word
+                    # threshold (audit-M2) — the two are separate knobs.
                     value = msg.get("value")
                     if isinstance(value, (int, float)) and self.segmenter is not None:
                         self.segmenter.set_threshold(float(value))
@@ -721,6 +723,25 @@ class Bridge:
                             "invalid-set-threshold",
                             f"value must be a number, got {value!r}",
                         )
+                elif cmd == "set_wake_threshold":
+                    # Phase 6C (audit-M2) — wake-word threshold. Silently a
+                    # no-op when wake-word isn't enabled, but we surface a
+                    # warning so a 6E settings popup knows the knob landed
+                    # nowhere rather than mysteriously not working.
+                    value = msg.get("value")
+                    if not isinstance(value, (int, float)):
+                        emit_error(
+                            "invalid-set-wake-threshold",
+                            f"value must be a number, got {value!r}",
+                        )
+                    elif self.wake_detector is None:
+                        emit({
+                            "type": "warning",
+                            "code": "wake-word-disabled",
+                            "tMs": self.segmenter.t_ms if self.segmenter else 0,
+                        })
+                    else:
+                        self.wake_detector.set_threshold(float(value))
                 else:
                     emit_error("unknown-command", f"unknown cmd '{cmd}'")
         except Exception as e:  # pragma: no cover - rare stdin failure
@@ -766,7 +787,13 @@ class Bridge:
                 # budget.
                 if self.wake_detector is not None:
                     try:
-                        fire = self.wake_detector.push(frame)
+                        # Audit-M1: pass the segmenter's clock so wake_word
+                        # tMs lives on the SAME timeline as speech_start /
+                        # speech_end (both "ms since ready"). segmenter.push
+                        # above already advanced this for the current frame.
+                        fire = self.wake_detector.push(
+                            frame, t_ms=self.segmenter.t_ms,
+                        )
                     except Exception as e:  # noqa: BLE001
                         emit_error(
                             "wake-word-predict-failed",

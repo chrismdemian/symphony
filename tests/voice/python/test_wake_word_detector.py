@@ -336,6 +336,103 @@ def test_score_in_fire_matches_predict_score(default_config):
     assert fire.score == pytest.approx(0.73)
 
 
+def test_audit_c1_consecutive_hits_zeroed_during_cooldown(default_config):
+    """Audit-C1: consecutive_hits must be 0 while in cooldown."""
+    cfg = WakeWordConfig(
+        sample_rate=16000,
+        frame_samples=512,
+        window_samples=1280,
+        threshold=0.5,
+        sustain_frames=3,
+        cooldown_ms=2000,
+        model_name="hey-symphony",
+    )
+    detector = WakeWordDetector(cfg, model_path="<test>", predict_fn=constant_predict(0.9))
+    # Fire once
+    for _ in range(15):
+        if detector.push(silero_frame()) is not None:
+            break
+    assert detector.in_cooldown
+    # Keep pushing high-score frames during cooldown
+    for _ in range(10):
+        detector.push(silero_frame())
+    # consecutive_hits must stay 0 throughout cooldown (the reset gate)
+    assert detector.consecutive_hits == 0
+
+
+def test_audit_m1_external_clock_stamps_fire_t_ms(default_config):
+    """Audit-M1: when the bridge passes t_ms, the fire uses THAT clock,
+    not the detector's internal frame counter."""
+    detector = WakeWordDetector(
+        default_config, model_path="<test>", predict_fn=constant_predict(0.9),
+    )
+    # Feed frames with an EXTERNAL clock that jumps in 32ms increments
+    # but starts at a non-zero offset (simulating mid-session enable).
+    fire = None
+    external_t = 10_000  # bridge has been running 10s
+    for _ in range(15):
+        external_t += 32
+        result = detector.push(silero_frame(), t_ms=external_t)
+        if result is not None:
+            fire = result
+            break
+    assert fire is not None
+    # The fire timestamp reflects the EXTERNAL clock (>= 10000), not the
+    # detector's internal counter (which would be ~few hundred ms).
+    assert fire.t_ms >= 10_000
+    assert detector.t_ms >= 10_000
+
+
+def test_audit_m1_internal_clock_fallback_when_no_t_ms(default_config):
+    """Audit-M1: standalone/test path without t_ms still advances internally."""
+    detector = WakeWordDetector(
+        default_config, model_path="<test>", predict_fn=constant_predict(0.1),
+    )
+    for i in range(5):
+        detector.push(silero_frame())  # no t_ms
+    assert detector.t_ms == 5 * 32  # frame_ms = 32 at 512 samples / 16kHz
+
+
+def test_audit_m2_set_threshold_changes_fire_behavior(default_config):
+    """Audit-M2: set_threshold mutates the live threshold at runtime."""
+    detector = WakeWordDetector(
+        default_config, model_path="<test>", predict_fn=constant_predict(0.6),
+    )
+    # Default threshold 0.5; score 0.6 → fires after sustain.
+    assert detector.threshold == 0.5
+    # Raise threshold above the score → should stop firing.
+    detector.set_threshold(0.8)
+    assert detector.threshold == 0.8
+    fire = None
+    for _ in range(20):
+        result = detector.push(silero_frame())
+        if result is not None:
+            fire = result
+            break
+    assert fire is None  # 0.6 < 0.8 threshold → never fires
+
+
+def test_audit_m2_set_threshold_clamps_to_unit_range(default_config):
+    """Audit-M2: set_threshold clamps out-of-range values to [0, 1]."""
+    detector = WakeWordDetector(
+        default_config, model_path="<test>", predict_fn=constant_predict(0.5),
+    )
+    detector.set_threshold(1.5)
+    assert detector.threshold == 1.0
+    detector.set_threshold(-0.3)
+    assert detector.threshold == 0.0
+
+
+def test_audit_m2_reset_preserves_live_threshold(default_config):
+    """Audit-M2: reset() preserves a runtime threshold change."""
+    detector = WakeWordDetector(
+        default_config, model_path="<test>", predict_fn=constant_predict(0.5),
+    )
+    detector.set_threshold(0.75)
+    detector.reset()
+    assert detector.threshold == 0.75
+
+
 def test_multi_model_predict_picks_highest_score(default_config):
     """When predict_fn returns multiple keys, the highest score wins."""
     predict_fn = scripted_predict([

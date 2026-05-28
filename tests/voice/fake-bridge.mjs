@@ -219,6 +219,17 @@ switch (scenario) {
       10,
     );
     break;
+  case 'wake-disabled-warning':
+    // Phase 6C (audit-M2) — emit ready, then a `warning` with the new
+    // `wake-word-disabled` code (the Python bridge sends this when a
+    // set_wake_threshold command arrives while wake-word is off). The
+    // validator must ACCEPT this code (not downgrade to malformed-event).
+    ready();
+    setTimeout(
+      () => emit({ type: 'warning', code: 'wake-word-disabled', tMs: 4242 }),
+      10,
+    );
+    break;
   default:
     process.stderr.write('unknown scenario: ' + scenario + '\n');
     process.exit(3);

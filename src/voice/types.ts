@@ -66,7 +66,13 @@ export type VoiceBridgeEvent =
     }
   | {
       readonly type: 'warning';
-      readonly code: 'utterance-truncated';
+      readonly code:
+        | 'utterance-truncated'
+        // Phase 6C — `set_wake_threshold` received while wake-word is
+        // disabled. Informational: the knob landed nowhere. Lets a 6E
+        // settings popup distinguish "applied" from "ignored" instead of
+        // silently doing nothing.
+        | 'wake-word-disabled';
       readonly tMs: number;
     }
   | {
@@ -97,7 +103,15 @@ export type VoiceAudioBackend = 'sounddevice' | 'pyaudio' | 'stdin-pcm';
  */
 export type VoiceBridgeCommand =
   | { readonly cmd: 'shutdown' }
-  | { readonly cmd: 'set_threshold'; readonly value: number };
+  /** VAD (Silero) speech-probability threshold. Distinct from the wake-word threshold. */
+  | { readonly cmd: 'set_threshold'; readonly value: number }
+  /**
+   * Phase 6C — wake-word detector score threshold (audit-M2). Separate
+   * knob from the VAD `set_threshold`. When wake-word is disabled, the
+   * bridge emits a `warning` event with code `wake-word-disabled` rather
+   * than silently dropping the command.
+   */
+  | { readonly cmd: 'set_wake_threshold'; readonly value: number };
 
 /**
  * Result of `runVoiceInstall`. Mirrors the `RunSkillsResult` shape from

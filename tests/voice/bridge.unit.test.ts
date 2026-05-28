@@ -306,6 +306,32 @@ describe('VoiceBridge — wake-word events (Phase 6C)', () => {
     await bridge.stop();
   });
 
+  it('accepts the wake-word-disabled warning code (audit-M2)', async () => {
+    // The Python bridge emits {type:"warning", code:"wake-word-disabled"}
+    // when set_wake_threshold arrives while wake-word is off. The
+    // validator must accept it as a typed `warning`, NOT downgrade it to
+    // a malformed-event error.
+    const warnings: Array<{ code: string }> = [];
+    const errors: Array<{ code: string }> = [];
+    const bridge = new VoiceBridge();
+    bridge.on('warning', (e) => warnings.push({ code: e.code }));
+    bridge.on('error', (e) => errors.push({ code: e.code }));
+    const pkg = makeFakePackage('wake-disabled-warning');
+    await bridge.start({
+      inputMode: 'stdin-pcm',
+      pythonPath: process.execPath,
+      pythonPackageDir: pkg.dir,
+      scriptPath: pkg.scriptPath,
+      venvDir: '/tmp',
+      sourceEnv: { ...process.env },
+      onStderr: () => {},
+    });
+    await bridge.waitForEvent('warning', 1_000);
+    expect(warnings.some((w) => w.code === 'wake-word-disabled')).toBe(true);
+    expect(errors.some((e) => e.code === 'malformed-event')).toBe(false);
+    await bridge.stop();
+  });
+
   it('passes through --wakeword-* argv when wakeWordEnabled', async () => {
     // We can't intercept the spawn's argv directly, but we can verify the
     // bridge correctly maps options to flags by checking the fake bridge's

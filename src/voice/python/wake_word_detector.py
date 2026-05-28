@@ -73,6 +73,11 @@ class _State:
     consecutive_hits: int = 0
     cooldown_until_t_ms: int = 0
     last_score_above_threshold: float = 0.0
+    # Live threshold — initialized from WakeWordConfig.threshold but
+    # runtime-adjustable via WakeWordDetector.set_threshold (audit-M2). The
+    # config stays frozen for the immutable knobs (window size, sustain,
+    # cooldown); only the threshold needs runtime tuning (6E settings popup).
+    live_threshold: float = 0.5
 
 
 class WakeWordDetector:
@@ -110,7 +115,7 @@ class WakeWordDetector:
         """
         self._config = config
         self._model_path = model_path
-        self._state = _State()
+        self._state = _State(live_threshold=config.threshold)
         self._frame_ms = config.frame_samples * 1000 // config.sample_rate
         self._predict_fn = predict_fn
 
@@ -154,12 +159,40 @@ class WakeWordDetector:
     def config(self) -> WakeWordConfig:
         return self._config
 
-    def reset(self) -> None:
-        """Clear internal state — used by the bridge on error recovery."""
-        self._state = _State()
+    def set_threshold(self, value: float) -> None:
+        """Update the live score threshold at runtime (audit-M2).
 
-    def push(self, frame_bytes: bytes) -> Optional[WakeWordFire]:
+        Clamps to [0, 1]. Called by the bridge in response to a
+        ``{"cmd":"set_wake_threshold","value":...}`` stdin command (6E's
+        settings popup). Does NOT reset sustain/cooldown state — a
+        threshold change mid-stream just affects subsequent windows.
+        """
+        self._state.live_threshold = max(0.0, min(1.0, float(value)))
+
+    @property
+    def threshold(self) -> float:
+        """The live threshold (initial config value unless set_threshold ran)."""
+        return self._state.live_threshold
+
+    def reset(self) -> None:
+        """Clear internal state — used by the bridge on error recovery.
+
+        Preserves the live threshold across reset (a runtime threshold
+        change shouldn't be undone by an error-recovery reset).
+        """
+        self._state = _State(live_threshold=self._state.live_threshold)
+
+    def push(self, frame_bytes: bytes, t_ms: Optional[int] = None) -> Optional[WakeWordFire]:
         """Feed one Silero frame (default 512 samples × int16 = 1024 bytes).
+
+        :param frame_bytes: one int16 LE mono PCM frame.
+        :param t_ms: the AUTHORITATIVE bridge clock (``segmenter.t_ms``),
+            in milliseconds since ``ready``. Audit-M1: the detector must
+            stamp ``wake_word.tMs`` on the SAME monotonic timeline as
+            ``speech_start`` / ``speech_end`` so 6E's TUI can correlate
+            them. When ``None`` (tests / standalone use) the detector
+            falls back to advancing its own ``frame_ms``-per-push counter
+            — fine for unit tests, never used by the bridge.
 
         Returns a `WakeWordFire` event iff the sustain + cooldown logic
         commits to a detection. Returns None otherwise.
@@ -172,9 +205,13 @@ class WakeWordDetector:
         """
         s = self._state
         cfg = self._config
-        # Advance monotonic time before any short-circuit so callers that
-        # rely on `t_ms` (e.g. tests) see consistent progress.
-        s.t_ms += self._frame_ms
+        # Advance the clock. When the bridge passes its segmenter clock,
+        # use it verbatim (single source of truth). Otherwise self-advance
+        # by frame_ms — the standalone/test fallback path.
+        if t_ms is not None:
+            s.t_ms = t_ms
+        else:
+            s.t_ms += self._frame_ms
 
         s.buffer.extend(frame_bytes)
         # Each sample is 2 bytes (int16 LE).
@@ -185,7 +222,9 @@ class WakeWordDetector:
             return None
 
         # We may have multiple windows accumulated (e.g. if upstream paused);
-        # process them all to keep the buffer bounded.
+        # process them all to keep the buffer bounded. All windows in one
+        # push share the same t_ms (the frame's clock) — consistent with the
+        # original behavior + acceptable since they're from one ~32 ms frame.
         fire: Optional[WakeWordFire] = None
         while len(s.buffer) >= bytes_per_window:
             window = bytes(s.buffer[:bytes_per_window])
@@ -195,14 +234,31 @@ class WakeWordDetector:
         return fire
 
     def _process_window(self, window_bytes: bytes) -> Optional[WakeWordFire]:
-        """Run prediction on one `window_samples`-sized slice + apply logic."""
+        """Run prediction on one `window_samples`-sized slice + apply logic.
+
+        Uses ``self._state.t_ms`` (set by ``push``) as the clock for the
+        cooldown gate + the emitted fire timestamp.
+        """
         s = self._state
         cfg = self._config
 
         # Cooldown: don't predict / don't fire during the silence window.
         # We still consume buffer so the detector resyncs cleanly when
         # cooldown ends.
+        #
+        # Audit-C1 (defensive): clear sustain state on every cooldown window.
+        # TODAY this is a no-op for correctness — the ONLY path that sets
+        # `cooldown_until_t_ms` is the fire path, which already resets
+        # `consecutive_hits = 0` first, so the counter is always 0 entering
+        # cooldown. The explicit reset here GUARANTEES the invariant
+        # "consecutive_hits == 0 throughout cooldown" regardless of how
+        # cooldown was entered, so a future code path that sets cooldown
+        # without resetting (e.g. an external `force_cooldown()` API) can't
+        # leak a stale streak into the first post-cooldown window. Cheap
+        # insurance against a class of future bug; costs nothing now.
         if s.t_ms < s.cooldown_until_t_ms:
+            s.consecutive_hits = 0
+            s.last_score_above_threshold = 0.0
             return None
 
         # int16 LE bytes -> numpy int16 array. openwakeword's `Model.predict`
@@ -220,7 +276,7 @@ class WakeWordDetector:
             return None
         best_name, best_score = max(scores.items(), key=lambda kv: kv[1])
 
-        if best_score >= cfg.threshold:
+        if best_score >= s.live_threshold:
             s.consecutive_hits += 1
             s.last_score_above_threshold = best_score
             if s.consecutive_hits >= cfg.sustain_frames:
