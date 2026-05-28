@@ -93,7 +93,10 @@ if [[ ! -f "${VENV_DIR}/bin/python" ]]; then
 fi
 # shellcheck disable=SC1091
 source "${VENV_DIR}/bin/activate"
-python -m pip install --upgrade --quiet pip wheel setuptools
+# Pin setuptools<81: 81 REMOVED pkg_resources, which `pronouncing` (an
+# openWakeWord training dep) imports at module load. Python 3.12 venvs
+# don't bundle setuptools, so pip would otherwise pull the latest.
+python -m pip install --upgrade --quiet pip wheel 'setuptools<81'
 
 # --- PyTorch (CUDA 12.1) --------------------------------------------------
 echo "[setup] Installing PyTorch (CUDA 12.1)..."
@@ -163,7 +166,9 @@ python -m pip install --quiet \
   'mutagen==1.47.0' 'torchinfo==1.8.0' 'torchmetrics==1.2.0' \
   'audiomentations==0.33.0' 'torch-audiomentations==0.11.0' 'acoustics==0.2.6' \
   'pronouncing==0.2.0' 'datasets==2.20.0' 'deep-phonemizer==0.0.19' \
-  scipy tqdm pyyaml
+  'scipy<1.15' tqdm pyyaml
+# scipy<1.15: acoustics 0.2.6 imports scipy.special.sph_harm, REMOVED in
+# scipy 1.15 (renamed sph_harm_y). 1.14.x has it + ships cp312 wheels.
 # datasets==2.20.0 is the goldilocks pick for Python 3.12:
 #   - the notebook's 2.14.6 references pa.PyExtensionType (removed in
 #     pyarrow 14; old pyarrow has no cp312 wheel + won't build from source)

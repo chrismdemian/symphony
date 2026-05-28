@@ -32,6 +32,13 @@ if [[ ! -f openwakeword_features_ACAV100M_2000_hrs_16bit.npy ]]; then
   exit 1
 fi
 
+# Always refresh the work-dir config from the source-of-truth in the repo,
+# so edits to training_config.yml (e.g. background_paths) propagate without
+# re-running setup-wsl.sh. setup copies it once; this keeps it current.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cp "${SCRIPT_DIR}/training_config.yml" "${WORK_DIR}/training_config.yml"
+echo "[train] Refreshed training_config.yml from ${SCRIPT_DIR}."
+
 echo "[train] Phase 1/3 — generate synthetic positives (Piper TTS)..."
 python -m openwakeword.train --training_config training_config.yml --generate_clips
 
