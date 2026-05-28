@@ -166,9 +166,13 @@ python -m pip install --quiet \
   'mutagen==1.47.0' 'torchinfo==1.8.0' 'torchmetrics==1.2.0' \
   'audiomentations==0.33.0' 'torch-audiomentations==0.11.0' 'acoustics==0.2.6' \
   'pronouncing==0.2.0' 'datasets==2.20.0' 'deep-phonemizer==0.0.19' \
-  'scipy<1.15' tqdm pyyaml
+  'scipy<1.15' onnx tqdm pyyaml
 # scipy<1.15: acoustics 0.2.6 imports scipy.special.sph_harm, REMOVED in
 # scipy 1.15 (renamed sph_harm_y). 1.14.x has it + ships cp312 wheels.
+# onnx: required by torch.onnx.export (the FINAL step — export_model). We
+# skip onnx_tf/tensorflow (TFLite export only), but `onnx` itself is
+# needed or training completes all 50k steps then crashes at export with
+# the in-memory model lost (no checkpoint is saved before export).
 # datasets==2.20.0 is the goldilocks pick for Python 3.12:
 #   - the notebook's 2.14.6 references pa.PyExtensionType (removed in
 #     pyarrow 14; old pyarrow has no cp312 wheel + won't build from source)
