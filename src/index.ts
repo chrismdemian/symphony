@@ -404,8 +404,18 @@ voice
     '--pcm <file>',
     'Fixture mode: pipe a 16kHz mono PCM file instead of opening the mic (no microphone required).',
   )
+  .option(
+    '--no-local-summarizer',
+    'Compact with the heuristic summarizer only — skip the local T5 ONNX model (Phase 6D.2).',
+  )
   .action(
-    async (opts: { json?: boolean; maxEvents?: number; maxSeconds?: number; pcm?: string }) => {
+    async (opts: {
+      json?: boolean;
+      maxEvents?: number;
+      maxSeconds?: number;
+      pcm?: string;
+      localSummarizer?: boolean;
+    }) => {
       const { runVoiceCapture } = await import('./cli/voice-capture.js');
       const maxEvents =
         opts.maxEvents !== undefined && !Number.isNaN(opts.maxEvents) ? opts.maxEvents : undefined;
@@ -430,6 +440,16 @@ voice
         }
       };
       process.on('SIGINT', onSigint);
+      // Phase 6D.2 — local T5 ONNX summarizer (default on; falls back to the
+      // heuristic transparently if the model isn't installed). `--no-local-
+      // summarizer` opts out. Owned here so its subprocess is shut down
+      // AFTER runVoiceCapture's final compaction has resolved. We close it
+      // BEFORE process.exit (which would skip the finally) — the finally
+      // close is a belt-and-suspenders no-op for the throw path (close is
+      // idempotent).
+      const { LocalSummarizer } = await import('./voice/summarizer.js');
+      const local =
+        opts.localSummarizer === false ? undefined : new LocalSummarizer();
       try {
         const { VoiceBridge } = await import('./voice/bridge.js');
         captureBridge = new VoiceBridge();
@@ -440,11 +460,14 @@ voice
           ...(opts.pcm !== undefined
             ? { inputMode: 'stdin-pcm' as const, fixturePath: opts.pcm }
             : {}),
+          ...(local !== undefined ? { summarizer: local.toSummarizer() } : {}),
           bridgeFactory: () => captureBridge!,
           signal: abortController.signal,
         });
+        await local?.close().catch(() => undefined);
         process.exit(result.exitCode);
       } finally {
+        await local?.close().catch(() => undefined);
         process.off('SIGINT', onSigint);
       }
     },
