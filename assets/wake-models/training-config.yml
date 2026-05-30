@@ -19,13 +19,18 @@ target_phrase:
 # Seed empty; add observed false-positive phrases after real-mic testing.
 custom_negative_phrases: []
 
-# Pilot run: 10k positives. Bump to 50k+ for production accuracy.
-n_samples: 10000
-n_samples_val: 2000
+# 40k positives — 4x the original pilot. Production-tier accuracy needs
+# 50k+, but the recall jump from 10k→40k is the steepest part of the curve.
+n_samples: 40000
+n_samples_val: 4000
 
 tts_batch_size: 50
 augmentation_batch_size: 16
-augmentation_rounds: 1
+# 2 rounds doubles the augmented training set per generated clip; each
+# round applies independent random augmentations (volume, RIR, noise, codec)
+# so the second round produces DIFFERENT augmented variants — including
+# quieter versions that help the model fire on low-tone utterances.
+augmentation_rounds: 2
 
 # Cloned piper-sample-generator (dscripka or rhasspy fork). setup-wsl.sh
 # clones rhasspy/piper-sample-generator into this relative path.
@@ -61,7 +66,11 @@ batch_n_per_class:
 model_type: "dnn"
 layer_size: 32
 
-# Training control.
+# Training control. Tuned for RECALL over strict FAR — the pilot achieved
+# recall 0.49 (misses ~half) at FAR 1.95/hr. Letting FAR drift up to ~3-5/hr
+# in exchange for materially better recall is the right trade for a
+# personal wake-word (and addresses the "misses low-tone utterances"
+# complaint). The auto-trainer balances these.
 steps: 50000
-max_negative_weight: 1500
-target_false_positives_per_hour: 0.2
+max_negative_weight: 500   # was 1500 — less aggressive FP suppression
+target_false_positives_per_hour: 1.5   # was 0.2 — allow more FAs for recall
