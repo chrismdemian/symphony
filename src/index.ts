@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 import { Command } from 'commander';
+// Type-only import — erased at compile, zero startup cost. The runtime
+// `VoiceBridge` is still dynamic-imported inside the `voice listen` action
+// to keep the CLI's cold-start fast.
+import type { VoiceBridge } from './voice/bridge.js';
 
 const program = new Command();
 
@@ -199,13 +203,137 @@ voice
     'Pipe a known PCM fixture through the bridge and assert VAD events fire. Exits 0 on PASS.',
   )
   .option('--json', 'Emit a single-line JSON summary instead of human output.')
-  .action(async (opts: { json?: boolean }) => {
-    const { runVoiceDiagnose } = await import('./cli/voice-diagnose.js');
-    const result = await runVoiceDiagnose(
-      opts.json === true ? { format: 'json' } : {},
-    );
-    process.exit(result.exitCode);
-  });
+  .option(
+    '--wake-word',
+    'Phase 6C — run in wake-word mode: pipe wake-symphony-3s.pcm + assert ≥1 wake_word event.',
+  )
+  .option(
+    '--wake-word-threshold <n>',
+    'Override the wake-word activation threshold (0..1, default 0.5).',
+    (v) => Number.parseFloat(v),
+  )
+  .action(
+    async (opts: {
+      json?: boolean;
+      wakeWord?: boolean;
+      wakeWordThreshold?: number;
+    }) => {
+      const { runVoiceDiagnose } = await import('./cli/voice-diagnose.js');
+      const wakeWordThreshold =
+        opts.wakeWordThreshold !== undefined &&
+        Number.isFinite(opts.wakeWordThreshold)
+          ? opts.wakeWordThreshold
+          : undefined;
+      const result = await runVoiceDiagnose({
+        ...(opts.json === true ? { format: 'json' as const } : {}),
+        ...(opts.wakeWord === true ? { wakeWord: true } : {}),
+        ...(wakeWordThreshold !== undefined ? { wakeWordThreshold } : {}),
+      });
+      process.exit(result.exitCode);
+    },
+  );
+
+voice
+  .command('listen')
+  .description(
+    'Phase 6C — listen on the live mic for wake-word events. Press Ctrl-C to exit.',
+  )
+  .option('--json', 'Emit one JSON event per line instead of human output.')
+  .option(
+    '--threshold <n>',
+    'Override the wake-word activation threshold (0..1, default from voice.wakeWordThreshold config).',
+    (v) => Number.parseFloat(v),
+  )
+  .option(
+    '--cooldown-ms <n>',
+    'Override the post-fire cooldown in ms (default from voice.wakeWordCooldownMs config).',
+    (v) => Number.parseInt(v, 10),
+  )
+  .option(
+    '--sustain-frames <n>',
+    'Override the sustain-frame count (default from voice.wakeWordSustainFrames config).',
+    (v) => Number.parseInt(v, 10),
+  )
+  .option(
+    '--max-events <n>',
+    'Auto-exit after N wake-word events (default 0 = unbounded).',
+    (v) => Number.parseInt(v, 10),
+  )
+  .option(
+    '--model <name>',
+    'Override the wake-word model name (default from voice.wakeWordModel config).',
+  )
+  .action(
+    async (opts: {
+      json?: boolean;
+      threshold?: number;
+      cooldownMs?: number;
+      sustainFrames?: number;
+      maxEvents?: number;
+      model?: string;
+    }) => {
+      const { runVoiceListen } = await import('./cli/voice-listen.js');
+      const threshold =
+        opts.threshold !== undefined && Number.isFinite(opts.threshold)
+          ? opts.threshold
+          : undefined;
+      const cooldownMs =
+        opts.cooldownMs !== undefined && !Number.isNaN(opts.cooldownMs)
+          ? opts.cooldownMs
+          : undefined;
+      const sustainFrames =
+        opts.sustainFrames !== undefined && !Number.isNaN(opts.sustainFrames)
+          ? opts.sustainFrames
+          : undefined;
+      const maxEvents =
+        opts.maxEvents !== undefined && !Number.isNaN(opts.maxEvents)
+          ? opts.maxEvents
+          : undefined;
+      // SIGINT (Ctrl-C) handling (audit-M3, mirrors the 3T two-tap pattern).
+      // First Ctrl-C: abort the signal → runVoiceListen calls bridge.stop()
+      // for a graceful mic release. Second Ctrl-C (impatient user during
+      // the 2 s grace): force-kill the bridge's Python subprocess
+      // synchronously, then exit 130. Without the second-tap force path,
+      // a double Ctrl-C on Win32 (where SIGINT isn't delivered to the
+      // child) orphans python.exe with the mic still open — a CLAUDE.md
+      // cleanup violation.
+      const abortController = new AbortController();
+      let sigintCount = 0;
+      let listenBridge: VoiceBridge | undefined;
+      const onSigint = (): void => {
+        sigintCount += 1;
+        if (sigintCount === 1) {
+          abortController.abort();
+        } else {
+          // Second press — don't wait for graceful stop. Force-kill the
+          // child tree (Win32 taskkill / POSIX SIGKILL via forceStop) then
+          // bail with the conventional 128+SIGINT(2) = 130 code.
+          if (listenBridge !== undefined) {
+            void listenBridge.stop({ graceMs: 0 }).catch(() => undefined);
+          }
+          process.exit(130);
+        }
+      };
+      process.on('SIGINT', onSigint);
+      try {
+        const { VoiceBridge } = await import('./voice/bridge.js');
+        listenBridge = new VoiceBridge();
+        const result = await runVoiceListen({
+          ...(opts.json === true ? { format: 'json' as const } : {}),
+          ...(threshold !== undefined ? { threshold } : {}),
+          ...(cooldownMs !== undefined ? { cooldownMs } : {}),
+          ...(sustainFrames !== undefined ? { sustainFrames } : {}),
+          ...(maxEvents !== undefined ? { maxEvents } : {}),
+          ...(opts.model !== undefined ? { modelName: opts.model } : {}),
+          bridgeFactory: () => listenBridge!,
+          signal: abortController.signal,
+        });
+        process.exit(result.exitCode);
+      } finally {
+        process.off('SIGINT', onSigint);
+      }
+    },
+  );
 
 voice
   .command('transcribe <file>')

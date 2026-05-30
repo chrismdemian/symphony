@@ -15,6 +15,12 @@ describe('voice config — defaults', () => {
       sttModel: 'moonshine/base',
       maxUtteranceSeconds: 30,
       partialIntervalMs: 200,
+      // Phase 6C fields
+      wakeWordEnabled: false,
+      wakeWordModel: 'hey-symphony',
+      wakeWordThreshold: 0.5,
+      wakeWordSustainFrames: 3,
+      wakeWordCooldownMs: 2000,
     });
   });
 
@@ -25,6 +31,11 @@ describe('voice config — defaults', () => {
     expect(config.voice.sttModel).toBe('moonshine/base');
     expect(config.voice.maxUtteranceSeconds).toBe(30);
     expect(config.voice.partialIntervalMs).toBe(200);
+    expect(config.voice.wakeWordEnabled).toBe(false);
+    expect(config.voice.wakeWordModel).toBe('hey-symphony');
+    expect(config.voice.wakeWordThreshold).toBe(0.5);
+    expect(config.voice.wakeWordSustainFrames).toBe(3);
+    expect(config.voice.wakeWordCooldownMs).toBe(2000);
     expect(warnings).toEqual([]);
   });
 });
@@ -92,6 +103,11 @@ describe('voice config — salvage on bad values', () => {
       sttModel: 'moonshine/base',
       maxUtteranceSeconds: 30,
       partialIntervalMs: 200,
+      wakeWordEnabled: false,
+      wakeWordModel: 'hey-symphony',
+      wakeWordThreshold: 0.5,
+      wakeWordSustainFrames: 3,
+      wakeWordCooldownMs: 2000,
     });
     expect(warnings.length).toBeGreaterThan(0);
   });
@@ -160,6 +176,116 @@ describe('voice config — Phase 6B STT fields', () => {
     expect(warnings.length).toBeGreaterThan(0);
   });
 });
+
+describe('voice config — Phase 6C wake-word fields', () => {
+  it('accepts wakeWordEnabled true', () => {
+    const { config, warnings } = parseConfig({
+      voice: { wakeWordEnabled: true },
+    });
+    expect(config.voice.wakeWordEnabled).toBe(true);
+    expect(warnings).toEqual([]);
+  });
+
+  it('accepts a custom wakeWordModel name', () => {
+    const { config, warnings } = parseConfig({
+      voice: { wakeWordModel: 'custom-phrase' },
+    });
+    expect(config.voice.wakeWordModel).toBe('custom-phrase');
+    expect(warnings).toEqual([]);
+  });
+
+  it('rejects empty wakeWordModel string', () => {
+    const { config, warnings } = parseConfig({
+      voice: { wakeWordModel: '' },
+    });
+    expect(config.voice.wakeWordModel).toBe('hey-symphony');
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  it('rejects wakeWordThreshold above 1', () => {
+    const { config, warnings } = parseConfig({
+      voice: { wakeWordThreshold: 1.5 },
+    });
+    expect(config.voice.wakeWordThreshold).toBe(0.5);
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  it('rejects wakeWordThreshold below 0', () => {
+    const { config, warnings } = parseConfig({
+      voice: { wakeWordThreshold: -0.1 },
+    });
+    expect(config.voice.wakeWordThreshold).toBe(0.5);
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  it('accepts wakeWordSustainFrames in [1, 10]', () => {
+    const { config: low } = parseConfig({ voice: { wakeWordSustainFrames: 1 } });
+    const { config: high } = parseConfig({ voice: { wakeWordSustainFrames: 10 } });
+    expect(low.voice.wakeWordSustainFrames).toBe(1);
+    expect(high.voice.wakeWordSustainFrames).toBe(10);
+  });
+
+  it('rejects wakeWordSustainFrames above 10', () => {
+    const { config, warnings } = parseConfig({
+      voice: { wakeWordSustainFrames: 50 },
+    });
+    expect(config.voice.wakeWordSustainFrames).toBe(3);
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  it('rejects non-integer wakeWordSustainFrames', () => {
+    const { config, warnings } = parseConfig({
+      voice: { wakeWordSustainFrames: 2.7 },
+    });
+    expect(config.voice.wakeWordSustainFrames).toBe(3);
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  it('accepts wakeWordCooldownMs in [500, 10000]', () => {
+    const { config: low } = parseConfig({ voice: { wakeWordCooldownMs: 500 } });
+    const { config: high } = parseConfig({ voice: { wakeWordCooldownMs: 10_000 } });
+    expect(low.voice.wakeWordCooldownMs).toBe(500);
+    expect(high.voice.wakeWordCooldownMs).toBe(10_000);
+  });
+
+  it('rejects wakeWordCooldownMs below 500', () => {
+    const { config, warnings } = parseConfig({
+      voice: { wakeWordCooldownMs: 100 },
+    });
+    expect(config.voice.wakeWordCooldownMs).toBe(2000);
+    expect(warnings.length).toBeGreaterThan(0);
+  });
+
+  it('5-site cascade: adding wakeWord* fields to voice does not break partial-merge semantics', async () => {
+    // Per Phase 6B audit notes, sites 2-5 of the 5-site cascade are
+    // STRUCTURAL for `voice.*` partial-merges (mergePatch and
+    // applyConfigEdits both treat `voice` as a whole-object). Adding new
+    // voice fields requires only the schema (site 1). This test locks
+    // that invariant: a patch carrying just one new wake-word field
+    // round-trips cleanly without dropping any other voice setting.
+    const { config: initial } = parseConfig({
+      voice: {
+        enabled: true,
+        vadThreshold: 0.7,
+        sttModel: 'moonshine/tiny',
+        wakeWordEnabled: true,
+        wakeWordThreshold: 0.65,
+      },
+    });
+    expect(initial.voice.enabled).toBe(true);
+    expect(initial.voice.vadThreshold).toBe(0.7);
+    expect(initial.voice.sttModel).toBe('moonshine/tiny');
+    expect(initial.voice.wakeWordEnabled).toBe(true);
+    expect(initial.voice.wakeWordThreshold).toBe(0.65);
+    // The cooldown defaulted; sustain defaulted; model defaulted.
+    expect(initial.voice.wakeWordCooldownMs).toBe(2000);
+    expect(initial.voice.wakeWordSustainFrames).toBe(3);
+    expect(initial.voice.wakeWordModel).toBe('hey-symphony');
+  });
+});
+
+// Suppress unused-type-import warning
+type _UnusedApplyPatch = typeof ApplyPatchInMemory;
 
 describe('voice config — Phase 6B STT cascade', () => {
   it('partial-merge preserves untouched STT fields', async () => {

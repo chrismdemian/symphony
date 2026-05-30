@@ -1,0 +1,11 @@
+# Phase 6C — assets/wake-models/
+#
+# This directory holds Symphony's bundled wake-word ONNX models:
+#   - hey-symphony.onnx        (Apache-2.0, self-trained — Phase 6C.0)
+#   - hey-symphony.onnx.data   (sidecar weights)
+#   - CHECKSUMS.txt            (SHA-256 manifest)
+#   - training-config.json     (hyperparameters used)
+#   - LICENSE.md               (this directory's licensing)
+#
+# The model itself is produced by `scripts/train-wake-word/` (one-time op).
+# This .gitkeep tracks the dir before the first model lands.

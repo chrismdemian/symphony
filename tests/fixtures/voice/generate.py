@@ -6,13 +6,23 @@ Moonshine can transcribe. The output is normalized to 16 kHz mono LE
 int16 PCM and committed to the repo, so test runs DON'T need pyttsx3 —
 only fixture regeneration does.
 
-Three fixtures committed:
+Four fixtures committed:
 - `diagnose-3s.pcm`:    short utterance + silence framing (~3 s total)
 - `silence-2s.pcm`:     2 s pure silence + tiny dither
 - `transcribe-dev-vocab.pcm` (Phase 6B): "use effect inside the package
   json file" — when piped through Moonshine + the seed vocab file,
   expected transcript ~= "useEffect inside the package.json file".
   Used by the 6B production scenario gate.
+- `wake-symphony-3s.pcm` (Phase 6C): "Hey Symphony, hey Symphony, hey
+  Symphony." repeated three times framed by silence. When piped through
+  the bridge in `--wakeword-enabled` mode with the bundled hey-symphony
+  ONNX model, expected to fire ≥1 wake_word event. The repetition gives
+  the detector multiple firing opportunities so the diagnose assertion
+  is stable across CPU jitter + threshold variation. NOTE: the TTS-
+  generated voice is synthetic and may not strongly match the trained
+  model's positive distribution; consider this fixture diagnostic-tier
+  rather than benchmark-tier. Hardware-side validation belongs in
+  `symphony voice listen` with a real microphone.
 
 Regenerate (one-time, when you want different content):
     ~/.symphony/voice-env/bin/python tests/fixtures/voice/generate.py
@@ -120,6 +130,35 @@ def build_transcribe_dev_vocab() -> bytes:
     return to_int16_pcm(np.concatenate(parts))
 
 
+def build_wake_symphony() -> bytes:
+    """Phase 6C — three repetitions of "Hey Symphony" framed by silence.
+
+    Why three: openWakeWord's sustain logic (default N=3 consecutive
+    80ms windows above threshold) + Symphony's per-fire 2s cooldown means
+    one utterance fires at most one event. Three utterances give the
+    diagnose assertion ≥1 wake_word event of headroom against CPU jitter
+    + per-machine TTS variability.
+
+    Inter-utterance silence is 1500ms so the cooldown clears between
+    fires; total fixture length ~7s. The PCM is named `wake-symphony-3s.pcm`
+    for naming consistency with the 6A diagnose fixture even though it's
+    ~7s — the name conveys the wake phrase, not the duration.
+
+    NOTE: pyttsx3 (OS TTS) produces a synthetic voice that may not match
+    the trained model's positive distribution well. This is a diagnostic-
+    tier fixture; benchmark-grade validation belongs in the live-mic
+    `symphony voice listen` flow.
+    """
+    parts = [silence(500, seed=20)]
+    for i in range(3):
+        speech = synth_via_tts("Hey Symphony.")
+        parts.append(speech)
+        # Inter-utterance silence longer than the wake-word cooldown
+        # (default 2000ms) so each utterance is a distinct fire candidate.
+        parts.append(silence(1500, seed=21 + i))
+    return to_int16_pcm(np.concatenate(parts))
+
+
 def main() -> int:
     diagnose = build_diagnose()
     (HERE / "diagnose-3s.pcm").write_bytes(diagnose)
@@ -133,10 +172,15 @@ def main() -> int:
     (HERE / "transcribe-dev-vocab.pcm").write_bytes(dev_vocab)
     print(f"wrote transcribe-dev-vocab.pcm ({len(dev_vocab)} bytes)")
 
+    wake = build_wake_symphony()
+    (HERE / "wake-symphony-3s.pcm").write_bytes(wake)
+    print(f"wrote wake-symphony-3s.pcm ({len(wake)} bytes)")
+
     checksum_lines = [
         f"diagnose-3s.pcm  {hashlib.sha256(diagnose).hexdigest()}",
         f"silence-2s.pcm  {hashlib.sha256(sil).hexdigest()}",
         f"transcribe-dev-vocab.pcm  {hashlib.sha256(dev_vocab).hexdigest()}",
+        f"wake-symphony-3s.pcm  {hashlib.sha256(wake).hexdigest()}",
     ]
     (HERE / "CHECKSUMS.txt").write_text("\n".join(checksum_lines) + "\n")
     print("wrote CHECKSUMS.txt")

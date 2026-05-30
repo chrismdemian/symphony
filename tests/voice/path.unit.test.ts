@@ -7,6 +7,8 @@ import {
   voiceEnvDir,
   voicePythonPath,
   voicePythonPackageDir,
+  voiceWakeModelPath,
+  VoiceWakeModelNotFoundError,
 } from '../../src/voice/path.js';
 
 describe('voiceEnvDir', () => {
@@ -90,5 +92,53 @@ describe('voice path idempotency', () => {
     const a = voiceEnvDir('/h');
     const b = voiceEnvDir('/h');
     expect(a).toBe(b);
+  });
+});
+
+describe('voiceWakeModelPath — Phase 6C', () => {
+  it('rejects path-traversal model names', () => {
+    expect(() => voiceWakeModelPath('../etc/passwd')).toThrow(
+      VoiceWakeModelNotFoundError,
+    );
+    expect(() => voiceWakeModelPath('hey/symphony')).toThrow(
+      VoiceWakeModelNotFoundError,
+    );
+    expect(() => voiceWakeModelPath('hey\\symphony')).toThrow(
+      VoiceWakeModelNotFoundError,
+    );
+    expect(() => voiceWakeModelPath('')).toThrow(
+      VoiceWakeModelNotFoundError,
+    );
+    expect(() => voiceWakeModelPath('.hey-symphony')).toThrow(
+      VoiceWakeModelNotFoundError,
+    );
+    expect(() => voiceWakeModelPath('Hey-Symphony')).toThrow(
+      VoiceWakeModelNotFoundError,
+    );
+  });
+
+  it('throws VoiceWakeModelNotFoundError when no candidate exists', () => {
+    // Use a name guaranteed not to exist in any layout.
+    expect(() => voiceWakeModelPath('definitely-not-a-real-model-zxq42')).toThrow(
+      VoiceWakeModelNotFoundError,
+    );
+  });
+
+  it('accepts lowercase + digits + dash + underscore (safe path segment)', () => {
+    // These names pass the validator but the file doesn't exist —
+    // confirms the validator gates BEFORE the existsSync check.
+    expect(() => voiceWakeModelPath('hey-symphony-v2')).toThrow(
+      VoiceWakeModelNotFoundError,
+    );
+    expect(() => voiceWakeModelPath('a_b_c_123')).toThrow(
+      VoiceWakeModelNotFoundError,
+    );
+    // The thrown error mentions the path, not the validator message,
+    // proving the validator passed:
+    try {
+      voiceWakeModelPath('hey-symphony-v2');
+    } catch (e) {
+      expect((e as Error).message).toContain('hey-symphony-v2.onnx');
+    }
   });
 });

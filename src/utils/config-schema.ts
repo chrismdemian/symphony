@@ -227,6 +227,28 @@ export const SymphonyConfigSchema = z.object({
         .default('moonshine/base'),
       maxUtteranceSeconds: z.number().int().min(5).max(90).default(30),
       partialIntervalMs: z.number().int().min(100).max(1000).default(200),
+      // Phase 6C — wake-word detection (always-capture only, opt-in beyond
+      // opt-in: `voice.enabled` is the outer gate, this is the inner gate).
+      // When false, the bridge never imports openwakeword and pays zero
+      // overhead. When true, the bridge loads the named model from
+      // `assets/wake-models/<name>.onnx` (resolved by `voiceWakeModelPath`)
+      // and runs detection on every Silero frame.
+      wakeWordEnabled: z.boolean().default(false),
+      // Model name (without `.onnx`). Default `hey-symphony` — the bundled
+      // Apache-2.0 self-trained model. Pattern enforced server-side by
+      // `voiceWakeModelPath`'s safe-name validator.
+      wakeWordModel: z.string().min(1).max(64).default('hey-symphony'),
+      // openWakeWord score threshold. 0.5 is the upstream default; raise
+      // to 0.6-0.7 if false-positive rate is too high in your environment.
+      wakeWordThreshold: z.number().min(0).max(1).default(0.5),
+      // Consecutive 80-ms windows above threshold required to fire. 3 =
+      // 240 ms which empirically rejects single-frame spikes without
+      // adding noticeable latency to legitimate detections.
+      wakeWordSustainFrames: z.number().int().min(1).max(10).default(3),
+      // Post-fire suppression window. 2 s prevents one utterance of
+      // "Hey Symphony" from firing 5 times in 400 ms; the orchestrator
+      // sees one event per intent.
+      wakeWordCooldownMs: z.number().int().min(500).max(10_000).default(2000),
     })
     .default({
       enabled: false,
@@ -236,6 +258,11 @@ export const SymphonyConfigSchema = z.object({
       sttModel: 'moonshine/base',
       maxUtteranceSeconds: 30,
       partialIntervalMs: 200,
+      wakeWordEnabled: false,
+      wakeWordModel: 'hey-symphony',
+      wakeWordThreshold: 0.5,
+      wakeWordSustainFrames: 3,
+      wakeWordCooldownMs: 2000,
     }),
 });
 

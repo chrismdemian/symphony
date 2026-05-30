@@ -1,3 +1,4 @@
 diagnose-3s.pcm  177569e6e850ebcd75076661e7f09de15188c0b270bca6c751148cd7793303bf
 silence-2s.pcm  72e71570c3fa66bf40cc10b6da7f9969f58fd1984cb2a557f74f184b692bf7e3
 transcribe-dev-vocab.pcm  7f6e3eeffeb24cfe879e81d6d24c7c7ec3cebca878226ea8d294979df29af877
+wake-symphony-3s.pcm  0ec896be46e97c79dfb5e7822a7d9e15f5cda4df9b48f4dfaa02b8094c85b4cd

@@ -19,6 +19,8 @@
 //   stt-ready-never: ready but no stt_ready (forces stt-ready timeout)
 //   stt-no-final: ready + stt_ready + speech_start + speech_end + (no final)
 //   stt-truncated: ready + stt_ready + (on stdin EOF) warning + speech_end + final
+//   wake-fire: ready + (after 10ms) wake_word — Phase 6C
+//   wake-malformed: ready + a wake_word event missing the `score` field (validator rejection test)
 //
 // All scenarios flush each event with a trailing newline.
 
@@ -192,6 +194,41 @@ switch (scenario) {
     // Ready fires but stt_ready never does — forces the stt-ready-timeout
     // path in runVoiceTranscribe.
     ready();
+    break;
+  case 'wake-fire':
+    // Phase 6C — emit ready, then a wake_word event after 10 ms.
+    ready();
+    setTimeout(
+      () =>
+        emit({
+          type: 'wake_word',
+          model: 'hey-symphony',
+          score: 0.87,
+          tMs: 1234,
+        }),
+      10,
+    );
+    break;
+  case 'wake-malformed':
+    // Phase 6C — wake_word event missing the `score` field. Bridge's
+    // isVoiceBridgeEvent validator must reject this, emitting a
+    // `malformed-event` error event instead of crashing.
+    ready();
+    setTimeout(
+      () => emit({ type: 'wake_word', model: 'hey-symphony', tMs: 9999 }),
+      10,
+    );
+    break;
+  case 'wake-disabled-warning':
+    // Phase 6C (audit-M2) — emit ready, then a `warning` with the new
+    // `wake-word-disabled` code (the Python bridge sends this when a
+    // set_wake_threshold command arrives while wake-word is off). The
+    // validator must ACCEPT this code (not downgrade to malformed-event).
+    ready();
+    setTimeout(
+      () => emit({ type: 'warning', code: 'wake-word-disabled', tMs: 4242 }),
+      10,
+    );
     break;
   default:
     process.stderr.write('unknown scenario: ' + scenario + '\n');

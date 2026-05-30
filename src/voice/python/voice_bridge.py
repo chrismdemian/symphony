@@ -6,7 +6,10 @@ on top: between ``speech_start`` and ``speech_end``, frames accumulate
 into a per-segment buffer; a worker thread runs Moonshine inference on
 snapshots at a configurable cadence (``--partial-interval-ms``) and on
 the segment-end flush. Hard cap on utterance length (``--max-utterance-
-seconds``) emits a ``warning`` and force-flushes the buffer.
+seconds``) emits a ``warning`` and force-flushes the buffer. Phase 6C
+adds wake-word detection: each frame also feeds an openWakeWord-backed
+``WakeWordDetector`` (sustain + cooldown logic) which emits ``wake_word``
+events on detection. Wake-word is opt-in via ``--wakeword-enabled``.
 
 Commands (stdin):
     {"cmd":"shutdown"}
@@ -20,6 +23,7 @@ Events (stdout):
     {"type":"partial",      "seq":N, "text":"...", "tMs":...}    # Phase 6B
     {"type":"final",        "seq":N, "text":"...", "tMs":..., "durationMs":...}  # Phase 6B
     {"type":"warning",      "code":"utterance-truncated", "tMs":...}  # Phase 6B
+    {"type":"wake_word",    "model":"hey-symphony", "score":0.83, "tMs":...}  # Phase 6C
     {"type":"error",        "code":"...", "message":"..."}
     {"type":"shutdown_ack"}
 
@@ -523,6 +527,12 @@ class Bridge:
         max_utterance_seconds: int,
         partial_interval_ms: int,
         stt_vocab_paths: list[str],
+        wakeword_enabled: bool = False,
+        wakeword_model_path: Optional[str] = None,
+        wakeword_model_name: str = "hey-symphony",
+        wakeword_threshold: float = 0.5,
+        wakeword_sustain_frames: int = 3,
+        wakeword_cooldown_ms: int = 2000,
     ) -> None:
         self.input_mode = input_mode
         self.cfg = VadConfig(
@@ -546,6 +556,14 @@ class Bridge:
         self.partial_interval_ms = partial_interval_ms
         self.stt_vocab_paths = stt_vocab_paths
         self.stt_worker: Optional[SttWorker] = None
+        # Phase 6C fields
+        self.wakeword_enabled = wakeword_enabled
+        self.wakeword_model_path = wakeword_model_path
+        self.wakeword_model_name = wakeword_model_name
+        self.wakeword_threshold = wakeword_threshold
+        self.wakeword_sustain_frames = wakeword_sustain_frames
+        self.wakeword_cooldown_ms = wakeword_cooldown_ms
+        self.wake_detector = None  # Optional["WakeWordDetector"], lazy-imported in init()
         # Per-segment state
         self.in_segment = False
         self.segment_buffer = bytearray()
@@ -608,6 +626,48 @@ class Bridge:
             }
         )
 
+        # Phase 6C: instantiate wake-word detector synchronously on the
+        # main thread. openWakeWord cold-start is ~50 ms (ONNX session +
+        # frozen embedding backbone) — fast enough to block the main thread
+        # without delaying `ready` perceptibly. If the model is missing or
+        # openwakeword isn't installed, surface an error event but keep
+        # VAD/STT alive (degraded mode).
+        if self.wakeword_enabled:
+            if not self.wakeword_model_path:
+                emit_error(
+                    "wake-word-config-invalid",
+                    "wakeword_enabled but no model path provided",
+                )
+            else:
+                try:
+                    from wake_word_detector import (  # type: ignore[import-not-found]
+                        WakeWordConfig,
+                        WakeWordDetector,
+                    )
+
+                    wake_cfg = WakeWordConfig(
+                        sample_rate=self.cfg.sample_rate,
+                        frame_samples=self.cfg.frame_samples,
+                        threshold=self.wakeword_threshold,
+                        sustain_frames=self.wakeword_sustain_frames,
+                        cooldown_ms=self.wakeword_cooldown_ms,
+                        model_name=self.wakeword_model_name,
+                    )
+                    log(
+                        f"loading wake-word model: {self.wakeword_model_name} "
+                        f"from {self.wakeword_model_path}..."
+                    )
+                    self.wake_detector = WakeWordDetector(
+                        wake_cfg, self.wakeword_model_path,
+                    )
+                    log("wake-word detector ready.")
+                except Exception as e:  # noqa: BLE001
+                    emit_error(
+                        "wake-word-load-failed",
+                        f"{type(e).__name__}: {e!r}",
+                    )
+                    self.wake_detector = None
+
         # Phase 6B: kick off STT worker. Load + warmup happens on the
         # worker thread; `stt_ready` fires once warmup completes. While
         # this is in flight, VAD events still emit normally.
@@ -653,6 +713,8 @@ class Bridge:
                     self.shutdown_event.set()
                     return
                 elif cmd == "set_threshold":
+                    # VAD threshold (Silero). Distinct from the wake-word
+                    # threshold (audit-M2) — the two are separate knobs.
                     value = msg.get("value")
                     if isinstance(value, (int, float)) and self.segmenter is not None:
                         self.segmenter.set_threshold(float(value))
@@ -661,6 +723,25 @@ class Bridge:
                             "invalid-set-threshold",
                             f"value must be a number, got {value!r}",
                         )
+                elif cmd == "set_wake_threshold":
+                    # Phase 6C (audit-M2) — wake-word threshold. Silently a
+                    # no-op when wake-word isn't enabled, but we surface a
+                    # warning so a 6E settings popup knows the knob landed
+                    # nowhere rather than mysteriously not working.
+                    value = msg.get("value")
+                    if not isinstance(value, (int, float)):
+                        emit_error(
+                            "invalid-set-wake-threshold",
+                            f"value must be a number, got {value!r}",
+                        )
+                    elif self.wake_detector is None:
+                        emit({
+                            "type": "warning",
+                            "code": "wake-word-disabled",
+                            "tMs": self.segmenter.t_ms if self.segmenter else 0,
+                        })
+                    else:
+                        self.wake_detector.set_threshold(float(value))
                 else:
                     emit_error("unknown-command", f"unknown cmd '{cmd}'")
         except Exception as e:  # pragma: no cover - rare stdin failure
@@ -699,6 +780,35 @@ class Bridge:
                     )
                     self.shutdown_event.set()
                     break
+                # Phase 6C — feed the same frame into the wake-word
+                # detector. Runs independently of VAD; fires whenever the
+                # sustain + cooldown logic commits. Bounded cost (~1 ms
+                # per 80 ms window on CPU), safely within the 32 ms frame
+                # budget.
+                if self.wake_detector is not None:
+                    try:
+                        # Audit-M1: pass the segmenter's clock so wake_word
+                        # tMs lives on the SAME timeline as speech_start /
+                        # speech_end (both "ms since ready"). segmenter.push
+                        # above already advanced this for the current frame.
+                        fire = self.wake_detector.push(
+                            frame, t_ms=self.segmenter.t_ms,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        emit_error(
+                            "wake-word-predict-failed",
+                            f"{type(e).__name__}: {e!r}",
+                        )
+                        self.wake_detector = None
+                        fire = None
+                    if fire is not None:
+                        emit({
+                            "type": "wake_word",
+                            "model": fire.model,
+                            "score": float(fire.score),
+                            "tMs": fire.t_ms,
+                        })
+
                 # Process VAD events (these affect in_segment state)
                 started_this_frame = False
                 for event in events:
@@ -922,6 +1032,42 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
             "[] - no substitutions."
         ),
     )
+    # Phase 6C flags
+    p.add_argument(
+        "--wakeword-enabled",
+        action="store_true",
+        help="Enable openWakeWord wake-word detection (default: disabled).",
+    )
+    p.add_argument(
+        "--wakeword-model-path",
+        type=str,
+        default=None,
+        help="Absolute path to a wake-word .onnx model (required when --wakeword-enabled).",
+    )
+    p.add_argument(
+        "--wakeword-model-name",
+        type=str,
+        default="hey-symphony",
+        help="Display name surfaced in wake_word events (default: hey-symphony).",
+    )
+    p.add_argument(
+        "--wakeword-threshold",
+        type=float,
+        default=0.5,
+        help="Per-frame score threshold (0..1) above which a frame counts as a hit (default: 0.5).",
+    )
+    p.add_argument(
+        "--wakeword-sustain-frames",
+        type=int,
+        default=3,
+        help="Consecutive above-threshold frames required to fire (default: 3 = 240ms).",
+    )
+    p.add_argument(
+        "--wakeword-cooldown-ms",
+        type=int,
+        default=2000,
+        help="Silence period after a fire before another can fire (default: 2000).",
+    )
     return p.parse_args(argv)
 
 
@@ -940,6 +1086,12 @@ def main(argv: Optional[list[str]] = None) -> int:
         max_utterance_seconds=args.max_utterance_seconds,
         partial_interval_ms=args.partial_interval_ms,
         stt_vocab_paths=list(args.stt_vocab_paths),
+        wakeword_enabled=args.wakeword_enabled,
+        wakeword_model_path=args.wakeword_model_path,
+        wakeword_model_name=args.wakeword_model_name,
+        wakeword_threshold=args.wakeword_threshold,
+        wakeword_sustain_frames=args.wakeword_sustain_frames,
+        wakeword_cooldown_ms=args.wakeword_cooldown_ms,
     )
     bridge.init()
     return bridge.run()

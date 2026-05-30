@@ -66,7 +66,24 @@ export type VoiceBridgeEvent =
     }
   | {
       readonly type: 'warning';
-      readonly code: 'utterance-truncated';
+      readonly code:
+        | 'utterance-truncated'
+        // Phase 6C — `set_wake_threshold` received while wake-word is
+        // disabled. Informational: the knob landed nowhere. Lets a 6E
+        // settings popup distinguish "applied" from "ignored" instead of
+        // silently doing nothing.
+        | 'wake-word-disabled';
+      readonly tMs: number;
+    }
+  | {
+      /** Phase 6C — fired when openWakeWord's sustain+cooldown logic commits
+       * to a wake-word detection. Decoupled from VAD: may fire mid-segment
+       * (during continuous speech that starts with "hey symphony") OR
+       * outside any VAD segment (single softly-spoken wake phrase).
+       * Consumers MUST NOT assume `wake_word` precedes `speech_start`. */
+      readonly type: 'wake_word';
+      readonly model: string;
+      readonly score: number;
       readonly tMs: number;
     }
   | { readonly type: 'error'; readonly code: string; readonly message: string }
@@ -86,7 +103,15 @@ export type VoiceAudioBackend = 'sounddevice' | 'pyaudio' | 'stdin-pcm';
  */
 export type VoiceBridgeCommand =
   | { readonly cmd: 'shutdown' }
-  | { readonly cmd: 'set_threshold'; readonly value: number };
+  /** VAD (Silero) speech-probability threshold. Distinct from the wake-word threshold. */
+  | { readonly cmd: 'set_threshold'; readonly value: number }
+  /**
+   * Phase 6C — wake-word detector score threshold (audit-M2). Separate
+   * knob from the VAD `set_threshold`. When wake-word is disabled, the
+   * bridge emits a `warning` event with code `wake-word-disabled` rather
+   * than silently dropping the command.
+   */
+  | { readonly cmd: 'set_wake_threshold'; readonly value: number };
 
 /**
  * Result of `runVoiceInstall`. Mirrors the `RunSkillsResult` shape from
@@ -112,7 +137,10 @@ export interface VoiceInstallResult {
     | 'numpy-install-failed'
     | 'moonshine-install-failed'
     | 'moonshine-import-failed'
-    | 'moonshine-download-failed';
+    | 'moonshine-download-failed'
+    | 'openwakeword-install-failed'
+    | 'openwakeword-import-failed'
+    | 'openwakeword-download-failed';
   readonly venvPath: string;
   readonly pythonPath: string;
   readonly sileroVadInstalled: boolean;
@@ -128,6 +156,12 @@ export interface VoiceInstallResult {
   readonly moonshineModelWarmed: boolean;
   /** Phase 6B — atomic `~/.symphony/voice-vocab.json` seed file created (only when target was absent). */
   readonly voiceVocabSeeded: boolean;
+  /** Phase 6C — `openwakeword` pip-shows present. */
+  readonly openWakeWordInstalled: boolean;
+  /** Phase 6C — `from openwakeword.model import Model` succeeded. Validates the ONNX runtime + tflite-runtime-or-onnx-fallback + shared embedding backbone dependencies. */
+  readonly openWakeWordImportOk: boolean;
+  /** Phase 6C — bundled `hey-symphony.onnx` model present on disk (under `assets/wake-models/` in dev, `dist/assets/wake-models/` in built). */
+  readonly wakeModelBundled: boolean;
   readonly warnings: readonly string[];
   /** True when nothing was reinstalled (every requested dep already present at its current version). */
   readonly idempotent: boolean;
@@ -151,12 +185,20 @@ export interface VoiceDiagnoseResult {
     | 'bridge-ready-timeout'
     | 'bridge-exit-nonzero'
     | 'no-speech-detected'
-    | 'fixture-missing';
+    | 'fixture-missing'
+    | 'wake-model-missing'
+    | 'no-wake-detected';
   readonly speechSegments: number;
   /** Phase 6B — count of `final` STT events seen during the run. */
   readonly finalEvents: number;
   /** Phase 6B — true when an `stt_ready` event was observed. */
   readonly sttReady: boolean;
+  /** Phase 6C — count of `wake_word` events observed (when `--wake-word` mode is active). */
+  readonly wakeEvents: number;
+  /** Phase 6C — true when at least one `wake_word` event fired (convenience boolean over `wakeEvents > 0`). */
+  readonly wakeDetected: boolean;
+  /** Phase 6C — whether the diagnose ran in wake-word mode (`--wake-word`). When false, `wakeEvents`/`wakeDetected` are always 0/false. */
+  readonly wakeMode: boolean;
   readonly events: readonly VoiceBridgeEvent[];
   readonly stderrTail: string;
   /** Wall-clock duration of the diagnose run, in ms. */

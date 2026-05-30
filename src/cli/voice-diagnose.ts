@@ -3,7 +3,13 @@ import { performance } from 'node:perf_hooks';
 
 import { VoiceBridge, VoiceBridgeError } from '../voice/bridge.js';
 import { resolveVoiceEnv } from '../voice/env.js';
-import { voiceDiagnoseFixturePath, resolveVoiceVocabPaths } from '../voice/path.js';
+import {
+  voiceDiagnoseFixturePath,
+  voiceWakeFixturePath,
+  voiceWakeModelPath,
+  resolveVoiceVocabPaths,
+  VoiceWakeModelNotFoundError,
+} from '../voice/path.js';
 import type { VoiceBridgeEvent, VoiceDiagnoseResult } from '../voice/types.js';
 
 /**
@@ -46,6 +52,18 @@ export interface RunVoiceDiagnoseOptions {
   readonly pythonPath?: string;
   /** Override the python package dir on the bridge. */
   readonly pythonPackageDir?: string;
+  /**
+   * Phase 6C — enable wake-word mode. Boots the bridge with
+   * `wakeWordEnabled: true` + the bundled `hey-symphony.onnx`, pipes the
+   * `wake-symphony-3s.pcm` fixture (not the 6A speech fixture), and asserts
+   * `≥1 wake_word` event fires for PASS. STT is disabled in wake-word mode
+   * since the fixture isn't a normal utterance.
+   */
+  readonly wakeWord?: boolean;
+  /** Phase 6C test override — explicit wake-word model name (defaults to 'hey-symphony'). */
+  readonly wakeWordModel?: string;
+  /** Phase 6C test override — explicit wake-word threshold (defaults to 0.5). */
+  readonly wakeWordThreshold?: number;
 }
 
 export async function runVoiceDiagnose(
@@ -57,7 +75,10 @@ export async function runVoiceDiagnose(
   const t0 = performance.now();
   const events: VoiceBridgeEvent[] = [];
 
+  const wakeMode = opts.wakeWord === true;
+
   // Phase 6B - compute the tallies once and reuse across result builders.
+  // Phase 6C adds wakeEvents + wakeDetected + wakeMode.
   const buildResult = (
     overrides: Partial<VoiceDiagnoseResult> & {
       ok: boolean;
@@ -69,10 +90,14 @@ export async function runVoiceDiagnose(
     const speechEnds = events.filter((e) => e.type === 'speech_end').length;
     const finals = events.filter((e) => e.type === 'final').length;
     const sttReady = events.some((e) => e.type === 'stt_ready');
+    const wakeEvents = events.filter((e) => e.type === 'wake_word').length;
     return {
       speechSegments: Math.min(speechStarts, speechEnds),
       finalEvents: finals,
       sttReady,
+      wakeEvents,
+      wakeDetected: wakeEvents > 0,
+      wakeMode,
       events: events.slice(),
       stderrTail,
       durationMs: Math.round(performance.now() - t0),
@@ -90,10 +115,17 @@ export async function runVoiceDiagnose(
     }
   }
 
-  // 2. Resolve fixture
+  // 2. Resolve fixture. Phase 6C: in wake-word mode, prefer the wake-word
+  // fixture; in default mode, the 6A diagnose fixture.
   let fixturePath: string;
   try {
-    fixturePath = opts.fixturePath ?? voiceDiagnoseFixturePath();
+    if (opts.fixturePath !== undefined) {
+      fixturePath = opts.fixturePath;
+    } else if (wakeMode) {
+      fixturePath = voiceWakeFixturePath();
+    } else {
+      fixturePath = voiceDiagnoseFixturePath();
+    }
   } catch (cause) {
     const result = buildResult(
       { ok: false, exitCode: 1, reason: 'fixture-missing' },
@@ -101,6 +133,25 @@ export async function runVoiceDiagnose(
     );
     emit(stdout, stderr, format, result);
     return result;
+  }
+
+  // Phase 6C: in wake-word mode, resolve the model path. Missing model is
+  // a distinct failure reason from missing fixture so the user gets an
+  // actionable error.
+  let wakeModelPath: string | undefined;
+  if (wakeMode) {
+    try {
+      wakeModelPath = voiceWakeModelPath(opts.wakeWordModel ?? 'hey-symphony');
+    } catch (cause) {
+      const isMissing = cause instanceof VoiceWakeModelNotFoundError;
+      const reason = isMissing ? 'wake-model-missing' : 'bridge-spawn-failed';
+      const result = buildResult(
+        { ok: false, exitCode: 1, reason },
+        String(cause),
+      );
+      emit(stdout, stderr, format, result);
+      return result;
+    }
   }
 
   // Audit-m5 fix: wrap readFile so a race-window unlink / permission
@@ -133,7 +184,20 @@ export async function runVoiceDiagnose(
   try {
     await bridge.start({
       inputMode: 'stdin-pcm',
-      sttVocabPaths: vocabPaths,
+      // Phase 6C: in wake-word mode, disable STT (the fixture isn't a
+      // normal utterance — saving 5-15s of model cold-start AND avoiding
+      // the empty-final-text noise). Pure wake-word + VAD signal.
+      ...(wakeMode
+        ? {
+            sttEnabled: false,
+            wakeWordEnabled: true,
+            wakeWordModelPath: wakeModelPath,
+            wakeWordModelName: opts.wakeWordModel ?? 'hey-symphony',
+            ...(opts.wakeWordThreshold !== undefined
+              ? { wakeWordThreshold: opts.wakeWordThreshold }
+              : {}),
+          }
+        : { sttVocabPaths: vocabPaths }),
       ...(opts.scriptPath !== undefined ? { scriptPath: opts.scriptPath } : {}),
       ...(opts.pythonPath !== undefined ? { pythonPath: opts.pythonPath } : {}),
       ...(opts.pythonPackageDir !== undefined
@@ -207,6 +271,25 @@ export async function runVoiceDiagnose(
 
   // 7. Tally + decide pass
   const stderrTail = bridge.getStderrTail();
+  if (wakeMode) {
+    // Phase 6C: wake-word PASS criterion = ≥1 wake_word event fired during
+    // the fixture pipe. VAD events are still possible (the fixture is
+    // real speech, just framed as "hey symphony"), but they're not part
+    // of the wake-word PASS gate. Skipping the STT criterion entirely
+    // because STT was disabled for this mode.
+    const wakeCount = events.filter((e) => e.type === 'wake_word').length;
+    const ok = wakeCount >= 1;
+    const result = buildResult(
+      {
+        ok,
+        exitCode: ok ? 0 : 1,
+        ...(ok ? {} : { reason: 'no-wake-detected' as const }),
+      },
+      stderrTail,
+    );
+    emit(stdout, stderr, format, result);
+    return result;
+  }
   const finalsCount = events.filter((e) => e.type === 'final').length;
   const speechStarts = events.filter((e) => e.type === 'speech_start').length;
   const speechEnds = events.filter((e) => e.type === 'speech_end').length;
@@ -243,16 +326,36 @@ function emit(
     return;
   }
   if (result.ok) {
-    stdout.write(
-      `[symphony] voice diagnose: PASS — ${result.speechSegments} speech segment(s) in ${result.durationMs}ms.\n`,
-    );
+    if (result.wakeMode) {
+      stdout.write(
+        `[symphony] voice diagnose --wake-word: PASS — ${result.wakeEvents} wake_word event(s) in ${result.durationMs}ms.\n`,
+      );
+    } else {
+      stdout.write(
+        `[symphony] voice diagnose: PASS — ${result.speechSegments} speech segment(s) in ${result.durationMs}ms.\n`,
+      );
+    }
   } else {
-    stdout.write(
-      `[symphony] voice diagnose: FAIL — reason=${result.reason ?? 'unknown'}, segments=${result.speechSegments}, duration=${result.durationMs}ms.\n`,
-    );
+    if (result.wakeMode) {
+      stdout.write(
+        `[symphony] voice diagnose --wake-word: FAIL — reason=${result.reason ?? 'unknown'}, ` +
+          `wakeEvents=${result.wakeEvents}, duration=${result.durationMs}ms.\n`,
+      );
+    } else {
+      stdout.write(
+        `[symphony] voice diagnose: FAIL — reason=${result.reason ?? 'unknown'}, ` +
+          `segments=${result.speechSegments}, duration=${result.durationMs}ms.\n`,
+      );
+    }
     if (result.reason === 'voice-env-missing') {
       stderr.write(
         `[symphony] Voice venv missing${pythonPath ? ` at ${pythonPath}` : ''}. Run \`symphony voice install\`.\n`,
+      );
+    }
+    if (result.reason === 'wake-model-missing') {
+      stderr.write(
+        '[symphony] No wake-word model found at assets/wake-models/<name>.onnx. ' +
+          'See scripts/train-wake-word/README.md to produce one.\n',
       );
     }
     if (result.stderrTail.length > 0) {

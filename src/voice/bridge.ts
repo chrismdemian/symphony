@@ -82,6 +82,27 @@ export interface VoiceBridgeStartOptions {
    * user-global). Default: [] (no substitutions).
    */
   readonly sttVocabPaths?: readonly string[];
+  /**
+   * Phase 6C — enable wake-word detection via openWakeWord.
+   * Default: false (opt-in beyond opt-in; `voice.enabled` is the outer
+   * gate, this is the inner gate within the voice stack).
+   */
+  readonly wakeWordEnabled?: boolean;
+  /**
+   * Phase 6C — absolute path to the `<name>.onnx` model. Required when
+   * `wakeWordEnabled` is true; resolved via `voiceWakeModelPath()` by
+   * the caller (the bridge subprocess gets an absolute path so it never
+   * has to think about asset layout).
+   */
+  readonly wakeWordModelPath?: string;
+  /** Phase 6C — display name surfaced in `wake_word` events. Default 'hey-symphony'. */
+  readonly wakeWordModelName?: string;
+  /** Phase 6C — per-frame openWakeWord score threshold (0..1). Default 0.5. */
+  readonly wakeWordThreshold?: number;
+  /** Phase 6C — consecutive above-threshold frames required to fire. Default 3 (= 240 ms). */
+  readonly wakeWordSustainFrames?: number;
+  /** Phase 6C — post-fire suppression window (ms). Default 2000. */
+  readonly wakeWordCooldownMs?: number;
   /** Override the venv directory (tests). */
   readonly venvDir?: string;
   /** Override the Python source package dir (tests). */
@@ -237,6 +258,25 @@ export class VoiceBridge extends EventEmitter {
         // can contain commas/spaces; argparse `action='append'` handles
         // this cleanly.
         args.push('--stt-vocab-path', p);
+      }
+    }
+    // Phase 6C — wake-word flags. Opt-in; the bridge default is disabled.
+    if (opts.wakeWordEnabled === true) {
+      args.push('--wakeword-enabled');
+      if (opts.wakeWordModelPath !== undefined) {
+        args.push('--wakeword-model-path', opts.wakeWordModelPath);
+      }
+      if (opts.wakeWordModelName !== undefined) {
+        args.push('--wakeword-model-name', opts.wakeWordModelName);
+      }
+      if (opts.wakeWordThreshold !== undefined) {
+        args.push('--wakeword-threshold', String(opts.wakeWordThreshold));
+      }
+      if (opts.wakeWordSustainFrames !== undefined) {
+        args.push('--wakeword-sustain-frames', String(opts.wakeWordSustainFrames));
+      }
+      if (opts.wakeWordCooldownMs !== undefined) {
+        args.push('--wakeword-cooldown-ms', String(opts.wakeWordCooldownMs));
       }
     }
 
@@ -693,7 +733,26 @@ function isVoiceBridgeEvent(value: unknown): value is VoiceBridgeEvent {
         typeof v.durationMs === 'number'
       );
     case 'warning':
-      return v.code === 'utterance-truncated' && typeof v.tMs === 'number';
+      return (
+        (v.code === 'utterance-truncated' || v.code === 'wake-word-disabled') &&
+        typeof v.tMs === 'number'
+      );
+    case 'wake_word':
+      // Phase 6C — wake_word event shape: model + score + tMs all required.
+      // Defense-in-depth: model is a non-empty string, score is a finite
+      // 0..1 number (Python bridge clamps, but we re-validate here),
+      // tMs is a non-negative number.
+      return (
+        typeof v.model === 'string' &&
+        (v.model as string).length > 0 &&
+        typeof v.score === 'number' &&
+        Number.isFinite(v.score) &&
+        (v.score as number) >= 0 &&
+        (v.score as number) <= 1 &&
+        typeof v.tMs === 'number' &&
+        Number.isFinite(v.tMs) &&
+        (v.tMs as number) >= 0
+      );
     case 'error':
       return typeof v.code === 'string' && typeof v.message === 'string';
     case 'shutdown_ack':
