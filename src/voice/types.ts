@@ -162,6 +162,10 @@ export interface VoiceInstallResult {
   readonly openWakeWordImportOk: boolean;
   /** Phase 6C — bundled `hey-symphony.onnx` model present on disk (under `assets/wake-models/` in dev, `dist/assets/wake-models/` in built). */
   readonly wakeModelBundled: boolean;
+  /** Phase 6D.2 — `tokenizers` importable (the rolling-buffer summarizer tokenizer; usually already transitive via Moonshine). Best-effort; false means the buffer falls back to the heuristic summarizer. */
+  readonly summarizerInstalled: boolean;
+  /** Phase 6D.2 — T5 summarizer ONNX model + spiece downloaded to the HF cache. Best-effort; false means the local-LLM summarizer is unavailable and the heuristic runs. */
+  readonly summarizerModelWarmed: boolean;
   readonly warnings: readonly string[];
   /** True when nothing was reinstalled (every requested dep already present at its current version). */
   readonly idempotent: boolean;

@@ -966,5 +966,153 @@ describe('runVoiceInstall — Phase 6C openWakeWord', () => {
   });
 });
 
+// Phase 6D.2 — local T5 summarizer install (best-effort; never gates OK).
+describe('runVoiceInstall — Phase 6D.2 summarizer', () => {
+  const isProbe = (a: readonly string[]): boolean =>
+    a[0] === '-c' && a[1]?.includes('local_files_only=True') === true;
+  const isDownload = (a: readonly string[]): boolean =>
+    a[0] === '-c' &&
+    a[1]?.includes('snapshot_download') === true &&
+    a[1]?.includes('local_files_only=True') !== true;
+  const isTokImport = (a: readonly string[]): boolean =>
+    a[0] === '-c' && a[1] === 'import tokenizers';
+
+  function freshSpawner(
+    handlers: {
+      tokImportOk?: boolean;
+      modelCached?: boolean;
+      downloadOk?: boolean;
+    } = {},
+    calls?: Array<readonly string[]>,
+  ): InstallerSpawner {
+    const tokImportOk = handlers.tokImportOk ?? true;
+    const modelCached = handlers.modelCached ?? true;
+    const downloadOk = handlers.downloadOk ?? true;
+    return async (req) => {
+      calls?.push(req.args);
+      const a = req.args;
+      const ok = { stdout: '', stderr: '', exitCode: 0, signal: null } as const;
+      const fail = { stdout: '', stderr: 'boom', exitCode: 1, signal: null } as const;
+      if (a[0] === '--version') return { ...ok, stdout: 'Python 3.11.5' };
+      if (a[0] === '-m' && a[1] === 'pip' && a[2] === 'show') return fail; // force full install
+      if (isTokImport(a)) return tokImportOk ? ok : fail;
+      if (isProbe(a)) return modelCached ? ok : fail;
+      if (isDownload(a)) return downloadOk ? ok : fail;
+      return ok;
+    };
+  }
+
+  it('populates summarizer fields on the happy path (already cached)', async () => {
+    const venvDir = makeTmp('voice-installer-');
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: makeTmp('home-'),
+      spawner: freshSpawner(),
+      force: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.summarizerInstalled).toBe(true);
+    expect(result.summarizerModelWarmed).toBe(true);
+  });
+
+  it('downloads the model when not cached (probe miss → download)', async () => {
+    const venvDir = makeTmp('voice-installer-');
+    const calls: Array<readonly string[]> = [];
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: makeTmp('home-'),
+      spawner: freshSpawner({ modelCached: false, downloadOk: true }, calls),
+      force: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.summarizerModelWarmed).toBe(true);
+    expect(calls.some((a) => isDownload(a))).toBe(true);
+  });
+
+  it('best-effort: model download failure → OK with a warning, warmed=false', async () => {
+    const venvDir = makeTmp('voice-installer-');
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: makeTmp('home-'),
+      spawner: freshSpawner({ modelCached: false, downloadOk: false }, undefined),
+      force: true,
+    });
+    expect(result.ok).toBe(true); // never gates overall success
+    expect(result.summarizerInstalled).toBe(true);
+    expect(result.summarizerModelWarmed).toBe(false);
+    expect(result.warnings.some((w) => w.includes('summarizer model download failed'))).toBe(true);
+  });
+
+  it('pip-installs tokenizers when missing (probe-first miss)', async () => {
+    const venvDir = makeTmp('voice-installer-');
+    const calls: Array<readonly string[]> = [];
+    // First `import tokenizers` fails; the re-check after pip install passes.
+    let tokSeen = 0;
+    const spawner: InstallerSpawner = async (req) => {
+      calls.push(req.args);
+      const a = req.args;
+      const ok = { stdout: '', stderr: '', exitCode: 0, signal: null } as const;
+      if (a[0] === '--version') return { ...ok, stdout: 'Python 3.11.5' };
+      if (a[0] === '-m' && a[1] === 'pip' && a[2] === 'show') {
+        return { stdout: '', stderr: '', exitCode: 1, signal: null };
+      }
+      if (a[0] === '-c' && a[1] === 'import tokenizers') {
+        tokSeen += 1;
+        return tokSeen === 1
+          ? { stdout: '', stderr: 'no tokenizers', exitCode: 1, signal: null }
+          : ok;
+      }
+      return ok;
+    };
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: makeTmp('home-'),
+      spawner,
+      force: true,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.summarizerInstalled).toBe(true);
+    expect(
+      calls.some(
+        (a) => a[0] === '-m' && a[1] === 'pip' && a[2] === 'install' && a[3] === 'tokenizers',
+      ),
+    ).toBe(true);
+  });
+
+  it('idempotent path stays install-free but still reports summarizer status', async () => {
+    const venvDir = makeTmp('voice-installer-');
+    const venvPython = path.join(venvDir, 'bin', 'python');
+    const fsp = await import('node:fs/promises');
+    await fsp.mkdir(path.dirname(venvPython), { recursive: true });
+    await fsp.writeFile(venvPython, '#!/usr/bin/env false\n');
+    await fsp.chmod(venvPython, 0o755);
+
+    let installCount = 0;
+    const spawner: InstallerSpawner = async (req) => {
+      const a = req.args;
+      if (a[0] === '--version') return { stdout: 'Python 3.11.5', stderr: '', exitCode: 0, signal: null };
+      if (a[0] === '-m' && a[1] === 'pip' && a[2] === 'show') {
+        return { stdout: `Name: ${a[3]}\nVersion: 1.0`, stderr: '', exitCode: 0, signal: null };
+      }
+      if (a[0] === '-m' && a[1] === 'pip' && a[2] === 'install') installCount += 1;
+      return { stdout: '', stderr: '', exitCode: 0, signal: null };
+    };
+    const result = await runVoiceInstall({
+      venvDir,
+      platform: 'linux',
+      homeDir: makeTmp('home-'),
+      spawner,
+    });
+    expect(result.idempotent).toBe(true);
+    expect(result.summarizerInstalled).toBe(true);
+    expect(result.summarizerModelWarmed).toBe(true);
+    expect(installCount).toBe(0); // summarizer probe-first → no installs
+  });
+});
+
 // Avoid unused-import lint
 void vi;
