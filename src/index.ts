@@ -384,6 +384,72 @@ voice
     },
   );
 
+voice
+  .command('capture')
+  .description(
+    'Phase 6D — always-capture: store VAD-gated transcripts in the rolling context buffer. Press Ctrl-C to stop.',
+  )
+  .option('--json', 'Emit one JSON line per stored chunk instead of human output.')
+  .option(
+    '--max-events <n>',
+    'Auto-exit after N stored transcript chunks (default 0 = unbounded).',
+    (v) => Number.parseInt(v, 10),
+  )
+  .option(
+    '--max-seconds <n>',
+    'Auto-exit after N seconds (default 0 = unbounded).',
+    (v) => Number.parseInt(v, 10),
+  )
+  .option(
+    '--pcm <file>',
+    'Fixture mode: pipe a 16kHz mono PCM file instead of opening the mic (no microphone required).',
+  )
+  .action(
+    async (opts: { json?: boolean; maxEvents?: number; maxSeconds?: number; pcm?: string }) => {
+      const { runVoiceCapture } = await import('./cli/voice-capture.js');
+      const maxEvents =
+        opts.maxEvents !== undefined && !Number.isNaN(opts.maxEvents) ? opts.maxEvents : undefined;
+      const maxSeconds =
+        opts.maxSeconds !== undefined && !Number.isNaN(opts.maxSeconds) ? opts.maxSeconds : undefined;
+      // SIGINT two-tap (mirrors `voice listen`, 6C audit-M3): first Ctrl-C
+      // aborts gracefully (final compaction + clean teardown); second
+      // force-kills the bridge's Python subprocess and exits 130 so a
+      // double-press on Win32 can't orphan python.exe with the mic open.
+      const abortController = new AbortController();
+      let sigintCount = 0;
+      let captureBridge: VoiceBridge | undefined;
+      const onSigint = (): void => {
+        sigintCount += 1;
+        if (sigintCount === 1) {
+          abortController.abort();
+        } else {
+          if (captureBridge !== undefined) {
+            void captureBridge.stop({ graceMs: 0 }).catch(() => undefined);
+          }
+          process.exit(130);
+        }
+      };
+      process.on('SIGINT', onSigint);
+      try {
+        const { VoiceBridge } = await import('./voice/bridge.js');
+        captureBridge = new VoiceBridge();
+        const result = await runVoiceCapture({
+          ...(opts.json === true ? { format: 'json' as const } : {}),
+          ...(maxEvents !== undefined ? { maxEvents } : {}),
+          ...(maxSeconds !== undefined ? { maxSeconds } : {}),
+          ...(opts.pcm !== undefined
+            ? { inputMode: 'stdin-pcm' as const, fixturePath: opts.pcm }
+            : {}),
+          bridgeFactory: () => captureBridge!,
+          signal: abortController.signal,
+        });
+        process.exit(result.exitCode);
+      } finally {
+        process.off('SIGINT', onSigint);
+      }
+    },
+  );
+
 program
   .command('mcp-server')
   .description('Run the Symphony orchestrator MCP server over stdio. Spawned as a child of claude -p.')
