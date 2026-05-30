@@ -249,6 +249,18 @@ export const SymphonyConfigSchema = z.object({
       // "Hey Symphony" from firing 5 times in 400 ms; the orchestrator
       // sees one event per intent.
       wakeWordCooldownMs: z.number().int().min(500).max(10_000).default(2000),
+      // Phase 6D.1 — rolling context buffer (always-capture storage).
+      // `symphony voice capture` persists VAD-gated transcripts here; raw
+      // audio is never stored. Raw rows older than `bufferRawRetentionMinutes`
+      // are rolled up into local summaries during compaction; summary rows
+      // older than `bufferSummaryRetentionHours` are deleted. `bufferMaxChunks`
+      // is a hard ceiling (oldest evicted past it). `bufferSummaryMaxChars`
+      // caps each summary's length. Default: 2 h raw transcript, summary-only
+      // beyond, 7-day summary retention.
+      bufferRawRetentionMinutes: z.number().int().min(5).max(1440).default(120),
+      bufferSummaryRetentionHours: z.number().int().min(1).max(720).default(168),
+      bufferMaxChunks: z.number().int().min(100).max(100_000).default(5000),
+      bufferSummaryMaxChars: z.number().int().min(80).max(4000).default(500),
     })
     .default({
       enabled: false,
@@ -263,6 +275,10 @@ export const SymphonyConfigSchema = z.object({
       wakeWordThreshold: 0.5,
       wakeWordSustainFrames: 3,
       wakeWordCooldownMs: 2000,
+      bufferRawRetentionMinutes: 120,
+      bufferSummaryRetentionHours: 168,
+      bufferMaxChunks: 5000,
+      bufferSummaryMaxChars: 500,
     }),
 });
 

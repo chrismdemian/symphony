@@ -88,6 +88,18 @@ const onStdinClose = () => {
       setTimeout(() => process.exit(0), 5);
       break;
     }
+    case 'stt-capture-multi': {
+      // Phase 6D — multiple finals across one session, including one
+      // whitespace-only final the capture runner MUST skip. Fires on
+      // stdin EOF, then clean shutdown.
+      emit({ type: 'final', seq: 1, text: 'refactor the auth module', tMs: 1000, durationMs: 900 });
+      emit({ type: 'final', seq: 2, text: '   ', tMs: 2000, durationMs: 300 });
+      emit({ type: 'final', seq: 3, text: 'and update the login flow', tMs: 3000, durationMs: 900 });
+      emit({ type: 'final', seq: 4, text: 'then run the tests', tMs: 4000, durationMs: 700 });
+      emit({ type: 'shutdown_ack' });
+      setTimeout(() => process.exit(0), 5);
+      break;
+    }
     case 'stt-truncated': {
       emit({ type: 'speech_start', tMs: 100 });
       emit({ type: 'partial', seq: 1, text: 'thirty seconds of', tMs: 5000 });
@@ -183,6 +195,10 @@ switch (scenario) {
     setTimeout(() => emit({ type: 'stt_ready', model: 'moonshine/base' }), 5);
     break;
   case 'stt-no-final':
+    ready();
+    setTimeout(() => emit({ type: 'stt_ready', model: 'moonshine/base' }), 5);
+    break;
+  case 'stt-capture-multi':
     ready();
     setTimeout(() => emit({ type: 'stt_ready', model: 'moonshine/base' }), 5);
     break;

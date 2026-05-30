@@ -21,6 +21,11 @@ describe('voice config — defaults', () => {
       wakeWordThreshold: 0.5,
       wakeWordSustainFrames: 3,
       wakeWordCooldownMs: 2000,
+      // Phase 6D fields
+      bufferRawRetentionMinutes: 120,
+      bufferSummaryRetentionHours: 168,
+      bufferMaxChunks: 5000,
+      bufferSummaryMaxChars: 500,
     });
   });
 
@@ -108,6 +113,11 @@ describe('voice config — salvage on bad values', () => {
       wakeWordThreshold: 0.5,
       wakeWordSustainFrames: 3,
       wakeWordCooldownMs: 2000,
+      // Phase 6D fields
+      bufferRawRetentionMinutes: 120,
+      bufferSummaryRetentionHours: 168,
+      bufferMaxChunks: 5000,
+      bufferSummaryMaxChars: 500,
     });
     expect(warnings.length).toBeGreaterThan(0);
   });

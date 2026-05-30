@@ -186,6 +186,26 @@ export function validateSchemaContract(db: BetterSqlite3Database, dbPath: string
     for (const col of ['saga_id', 'task_id', 'project_id', 'status', 'added_at'])
       requireColumn('saga_members', col);
   }
+  // Phase 6D.1 — rolling context buffer. SqliteTranscriptStore writes
+  // through every column below; future migrations that swap-rebuild the
+  // table MUST carry these columns forward (mirror 4G.1 / 4G.2 / 5A
+  // hazard pattern).
+  if (requireTable('transcript_chunks')) {
+    for (const col of [
+      'id',
+      'session_id',
+      'kind',
+      'ts',
+      't_ms',
+      'text',
+      'source',
+      'span_start_ts',
+      'span_end_ts',
+      'raw_count',
+      'created_at',
+    ])
+      requireColumn('transcript_chunks', col);
+  }
   // Reserved tables — presence check only (no columns yet exercised).
   requireTable('conversations');
   requireTable('messages');
