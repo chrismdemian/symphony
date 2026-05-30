@@ -193,105 +193,9 @@ function makeBaseResult(
     openWakeWordInstalled: false,
     openWakeWordImportOk: false,
     wakeModelBundled: false,
-    summarizerInstalled: false,
-    summarizerModelWarmed: false,
     warnings: [],
     idempotent: false,
   };
-}
-
-// Phase 6D.2 — local T5 ONNX summarizer for the rolling context buffer.
-// Best-effort install (never gates overall success): ensure `tokenizers`
-// (already a transitive dep of useful-moonshine-onnx) + pre-download the
-// int8 ONNX model so the first compaction doesn't pay the ~144MB fetch.
-// The no-cache decoder path is driven torch-free by
-// `src/voice/python/summarizer.py`. The repo ships `tokenizer.json` (a
-// fast/Unigram tokenizer), NOT a raw `spiece.model`.
-const SUMMARIZER_REPO_ID = 'onnx-community/text_summarization-ONNX';
-const SUMMARIZER_ALLOW_PATTERNS = [
-  'onnx/encoder_model_int8.onnx',
-  'onnx/decoder_model_int8.onnx',
-  'tokenizer.json',
-  'config.json',
-  'generation_config.json',
-  'special_tokens_map.json',
-] as const;
-
-/**
- * Install + warm the local summarizer (Phase 6D.2). Best-effort:
- * failures push a warning and return `{installed/warmed: false}` — the
- * rolling-buffer compaction falls back to the deterministic heuristic, so
- * a missing model never breaks voice. Idempotent (pip + snapshot_download
- * both skip already-present artifacts), so it's safe to run on the
- * idempotent install path too.
- */
-async function runSummarizerInstall(
-  spawner: InstallerSpawner,
-  venvPython: string,
-  progress: (line: string) => void,
-  warnings: string[],
-): Promise<{ installed: boolean; warmed: boolean }> {
-  const allowList = `[${SUMMARIZER_ALLOW_PATTERNS.map((p) => JSON.stringify(p)).join(', ')}]`;
-
-  // 1. tokenizers — probe-first so the idempotent path stays install-free.
-  //    Normally already present (transitive via useful-moonshine-onnx);
-  //    the pip-install is only a safety net if a future STT version drops it.
-  let installed =
-    (await spawner({ cmd: venvPython, args: ['-c', 'import tokenizers'] })).exitCode === 0;
-  if (!installed) {
-    progress('pip install tokenizers (Phase 6D.2 summarizer)...');
-    const pipRes = await spawner({
-      cmd: venvPython,
-      args: ['-m', 'pip', 'install', 'tokenizers'],
-      onProgress: progress,
-    });
-    if (pipRes.exitCode !== 0) {
-      warnings.push(
-        'pip install tokenizers failed (best-effort; the rolling-buffer ' +
-          'summarizer falls back to the heuristic): ' +
-          (pipRes.stderr || pipRes.stdout).slice(0, 400),
-      );
-      return { installed: false, warmed: false };
-    }
-    installed =
-      (await spawner({ cmd: venvPython, args: ['-c', 'import tokenizers'] })).exitCode === 0;
-    if (!installed) {
-      warnings.push('tokenizers installed but not importable; summarizer falls back to the heuristic.');
-      return { installed: false, warmed: false };
-    }
-  }
-
-  // 2. Model files — probe the HF cache via local_files_only (raises when
-  //    not fully cached), download only on a miss. Both probe + download
-  //    skip already-present files, so this is idempotent.
-  const probe = await spawner({
-    cmd: venvPython,
-    args: [
-      '-c',
-      'from huggingface_hub import snapshot_download; ' +
-        `snapshot_download(${JSON.stringify(SUMMARIZER_REPO_ID)}, allow_patterns=${allowList}, local_files_only=True)`,
-    ],
-  });
-  if (probe.exitCode === 0) return { installed: true, warmed: true };
-
-  progress('Downloading T5 summarizer model (~144MB; first run)...');
-  const dlRes = await spawner({
-    cmd: venvPython,
-    args: [
-      '-c',
-      'from huggingface_hub import snapshot_download; ' +
-        `snapshot_download(${JSON.stringify(SUMMARIZER_REPO_ID)}, allow_patterns=${allowList})`,
-    ],
-    onProgress: progress,
-  });
-  if (dlRes.exitCode !== 0) {
-    warnings.push(
-      'T5 summarizer model download failed (best-effort; falls back to the ' +
-        `heuristic): ${(dlRes.stderr || dlRes.stdout).slice(0, 400)}`,
-    );
-    return { installed: true, warmed: false };
-  }
-  return { installed: true, warmed: true };
 }
 
 function failureResult(
@@ -416,14 +320,6 @@ export async function runVoiceInstall(
             `wake-word may fail at runtime. ${owwDl.stderr.slice(0, 300)}`,
         );
       }
-      // Phase 6D.2 — summarizer is best-effort + idempotent, so run it on
-      // the idempotent path too (self-heals a venv installed before 6D.2).
-      const summarizerIdem = await runSummarizerInstall(
-        spawner,
-        venvPython,
-        progress,
-        warnings,
-      );
       // Touch model warmup only if the HF cache is empty — but we can't
       // easily probe that without invoking python. Set
       // moonshineModelWarmed=true on the idempotent path because the
@@ -447,8 +343,6 @@ export async function runVoiceInstall(
         openWakeWordInstalled: depStatus.openwakeword,
         openWakeWordImportOk: depStatus.openWakeWordImport,
         wakeModelBundled: wakeBundled,
-        summarizerInstalled: summarizerIdem.installed,
-        summarizerModelWarmed: summarizerIdem.warmed,
         warnings,
         idempotent: true,
       };
@@ -604,14 +498,6 @@ export async function runVoiceInstall(
     );
   }
 
-  // 11b. Phase 6D.2 — install + warm the local T5 summarizer (best-effort).
-  const summarizerStatus = await runSummarizerInstall(
-    spawner,
-    venvPython,
-    progress,
-    warnings,
-  );
-
   // 12. Re-probe to populate the final result.
   const finalStatus = await probeDeps(spawner, venvPython);
   return {
@@ -630,8 +516,6 @@ export async function runVoiceInstall(
     openWakeWordInstalled: finalStatus.openwakeword,
     openWakeWordImportOk: finalStatus.openWakeWordImport,
     wakeModelBundled: wakeBundled,
-    summarizerInstalled: summarizerStatus.installed,
-    summarizerModelWarmed: summarizerStatus.warmed,
     warnings,
     idempotent: false,
   };

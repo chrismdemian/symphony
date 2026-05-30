@@ -32,9 +32,13 @@ import type { VoiceBridgeEvent } from '../voice/types.js';
  *     is the no-microphone production-scenario gate (mirrors
  *     `voice diagnose`).
  *
- * The summarizer is injected (default = the deterministic heuristic). The
- * 6D.2 local-LLM summarizer drops in via `opts.summarizer` without
- * touching this runner.
+ * Compaction summarization uses the deterministic heuristic (a faithful
+ * deduped join — never fabricates). A local-LLM summarizer was prototyped
+ * (6D.2, T5-small ONNX) but REMOVED: on real ambient speech it hallucinated
+ * facts and mostly truncated, which is unsafe for context fed to the
+ * orchestrator. Summon-time summarization is deferred to Maestro (6E) —
+ * it's a far better summarizer and only runs when the user engages. The
+ * `opts.summarizer` injection seam remains for tests / a future model.
  */
 
 const BRIDGE_READY_TIMEOUT_MS = 30_000;
@@ -240,9 +244,9 @@ export async function runVoiceCapture(
   // Single-flight compaction (audit-M1): overlapping passes would each
   // INSERT a summary for the same aged span — duplicate rows + a
   // double-counted `summariesCreated`. The interval skips while a pass is
-  // in flight; the 6D.2 local-LLM summarizer makes that await window real
-  // (seconds, not microtasks). Errors are swallowed — a failed compaction
-  // must never crash an active capture.
+  // in flight (the guard also protects any future async summarizer that
+  // makes the await window real). Errors are swallowed — a failed
+  // compaction must never crash an active capture.
   let compactionInFlight: Promise<void> | null = null;
   const runCompaction = (): Promise<void> => {
     if (compactionInFlight !== null) return compactionInFlight;
