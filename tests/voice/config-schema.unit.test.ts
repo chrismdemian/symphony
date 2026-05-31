@@ -8,6 +8,9 @@ describe('voice config — defaults', () => {
     const cfg = defaultConfig();
     expect(cfg.voice).toEqual({
       enabled: false,
+      // Phase 6E.1 fields
+      mode: 'summon',
+      autoSend: false,
       vadThreshold: 0.5,
       vadMinSpeechMs: 100,
       vadMinSilenceMs: 400,
@@ -102,6 +105,9 @@ describe('voice config — salvage on bad values', () => {
     });
     expect(config.voice).toEqual({
       enabled: false,
+      // Phase 6E.1 fields
+      mode: 'summon',
+      autoSend: false,
       vadThreshold: 0.5,
       vadMinSpeechMs: 100,
       vadMinSilenceMs: 400,

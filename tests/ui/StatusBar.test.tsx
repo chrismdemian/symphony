@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { render } from 'ink-testing-library';
 import React from 'react';
+import { Box } from 'ink';
 import { ThemeProvider } from '../../src/ui/theme/context.js';
 import { StatusBar } from '../../src/ui/layout/StatusBar.js';
 import type { ProjectSnapshot } from '../../src/projects/types.js';
@@ -26,10 +27,24 @@ const baseWorker = (status: WorkerRecordSnapshot['status']): WorkerRecordSnapsho
   createdAt: '2026-04-29T00:00:00.000Z',
 });
 
+// Render width for content assertions. ink-testing-library's `render`
+// does NOT honor a `{ columns }` option, so a fixed-width `<Box>` wrapper
+// is the reliable knob (same mechanism the 6E.1 visual harness uses).
+// 6E.1 wrapped the whole bar in `<Text wrap="truncate">` (status-bar-
+// never-wraps rule for the voice chip), so at ink-testing-library's narrow
+// default width the trailing segments (e.g. the Away Mode "… questions
+// queued" tail) are clipped instead of wrapping onto a second line. A wide
+// wrapper keeps the full bar on one line so token-presence assertions see
+// every segment — the "content invariants belong at a fixed wide width"
+// precedent the StatusBar source documents (3S).
+const RENDER_WIDTH = 200;
+
 function renderStatusBar(props: React.ComponentProps<typeof StatusBar>) {
   const result = render(
     <ThemeProvider>
-      <StatusBar {...props} />
+      <Box width={RENDER_WIDTH}>
+        <StatusBar {...props} />
+      </Box>
     </ThemeProvider>,
   );
   // Phase 3B.3: tests/setup.ts forces chalk.level=3 globally so

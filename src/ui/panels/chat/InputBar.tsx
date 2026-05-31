@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Box, Text, useInput, usePaste } from 'ink';
 import { useTheme } from '../../theme/context.js';
 import {
@@ -59,15 +59,37 @@ export interface InputBarProps {
   readonly isActive?: boolean;
   /** Placeholder shown when the buffer is empty. */
   readonly placeholder?: string;
+  /**
+   * Phase 6E.1 — voice transcript injection (review mode). A separate
+   * channel from `usePaste` (like the paste path) so a voice append and a
+   * paste never share a nonce counter. The text is appended at the cursor
+   * via the existing `insertChunk`; the nonce guards against re-injecting
+   * on unrelated re-renders. Undefined when voice is disabled / non-TTY.
+   */
+  readonly injected?: { readonly text: string; readonly nonce: number };
 }
 
 export function InputBar({
   onSubmit,
   isActive = true,
   placeholder = 'Tell Maestro what to do…',
+  injected,
 }: InputBarProps): React.JSX.Element {
   const theme = useTheme();
   const [buf, setBuf] = useState<InputBuffer>(EMPTY_BUFFER);
+
+  // Phase 6E.1 — voice transcript injection (review mode). Nonce-guarded
+  // so the append fires exactly once per new transcript, not on every
+  // unrelated render. Separate channel from `usePaste` below; same atomic
+  // insert-at-cursor via `insertChunk`. Mirrors the 3S `pasteChunk` nonce
+  // pattern used elsewhere in the chat surface.
+  const lastInjectedNonceRef = useRef(0);
+  useEffect(() => {
+    if (injected === undefined) return;
+    if (injected.nonce === lastInjectedNonceRef.current) return;
+    lastInjectedNonceRef.current = injected.nonce;
+    setBuf((b) => insertChunk(b, injected.text));
+  }, [injected]);
 
   // Paste channel — Ink 7's bracketed paste mode delivers the entire
   // paste payload here without it leaking into `useInput`. `isActive`

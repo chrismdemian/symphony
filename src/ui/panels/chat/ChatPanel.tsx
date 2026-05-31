@@ -26,7 +26,17 @@ import { buildSlashTable, dispatchSlash } from './slashCommands.js';
  * ShimmerText status line and true Shift+Enter via kitty mode.
  */
 
-export function ChatPanel(): React.JSX.Element {
+export interface ChatPanelProps {
+  /**
+   * Phase 6E.1 — voice transcript injection (review mode). Forwarded to
+   * InputBar's dedicated `injected` channel so a voice append never
+   * collides with the paste path's nonce. Undefined when voice is
+   * disabled / non-TTY.
+   */
+  readonly injected?: { readonly text: string; readonly nonce: number };
+}
+
+export function ChatPanel(props: ChatPanelProps = {}): React.JSX.Element {
   const focus = useFocus();
   const theme = useTheme();
   const data = useMaestroData();
@@ -103,7 +113,7 @@ export function ChatPanel(): React.JSX.Element {
       <Box flexDirection="column" flexGrow={1}>
         <MessageList turns={data.turns} isFocused={isFocused} />
         <StatusLine turn={data.turn} turns={data.turns} />
-        <InputBar onSubmit={handleSubmit} isActive={isFocused} />
+        <InputBar onSubmit={handleSubmit} isActive={isFocused} injected={props.injected} />
         {error !== undefined ? (
           // Visual review: error MUST live outside the InputBar's
           // border — inside reads as user-typed content.
