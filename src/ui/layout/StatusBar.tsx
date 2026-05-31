@@ -1,9 +1,10 @@
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Box, Text, useAnimation } from 'ink';
 import { useTheme } from '../theme/context.js';
 import type { ProjectSnapshot } from '../../projects/types.js';
 import type { WorkerRecordSnapshot } from '../../orchestrator/worker-registry.js';
 import type { AutonomyTier, ToolMode } from '../../orchestrator/types.js';
+import type { VoiceStatus } from '../../voice/voice-controller.js';
 import {
   formatCostUsd,
   formatTokenCount,
@@ -85,6 +86,14 @@ export interface StatusBarProps {
    * via `<leader>f` (Ctrl+X f).
    */
   readonly tuiProjectFilter?: 'all' | 'active';
+  /**
+   * Phase 6E.1 — voice summon status. When set (voice enabled + a
+   * controller wired), a listening-indicator segment renders at the end of
+   * the bar. Undefined → no segment (voice disabled / non-TTY). The `off`
+   * status also renders no segment — the chip only appears once a session
+   * is active or has errored.
+   */
+  readonly voiceStatus?: VoiceStatus;
 }
 
 function activeCount(workers: readonly WorkerRecordSnapshot[]): number {
@@ -174,136 +183,209 @@ export function StatusBar(props: StatusBarProps): React.JSX.Element {
   const showUsageSegment =
     totals !== undefined && (totals.totalTokens > 0 || totals.totalCostUsd > 0);
   return (
+    // Phase 3M/3S rule — the status bar must NEVER wrap to a second line.
+    // Under width pressure (e.g. the 6E.1 voice chip appended at the end on a
+    // narrow terminal) a row of flat <Text> siblings wraps, splitting glyphs
+    // from labels and corrupting earlier segments. Wrapping the whole line in
+    // a single <Text wrap="truncate"> clips overflow on ONE line. Per-segment
+    // colors are preserved via the nested <Text> spans (Ink composes nested
+    // Text for colored runs; the parent's `wrap` governs the whole line).
     <Box flexDirection="row" paddingX={1}>
-      <Text color={theme['accent']} bold>
-        Symphony
-      </Text>
-      <Text color={theme['textMuted']}> v{props.version}</Text>
-      <Text color={theme['border']}>{SEPARATOR}</Text>
-      <Text color={theme['textMuted']}>Mode: </Text>
-      <Text color={theme['text']}>{formatMode(props.mode)}</Text>
-      <Text color={theme['border']}>{SEPARATOR}</Text>
-      <Text color={theme['textMuted']}>Workers: </Text>
-      <Text color={active > 0 ? theme['accent'] : theme['text']}>{String(active)}</Text>
-      {showUsageSegment && totals !== undefined && (
-        <Box flexShrink={0}>
-          {/*
-           * Phase 3N.2 — `↑ {tokens} · ${cost}` segment. The up-arrow
-           * is the universal "outbound traffic" glyph. Label is muted
-           * (chrome); values are accent (signal) so the eye lands on
-           * the magnitudes. Token count uses `inputTokens +
-           * outputTokens` only — cache counts surface in `/stats`
-           * (Phase 3N.3).
-           *
-           * Audit M4 (3N.2): wrap in `<Box flexShrink={0}>` so Ink's
-           * flex-row layout cannot chop the segment under width
-           * pressure (3I rule). The surrounding `<Text>` siblings in
-           * this bar still flex-shrink — adding the wrapper here pins
-           * the new segment specifically; other segments retain their
-           * pre-existing behavior. Position stays between Workers and
-           * Q because the Box renders inline in the row.
-           */}
-          <Text color={theme['border']}>{SEPARATOR}</Text>
-          <Text color={theme['textMuted']}>↑ </Text>
-          <Text color={theme['accent']}>{formatTokenCount(totals.totalTokens)}</Text>
-          <Text color={theme['textMuted']}> · </Text>
-          <Text color={theme['accent']}>{formatCostUsd(totals.totalCostUsd)}</Text>
-        </Box>
-      )}
-      <Text color={theme['border']}>{SEPARATOR}</Text>
-      <Text color={theme['textMuted']}>Q: </Text>
-      <Text color={questionsColor(theme, questionsCount, blockingCount)}>
-        {String(questionsCount)}
-      </Text>
-      <Text color={theme['border']}>{SEPARATOR}</Text>
-      <Text color={theme['textMuted']}>Project: </Text>
-      <Text color={theme['text']}>{formatProject(props.projects)}</Text>
-      {/*
-       * Phase 5D — Active project chip. Renders ONLY when the cursor
-       * is explicitly set (someone called `set_active_project`). Null
-       * / undefined hides the chip — Symphony has no "currently
-       * active" semantics until a real choice is made. Value tone is
-       * accent (gold) so the eye lands on the routing target, label
-       * stays muted (chrome).
-       */}
-      {props.activeProject !== null && props.activeProject !== undefined && (
-        <>
-          <Text color={theme['border']}>{SEPARATOR}</Text>
-          <Text color={theme['textMuted']}>Active: </Text>
-          <Text color={theme['accent']}>{props.activeProject}</Text>
-        </>
-      )}
-      {/*
-       * Phase 5F — TUI project filter chip. Only renders when ALL of:
-       *   - tuiProjectFilter === 'active' (user explicitly scoped)
-       *   - activeProject is set (otherwise the filter is inert; the
-       *     `cycleProjectFilter` toast already names this case)
-       *   - activeProject still resolves to a registered project (else
-       *     the chip would lie — Layout.tsx degrades `scopeToProjectPath`
-       *     to undefined for unknown names so the WorkerPanel renders
-       *     UNFILTERED, but without this last gate the chip would still
-       *     read `Filter: projX` while nothing was actually scoped).
-       *     Post-5EF audit M2 fix.
-       * The chip's mere presence signals "you are looking at a scoped
-       * view" so the user doesn't wonder where the other projects'
-       * workers/queue rows went. Accent gold matches the locked palette.
-       */}
-      {props.tuiProjectFilter === 'active' &&
-        props.activeProject !== null &&
-        props.activeProject !== undefined &&
-        props.projects.some(
-          (p) => p.name === props.activeProject || p.id === props.activeProject,
-        ) && (
+      <Text wrap="truncate">
+        <Text color={theme['accent']} bold>
+          Symphony
+        </Text>
+        <Text color={theme['textMuted']}> v{props.version}</Text>
+        <Text color={theme['border']}>{SEPARATOR}</Text>
+        <Text color={theme['textMuted']}>Mode: </Text>
+        <Text color={theme['text']}>{formatMode(props.mode)}</Text>
+        <Text color={theme['border']}>{SEPARATOR}</Text>
+        <Text color={theme['textMuted']}>Workers: </Text>
+        <Text color={active > 0 ? theme['accent'] : theme['text']}>{String(active)}</Text>
+        {showUsageSegment && totals !== undefined && (
+          <>
+            {/*
+             * Phase 3N.2 — `↑ {tokens} · ${cost}` segment. The up-arrow
+             * is the universal "outbound traffic" glyph. Label is muted
+             * (chrome); values are accent (signal) so the eye lands on
+             * the magnitudes. Token count uses `inputTokens +
+             * outputTokens` only — cache counts surface in `/stats`
+             * (Phase 3N.3).
+             *
+             * 6E.1: the whole bar is now wrapped in a single
+             * <Text wrap="truncate"> (status-bar-never-wraps rule), so this
+             * segment is a fragment of nested <Text> spans — a <Box> child
+             * of <Text> is invalid in Ink, and truncation (not flex-shrink)
+             * now governs overflow for the entire bar.
+             */}
+            <Text color={theme['border']}>{SEPARATOR}</Text>
+            <Text color={theme['textMuted']}>↑ </Text>
+            <Text color={theme['accent']}>{formatTokenCount(totals.totalTokens)}</Text>
+            <Text color={theme['textMuted']}> · </Text>
+            <Text color={theme['accent']}>{formatCostUsd(totals.totalCostUsd)}</Text>
+          </>
+        )}
+        <Text color={theme['border']}>{SEPARATOR}</Text>
+        <Text color={theme['textMuted']}>Q: </Text>
+        <Text color={questionsColor(theme, questionsCount, blockingCount)}>
+          {String(questionsCount)}
+        </Text>
+        <Text color={theme['border']}>{SEPARATOR}</Text>
+        <Text color={theme['textMuted']}>Project: </Text>
+        <Text color={theme['text']}>{formatProject(props.projects)}</Text>
+        {/*
+         * Phase 5D — Active project chip. Renders ONLY when the cursor
+         * is explicitly set (someone called `set_active_project`). Null
+         * / undefined hides the chip — Symphony has no "currently
+         * active" semantics until a real choice is made. Value tone is
+         * accent (gold) so the eye lands on the routing target, label
+         * stays muted (chrome).
+         */}
+        {props.activeProject !== null && props.activeProject !== undefined && (
           <>
             <Text color={theme['border']}>{SEPARATOR}</Text>
-            <Text color={theme['textMuted']}>Filter: </Text>
+            <Text color={theme['textMuted']}>Active: </Text>
             <Text color={theme['accent']}>{props.activeProject}</Text>
           </>
         )}
-      {awayMode && (
-        <>
-          <Text color={theme['border']}>{SEPARATOR}</Text>
-          {/*
-           * Phase 3M — Away Mode segment. Muted-gray throughout per
-           * PLAN.md §3M:1320 ("no emoji glyph; the bar's status segment
-           * uses the locked muted-gray text token to signal away
-           * state"). The whole label including counts stays one
-           * uniform tone — no accent color on numbers — because the
-           * away state itself is the signal, not the magnitudes.
-           */}
-          <Text color={theme['textMuted']}>
-            Away Mode — {done} done, {pending} pending, {questionsCount}{' '}
-            {questionsCount === 1 ? 'question' : 'questions'} queued
-          </Text>
-        </>
-      )}
-      {props.sessionId !== null && (
-        <>
-          <Text color={theme['border']}>{SEPARATOR}</Text>
-          <Text color={theme['textMuted']}>Session: </Text>
-          <Text color={theme['text']}>{props.sessionId.slice(0, 8)}</Text>
-        </>
-      )}
-      {/*
-       * Phase 3S — autonomy tier chip. Always renders (unlike the
-       * conditional awayMode segment); tier is a critical safety
-       * setting that should be persistently visible. Defaults to Tier 2
-       * (Notify) — matches the schema default + DEFAULT_DISPATCH_CONTEXT
-       * in capabilities.ts. Cycled via Ctrl+Y (`app.cycleAutonomyTier`).
-       *
-       * Rendered as flat <Text> siblings (NOT wrapped in a Box) to match
-       * the awayMode segment's render shape — wrapping the chip in a
-       * <Box flexShrink={0}> interleaves with Ink's text-wrap algorithm
-       * under narrow widths, causing the bar's continuation lines to
-       * land mid-Away-segment ("3 │ T2 Notify ny : ) questions"). Flat
-       * Text siblings flow naturally with the rest of the bar. Position
-       * assertions belong in the visual harness (120-col fixed width),
-       * not unit tests where ink-testing-library wraps.
-       */}
-      <Text color={theme['border']}>{SEPARATOR}</Text>
-      <Text color={tierColor(theme, props.autonomyTier ?? 2)}>
-        T{props.autonomyTier ?? 2} {tierLabel(props.autonomyTier ?? 2)}
+        {/*
+         * Phase 5F — TUI project filter chip. Only renders when ALL of:
+         *   - tuiProjectFilter === 'active' (user explicitly scoped)
+         *   - activeProject is set (otherwise the filter is inert; the
+         *     `cycleProjectFilter` toast already names this case)
+         *   - activeProject still resolves to a registered project (else
+         *     the chip would lie — Layout.tsx degrades `scopeToProjectPath`
+         *     to undefined for unknown names so the WorkerPanel renders
+         *     UNFILTERED, but without this last gate the chip would still
+         *     read `Filter: projX` while nothing was actually scoped).
+         *     Post-5EF audit M2 fix.
+         * The chip's mere presence signals "you are looking at a scoped
+         * view" so the user doesn't wonder where the other projects'
+         * workers/queue rows went. Accent gold matches the locked palette.
+         */}
+        {props.tuiProjectFilter === 'active' &&
+          props.activeProject !== null &&
+          props.activeProject !== undefined &&
+          props.projects.some(
+            (p) => p.name === props.activeProject || p.id === props.activeProject,
+          ) && (
+            <>
+              <Text color={theme['border']}>{SEPARATOR}</Text>
+              <Text color={theme['textMuted']}>Filter: </Text>
+              <Text color={theme['accent']}>{props.activeProject}</Text>
+            </>
+          )}
+        {awayMode && (
+          <>
+            <Text color={theme['border']}>{SEPARATOR}</Text>
+            {/*
+             * Phase 3M — Away Mode segment. Muted-gray throughout per
+             * PLAN.md §3M:1320 ("no emoji glyph; the bar's status segment
+             * uses the locked muted-gray text token to signal away
+             * state"). The whole label including counts stays one
+             * uniform tone — no accent color on numbers — because the
+             * away state itself is the signal, not the magnitudes.
+             */}
+            <Text color={theme['textMuted']}>
+              Away Mode — {done} done, {pending} pending, {questionsCount}{' '}
+              {questionsCount === 1 ? 'question' : 'questions'} queued
+            </Text>
+          </>
+        )}
+        {props.sessionId !== null && (
+          <>
+            <Text color={theme['border']}>{SEPARATOR}</Text>
+            <Text color={theme['textMuted']}>Session: </Text>
+            <Text color={theme['text']}>{props.sessionId.slice(0, 8)}</Text>
+          </>
+        )}
+        {/*
+         * Phase 3S — autonomy tier chip. Always renders (unlike the
+         * conditional awayMode segment); tier is a critical safety
+         * setting that should be persistently visible. Defaults to Tier 2
+         * (Notify) — matches the schema default + DEFAULT_DISPATCH_CONTEXT
+         * in capabilities.ts. Cycled via Ctrl+Y (`app.cycleAutonomyTier`).
+         *
+         * Rendered as flat <Text> siblings (NOT wrapped in a Box) to match
+         * the awayMode segment's render shape — wrapping the chip in a
+         * <Box flexShrink={0}> interleaves with Ink's text-wrap algorithm
+         * under narrow widths, causing the bar's continuation lines to
+         * land mid-Away-segment ("3 │ T2 Notify ny : ) questions"). Flat
+         * Text siblings flow naturally with the rest of the bar. Position
+         * assertions belong in the visual harness (120-col fixed width),
+         * not unit tests where ink-testing-library wraps.
+         */}
+        <Text color={theme['border']}>{SEPARATOR}</Text>
+        <Text color={tierColor(theme, props.autonomyTier ?? 2)}>
+          T{props.autonomyTier ?? 2} {tierLabel(props.autonomyTier ?? 2)}
+        </Text>
+        {/*
+         * Phase 6E.1 — voice listening indicator. Rendered as flat <Text>
+         * siblings (NOT wrapped in a Box) to match the autonomy/away
+         * segments — a Box wrapper interleaves with Ink's text-wrap
+         * algorithm under narrow widths and splits adjacent words (3S tier-
+         * chip comment above). The chip self-suppresses for `off` /
+         * undefined; VoiceChip calls useAnimation unconditionally (hook
+         * rules) and gates the pulse on `isActive`.
+         */}
+        {props.voiceStatus !== undefined && props.voiceStatus !== 'off' && (
+          <VoiceChip status={props.voiceStatus} />
+        )}
       </Text>
     </Box>
+  );
+}
+
+/**
+ * Phase 6E.1 — voice listening chip. Flat <Text> siblings. Violet
+ * `theme['accent']` (#7C6FEB) pulses while the mic is "hot" (listening /
+ * starting) via `useAnimation({ intervalMs: 500, isActive })`; steady on
+ * `transcribing`; `theme['warning']` on `error`. Labels are ≤ ~12 chars.
+ */
+function VoiceChip(props: { readonly status: VoiceStatus }): React.JSX.Element {
+  const theme = useTheme();
+  const isMicHot = props.status === 'listening' || props.status === 'starting';
+  // Pulse only while hot. Ink's `useAnimation` returns elapsed `time` (ms);
+  // we derive a 500ms on/off parity from it (the Equalizer precedent uses
+  // `time` rather than the discrete frame so the cadence survives Ink's
+  // render throttle). The glyph toggles filled/hollow — we don't change the
+  // color (palette is locked).
+  const { time } = useAnimation({ interval: 500, isActive: isMicHot });
+  const pulseOn = Math.floor(time / 500) % 2 === 0;
+
+  let color: string;
+  let label: string;
+  switch (props.status) {
+    case 'starting':
+      color = theme['accent']!;
+      label = `${pulseOn ? '◌' : '○'} Starting`;
+      break;
+    case 'listening':
+      color = theme['accent']!;
+      label = `${pulseOn ? '●' : '○'} Listening`;
+      break;
+    case 'transcribing':
+      color = theme['accent']!;
+      label = '● Transcribing';
+      break;
+    case 'stopping':
+      color = theme['textMuted']!;
+      label = '◌ Stopping';
+      break;
+    case 'error':
+      color = theme['warning']!;
+      label = '✗ Voice';
+      break;
+    case 'off':
+    default:
+      color = theme['textMuted']!;
+      label = '○ Voice';
+      break;
+  }
+  return (
+    <>
+      <Text color={theme['border']}>{SEPARATOR}</Text>
+      <Text color={color}>{label}</Text>
+    </>
   );
 }

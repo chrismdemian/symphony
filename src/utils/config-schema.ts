@@ -219,6 +219,16 @@ export const SymphonyConfigSchema = z.object({
   voice: z
     .object({
       enabled: z.boolean().default(false),
+      // Phase 6E.1 — interaction model. `'summon'` (default): mic is OFF
+      // until Ctrl+G starts a listening session; the session ends on send
+      // or a second Ctrl+G. `'always'` (6E.2, opt-in): the bridge runs
+      // continuously and ambient speech feeds the rolling buffer.
+      mode: z.enum(['summon', 'always']).default('summon'),
+      // Phase 6E.1 — send behavior. `false` (default): review-then-send —
+      // each `final` transcript lands in the input bar and the user presses
+      // Enter. `true`: the transcript is sent to Maestro immediately on
+      // `final` (and the summon session ends).
+      autoSend: z.boolean().default(false),
       vadThreshold: z.number().min(0).max(1).default(0.5),
       vadMinSpeechMs: z.number().int().min(50).max(2000).default(100),
       vadMinSilenceMs: z.number().int().min(100).max(3000).default(400),
@@ -264,6 +274,8 @@ export const SymphonyConfigSchema = z.object({
     })
     .default({
       enabled: false,
+      mode: 'summon',
+      autoSend: false,
       vadThreshold: 0.5,
       vadMinSpeechMs: 100,
       vadMinSilenceMs: 400,

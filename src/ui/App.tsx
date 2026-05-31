@@ -27,7 +27,9 @@ import { InstrumentNameProvider } from './data/InstrumentNameContext.js';
 import { AppActionsProvider } from './runtime/AppActions.js';
 import { ToastProvider, useToast } from './feedback/ToastProvider.js';
 import { ConfigProvider, useConfig } from '../utils/config-context.js';
+import { useVoice } from './data/useVoice.js';
 import type { TuiRpc } from './runtime/rpc.js';
+import type { VoiceController } from '../voice/voice-controller.js';
 
 /**
  * Root component. Composes Theme/Focus/Keybind providers around the
@@ -62,6 +64,12 @@ export interface AppProps {
     readonly crashedIds: readonly string[];
     readonly capturedAt: string;
   };
+  /**
+   * Phase 6E.1 — voice controller (summon mode). When set, `<AppShell>`
+   * mounts `useVoice` against it; Ctrl+G toggles a listening session and
+   * the status bar shows a listening indicator. Undefined → no-op.
+   */
+  readonly voice?: VoiceController;
 }
 
 export function App(props: AppProps): React.JSX.Element {
@@ -114,7 +122,28 @@ function AppShell(props: AppProps): React.JSX.Element {
   const sessionTotalsResult = useSessionTotals(props.rpc);
   const { mode } = useMode(props.rpc);
   const questionsResult = useQuestions(props.rpc);
-  const { sessionId, pushSystem, turn, markInterrupted, interruptPending } = useMaestroData();
+  const { sessionId, pushSystem, turn, markInterrupted, interruptPending, sendUserMessage } =
+    useMaestroData();
+
+  // Phase 6E.1 — voice (summon mode). The controller is launcher-owned and
+  // passed via props; when undefined the hook is a clean no-op. Routes
+  // transcripts to Maestro (autoSend) or the input bar (review), with a
+  // turn-in-flight fallback to the input bar + toast. NO awayMode.
+  const voice = useVoice({
+    controller: props.voice ?? null,
+    sendUserMessage,
+    showToast,
+  });
+  const toggleVoice = useCallback(() => {
+    if (!voice.available) {
+      showToast('Voice disabled — enable voice.enabled in config.', {
+        tone: 'info',
+        ttlMs: 4_000,
+      });
+      return;
+    }
+    voice.toggle();
+  }, [voice, showToast]);
 
   // Phase 3K — subscribe to the orchestrator's `completions.events`
   // topic and forward each summary into the chat panel as a system
@@ -591,6 +620,8 @@ function AppShell(props: AppProps): React.JSX.Element {
           // Phase 3T — Esc + Ctrl+C handlers. Two-tap exit on Ctrl+C.
           pivotInterruptEsc,
           pivotInterruptCtrlC,
+          // Phase 6E.1 — Ctrl+G toggles a voice summon session.
+          toggleVoice,
         },
         {
           questionsCount: questionsResult.count,
@@ -614,6 +645,7 @@ function AppShell(props: AppProps): React.JSX.Element {
       pivotInterruptEsc,
       pivotInterruptCtrlC,
       pivotEligible,
+      toggleVoice,
     ],
   );
 
@@ -649,6 +681,8 @@ function AppShell(props: AppProps): React.JSX.Element {
               activeProject={activeProject}
               tuiProjectFilter={config.tuiProjectFilter}
               sessionTotals={sessionTotalsResult.totals}
+              voiceStatus={voice.available ? voice.status : undefined}
+              voiceInjected={voice.injected}
             />
           </Box>
         </InstrumentNameProvider>

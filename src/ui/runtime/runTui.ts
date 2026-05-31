@@ -3,6 +3,7 @@ import { render } from 'ink';
 import { App } from '../App.js';
 import type { MaestroController } from '../data/MaestroEventsProvider.js';
 import type { TuiRpc } from './rpc.js';
+import type { VoiceController } from '../../voice/voice-controller.js';
 
 /**
  * Kitty-keyboard pop sequence — sent on process exit as a belt-and-
@@ -66,6 +67,13 @@ export interface RunTuiInput {
     readonly crashedIds: readonly string[];
     readonly capturedAt: string;
   };
+  /**
+   * Phase 6E.1 — voice controller (summon mode). When set, `<AppShell>`
+   * mounts `useVoice` against it and wires the Ctrl+G toggle + the
+   * listening indicator. Undefined when voice is disabled / non-TTY (the
+   * hook is a clean no-op).
+   */
+  readonly voice?: VoiceController;
 }
 
 export interface RunTuiHandle {
@@ -126,6 +134,7 @@ export function runTui(input: RunTuiInput): RunTuiHandle {
       onRequestExit: input.onRequestExit,
       ...(input.initialPopup !== undefined ? { initialPopup: input.initialPopup } : {}),
       ...(input.recovery !== undefined ? { recovery: input.recovery } : {}),
+      ...(input.voice !== undefined ? { voice: input.voice } : {}),
     }),
     {
       stdout,

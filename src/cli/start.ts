@@ -24,6 +24,7 @@ import {
 import { runTui } from '../ui/runtime/runTui.js';
 import type { TuiRpc } from '../ui/runtime/rpc.js';
 import { loadConfig } from '../utils/config.js';
+import { VoiceController } from '../voice/voice-controller.js';
 
 const SYMPHONY_VERSION = '0.0.0';
 
@@ -576,6 +577,39 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
       : `Maestro ready (session pending — claude emits system_init after first user message)`,
   );
 
+  // ── 4b. Voice controller (Phase 6E.1 — summon mode) ────────────────────
+  // Construct the VoiceController ONLY when voice is enabled AND both
+  // streams are TTYs (the TUI gates the same way; a non-TTY readline
+  // fallback has no Ctrl+G surface and Ink never mounts). The controller
+  // lives in THIS launcher process (same as runTui), NOT the mcp-server
+  // child — for the summon path it owns only the VoiceBridge, no SQLite.
+  //
+  // The cleanup entry is pushed AFTER the maestro-kill push but BEFORE the
+  // TUI-unmount push below. cleanup is LIFO, so on stop() the TUI unmounts
+  // first (its consumer un-subscribes from the controller), THEN the bridge
+  // stops — no last-frame routing into a torn-down React tree.
+  let voiceController: VoiceController | undefined;
+  const stdinIsTty = (stdin as NodeJS.ReadStream).isTTY === true;
+  const stdoutIsTty = (stdout as NodeJS.WriteStream).isTTY === true;
+  if (bootConfig?.config.voice.enabled === true && stdinIsTty && stdoutIsTty) {
+    voiceController = new VoiceController({
+      mode: bootConfig.config.voice.mode,
+      autoSend: bootConfig.config.voice.autoSend,
+      ...(options.home !== undefined ? { homeDir: options.home } : {}),
+      ...(validatedDefaultProject !== undefined
+        ? { projectPath: validatedDefaultProject }
+        : {}),
+      onStderr: (line) => {
+        stderr.write(`[voice-bridge] ${line}\n`);
+      },
+    });
+    const controller = voiceController;
+    cleanup.push({
+      label: 'stop voice',
+      run: () => controller.shutdown(),
+    });
+  }
+
   // ── 5. UI loop ─────────────────────────────────────────────────────────
   // Phase 3A: prefer the Ink TUI. Falls back to the prior 2C.2 readline
   // path on non-TTY stdout (CI, piped output) — Ink's alt-screen would
@@ -600,6 +634,9 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
     // when `crashedIds` is non-empty. Empty snapshots are also passed so
     // the AppShell hook's guard runs cleanly.
     recovery: recoveryReport,
+    // Phase 6E.1 — voice controller (summon mode). Undefined when voice is
+    // disabled / non-TTY, in which case `useVoice` is a clean no-op.
+    ...(voiceController !== undefined ? { voice: voiceController } : {}),
   });
 
   if (tui.active) {

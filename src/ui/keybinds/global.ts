@@ -162,6 +162,15 @@ export interface GlobalCommandHandlers {
    * AppShell tracks the timer.
    */
   pivotInterruptCtrlC?(): Promise<void> | void;
+  /**
+   * Phase 6E.1 — Ctrl+G toggles a voice summon session. Starts the bridge
+   * + opens the mic (or stops them on a second press). The AppShell
+   * handler shows a toast when voice is disabled. Scope is `'global'`
+   * (fires inside popups too, like Ctrl+Y) so the user can summon from
+   * anywhere. Optional during the 6E transition; falls back to a no-op
+   * when omitted.
+   */
+  toggleVoice?(): void;
 }
 
 export interface GlobalCommandState {
@@ -421,6 +430,20 @@ export function buildGlobalCommands(
       onSelect: () =>
         handlers.cycleAutonomyTier?.() ??
         handlers.showLeaderToast?.('Autonomy tier cycle — handler not wired.'),
+    },
+    // Phase 6E.1 — Ctrl+G toggles a voice summon session. `scope: 'global'`
+    // (matches app.cycleAutonomyTier's Ctrl+Y) so the chord fires from
+    // inside popups too — the user may want to dictate while reading the
+    // help overlay. Not `unbindable`: users CAN rebind via the 3H.4 editor.
+    // `displayOnScreen: false` keeps the bottom keybind bar uncluttered;
+    // the listening indicator in the status bar is the affordance.
+    {
+      id: 'voice.toggle',
+      title: 'toggle voice',
+      key: { kind: 'ctrl', char: 'g' },
+      scope: 'global',
+      displayOnScreen: false,
+      onSelect: handlers.toggleVoice ?? (() => undefined),
     },
     // Phase 3T — interrupt pivot. Two parallel commands so Esc AND
     // Ctrl+C both fire the same handler.

@@ -26,6 +26,7 @@ import type { UseWorkersResult } from '../data/useWorkers.js';
 import type { UseQueueResult } from '../data/useQueue.js';
 import type { UseQuestionsResult } from '../data/useQuestions.js';
 import type { SessionTotals } from '../../orchestrator/session-totals.js';
+import type { VoiceStatus } from '../../voice/voice-controller.js';
 
 /**
  * Top-level layout: status bar (top) → main split (chat | workers+output)
@@ -83,6 +84,17 @@ export interface LayoutProps {
    * from `useConfig().config.tuiProjectFilter`.
    */
   readonly tuiProjectFilter?: 'all' | 'active';
+  /**
+   * Phase 6E.1 — voice summon status for the StatusBar listening
+   * indicator. Undefined when voice is disabled / non-TTY.
+   */
+  readonly voiceStatus?: VoiceStatus;
+  /**
+   * Phase 6E.1 — voice transcript injection (review mode). Threaded to
+   * ChatPanel → InputBar where a nonce-guarded effect appends it at the
+   * cursor.
+   */
+  readonly voiceInjected?: { readonly text: string; readonly nonce: number };
 }
 
 function getPopupOnTopKey(stack: readonly FocusContext[]): string | null {
@@ -139,6 +151,7 @@ export function Layout(props: LayoutProps): React.JSX.Element {
         activeProject={props.activeProject ?? null}
         tuiProjectFilter={props.tuiProjectFilter}
         {...(props.sessionTotals !== undefined ? { sessionTotals: props.sessionTotals } : {})}
+        {...(props.voiceStatus !== undefined ? { voiceStatus: props.voiceStatus } : {})}
       />
       {/*
        * Phase 3F.3 — popup-mount strategy. We considered an
@@ -160,9 +173,17 @@ export function Layout(props: LayoutProps): React.JSX.Element {
       {popupNode !== null ? (
         popupNode
       ) : wide ? (
-        <WideLayout workersPanel={workersPanel} outputPanel={outputPanel} />
+        <WideLayout
+          workersPanel={workersPanel}
+          outputPanel={outputPanel}
+          voiceInjected={props.voiceInjected}
+        />
       ) : (
-        <NarrowLayout workersPanel={workersPanel} outputPanel={outputPanel} />
+        <NarrowLayout
+          workersPanel={workersPanel}
+          outputPanel={outputPanel}
+          voiceInjected={props.voiceInjected}
+        />
       )}
       <ToastTray />
       <KeybindBar />
@@ -224,14 +245,16 @@ function renderPopup(
 function WideLayout({
   workersPanel,
   outputPanel,
+  voiceInjected,
 }: {
   readonly workersPanel: React.JSX.Element;
   readonly outputPanel: React.JSX.Element;
+  readonly voiceInjected?: { readonly text: string; readonly nonce: number };
 }): React.JSX.Element {
   return (
     <Box flexDirection="row" flexGrow={1}>
       <Box flexBasis="55%" flexDirection="column">
-        <ChatPanel />
+        <ChatPanel injected={voiceInjected} />
       </Box>
       <Box flexBasis="45%" flexDirection="column">
         {workersPanel}
@@ -244,13 +267,15 @@ function WideLayout({
 function NarrowLayout({
   workersPanel,
   outputPanel,
+  voiceInjected,
 }: {
   readonly workersPanel: React.JSX.Element;
   readonly outputPanel: React.JSX.Element;
+  readonly voiceInjected?: { readonly text: string; readonly nonce: number };
 }): React.JSX.Element {
   return (
     <Box flexDirection="column" flexGrow={1}>
-      <ChatPanel />
+      <ChatPanel injected={voiceInjected} />
       {workersPanel}
       {outputPanel}
     </Box>
