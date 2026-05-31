@@ -89,6 +89,8 @@ export interface LayoutProps {
    * indicator. Undefined when voice is disabled / non-TTY.
    */
   readonly voiceStatus?: VoiceStatus;
+  /** Phase 6E.2 — always-mode summon armed (gold StatusBar chip). */
+  readonly voiceSummoned?: boolean;
   /**
    * Phase 6E.1 — voice transcript injection (review mode). Threaded to
    * ChatPanel → InputBar where a nonce-guarded effect appends it at the
@@ -152,6 +154,7 @@ export function Layout(props: LayoutProps): React.JSX.Element {
         tuiProjectFilter={props.tuiProjectFilter}
         {...(props.sessionTotals !== undefined ? { sessionTotals: props.sessionTotals } : {})}
         {...(props.voiceStatus !== undefined ? { voiceStatus: props.voiceStatus } : {})}
+        voiceSummoned={props.voiceSummoned}
       />
       {/*
        * Phase 3F.3 — popup-mount strategy. We considered an

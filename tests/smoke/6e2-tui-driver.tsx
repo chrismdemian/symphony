@@ -1,13 +1,11 @@
 /**
- * Phase 6E.1 PTY smoke driver — renders the full Symphony TUI via
- * `runTui` against a fake Maestro + a STUB VoiceController (no real
- * Python / mic / SQLite). The stub mirrors the real controller's
- * `subscribe`/`getSnapshot`/`toggle`/`setSendToMaestro`/`setInjectToInput`/
- * `shutdown` surface and flips its snapshot synchronously on `toggle()`
- * so the smoke can drive `Ctrl+G` and observe the listening indicator
- * transition in a REAL ConPTY.
+ * Phase 6E.2 PTY smoke driver — renders the full Symphony TUI via `runTui`
+ * against a fake Maestro + an always-mode FAKE VoiceController (no Python /
+ * mic / SQLite). The stub boots into always-mode "listening" (ambient
+ * violet chip); `toggle()` (Ctrl+G) ARMS a summon → the gold `◉ Summoned`
+ * chip; a second toggle disarms. Mirrors the 6E.1 driver structure.
  *
- * Run via `node --import tsx tests/smoke/6e1-tui-driver.tsx`.
+ * Run via `node --import tsx tests/smoke/6e2-tui-driver.tsx`.
  */
 import { EventEmitter } from 'node:events';
 import { runTui } from '../../src/ui/runtime/runTui.js';
@@ -66,14 +64,18 @@ class FakeMaestro implements MaestroController {
 }
 
 /**
- * Stub VoiceController — NO real bridge. `toggle()` flips off ↔ listening
- * synchronously so the smoke can assert the chip transition on `Ctrl+G`
- * without a venv. This deliberately bypasses `startSession` (which would
- * spawn Python). If a future smoke wants the real controller, gate it on
- * a venv probe — for the chip-toggle assertion, the stub is sufficient.
+ * Always-mode stub. Boots `listening`/`always`/`alwaysActive`. `toggle()`
+ * flips the `summoned` flag (Ctrl+G arms/disarms). No bridge, no store —
+ * pure snapshot flips so the smoke can assert the chip transition.
  */
-class StubVoiceController {
-  private snap: VoiceSnapshot = { status: 'off', mode: 'summon', isListening: false, summoned: false, alwaysActive: false };
+class AlwaysVoiceController {
+  private snap: VoiceSnapshot = {
+    status: 'listening',
+    mode: 'always',
+    isListening: true,
+    summoned: false,
+    alwaysActive: true,
+  };
   private readonly listeners = new Set<() => void>();
 
   subscribe = (l: () => void): (() => void) => {
@@ -89,21 +91,24 @@ class StubVoiceController {
   setInjectToInput(_fn: InjectToInputFn): void {
     /* no-op stub */
   }
+  setNoticeSink(_fn: (message: string) => void): void {
+    /* no-op stub */
+  }
+  async setMode(_mode: 'summon' | 'always'): Promise<void> {
+    /* no-op stub */
+  }
   toggle(): void {
-    this.snap =
-      this.snap.status === 'off'
-        ? { status: 'listening', mode: 'summon', isListening: true, summoned: false, alwaysActive: false }
-        : { status: 'off', mode: 'summon', isListening: false, summoned: false, alwaysActive: false };
+    this.snap = { ...this.snap, summoned: !this.snap.summoned };
     for (const l of this.listeners) l();
   }
   async shutdown(): Promise<void> {
-    this.snap = { status: 'off', mode: 'summon', isListening: false, summoned: false, alwaysActive: false };
+    this.snap = { ...this.snap, summoned: false };
     for (const l of this.listeners) l();
   }
 }
 
 const fakeMaestro = new FakeMaestro();
-const fakeVoice = new StubVoiceController();
+const fakeVoice = new AlwaysVoiceController();
 
 const fakeRpc: TuiRpc = {
   call: {
@@ -139,7 +144,7 @@ const fakeRpc: TuiRpc = {
     },
     notifications: { flushAwayDigest: async () => ({ digest: null }) },
     recovery: {
-      report: async () => ({ crashedIds: [], capturedAt: '2026-05-30T00:00:00.000Z' }),
+      report: async () => ({ crashedIds: [], capturedAt: '2026-05-31T00:00:00.000Z' }),
     },
     audit: { list: async () => [], count: async () => 0 },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

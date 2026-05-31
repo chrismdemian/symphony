@@ -129,7 +129,10 @@ export interface MaestroDataController {
    * prompt recognizes the envelope and treats the prior direction as
    * fully discarded.
    */
-  readonly sendUserMessage: (text: string) => SendUserMessageResult;
+  readonly sendUserMessage: (
+    text: string,
+    opts?: { readonly voiceContext?: string },
+  ) => SendUserMessageResult;
   /**
    * Phase 3K — append a system row (worker completion summary) to
    * chat history. Source-agnostic entry point so `useCompletionEvents`
@@ -155,9 +158,23 @@ export interface MaestroDataController {
   }) => void;
   /** Phase 3T — current interrupt-pending state (envelope is armed). Read-only. */
   readonly interruptPending: boolean;
+  /**
+   * Phase 6E.2 — stash an ambient `<voice-context>` block for the NEXT
+   * `sendUserMessage` (review-mode voice summon). The block is prepended
+   * (innermost) to the outgoing Maestro message; chat history still logs
+   * the user's original text. Cleared on send, on a pivot
+   * (markInterrupted), and after a ~120s staleness window.
+   */
+  readonly setPendingVoiceContext: (contextText: string) => void;
 }
 
 const MaestroDataContext = createContext<MaestroDataController | null>(null);
+
+/**
+ * Phase 6E.2 — a stashed review-mode voice-context older than this is
+ * dropped rather than attached to an unrelated later message.
+ */
+const VOICE_CONTEXT_TTL_MS = 120_000;
 
 export interface MaestroEventsProviderProps {
   readonly source: MaestroController;
@@ -229,20 +246,59 @@ export function MaestroEventsProvider({
   const interruptPendingRef = useRef(false);
   const [interruptPending, setInterruptPending] = React.useState(false);
 
+  // Phase 6E.2 — ambient voice-context stashed for the NEXT manual submit
+  // (review-mode summon). Ref-mirrored (read synchronously inside
+  // sendUserMessage). Cleared on send / pivot / staleness.
+  const pendingVoiceContextRef = useRef<
+    { readonly text: string; readonly stashedAt: number } | undefined
+  >(undefined);
+  const setPendingVoiceContext = useCallback((contextText: string): void => {
+    if (contextText.length === 0) return;
+    pendingVoiceContextRef.current = {
+      text: contextText,
+      stashedAt: nowRef.current(),
+    };
+  }, []);
+
   const sendUserMessage = useCallback(
-    (text: string): SendUserMessageResult => {
-      // Phase 3T — wrap with the [INTERRUPT NOTICE] envelope if armed.
-      // The wrap happens BEFORE the synchronous source.sendUserMessage
-      // call so a re-entry rejection (MaestroTurnInFlightError) sees
-      // the wrapped text and the flag still flips to false on success.
+    (
+      text: string,
+      opts?: { readonly voiceContext?: string },
+    ): SendUserMessageResult => {
+      // Compose the outgoing envelope BEFORE the synchronous
+      // source.sendUserMessage call so a re-entry rejection
+      // (MaestroTurnInFlightError) sees the wrapped text and the flags
+      // still flip on success. Order matters:
+      //   - Phase 6E.2 `<voice-context>` block sits INNERMOST — recent
+      //     ambient transcript that gives Maestro background for the
+      //     summoned utterance below it.
+      //   - Phase 3T `[INTERRUPT NOTICE]` wraps OUTERMOST — the pivot
+      //     directive frames everything.
+      // Chat history always logs the ORIGINAL `text` (not the envelope).
       let outgoing = text;
+      // Effective voice-context: an explicit `opts.voiceContext` (auto-send)
+      // wins; otherwise consume a fresh review-mode stash (drop it if stale).
+      let voiceContext = opts?.voiceContext;
+      if (voiceContext === undefined) {
+        const pending = pendingVoiceContextRef.current;
+        if (pending !== undefined) {
+          if (nowRef.current() - pending.stashedAt <= VOICE_CONTEXT_TTL_MS) {
+            voiceContext = pending.text;
+          } else {
+            pendingVoiceContextRef.current = undefined;
+          }
+        }
+      }
+      if (voiceContext !== undefined && voiceContext.length > 0) {
+        outgoing = `<voice-context>\n${voiceContext}\n</voice-context>\n\n${outgoing}`;
+      }
       if (interruptPendingRef.current) {
         outgoing =
           '[INTERRUPT NOTICE] The user pivoted on the previous turn. ' +
           'Workers were killed, queued tasks cancelled. Treat the prior ' +
           'direction as fully discarded. Respond fresh to the message ' +
           'below.\n\n' +
-          text;
+          outgoing;
       }
       try {
         source.sendUserMessage(outgoing);
@@ -266,6 +322,8 @@ export function MaestroEventsProvider({
           interruptPendingRef.current = false;
           setInterruptPending(false);
         }
+        // Bytes likely landed — don't re-attach the voice-context on retry.
+        pendingVoiceContextRef.current = undefined;
         return {
           ok: false,
           reason: 'send_failed',
@@ -279,6 +337,8 @@ export function MaestroEventsProvider({
         interruptPendingRef.current = false;
         setInterruptPending(false);
       }
+      // Voice-context (if any) was consumed by this send — clear the stash.
+      pendingVoiceContextRef.current = undefined;
       if (text.trim().length > 0) {
         dispatch({ kind: 'pushUser', text, ts: nowRef.current() });
       }
@@ -296,6 +356,9 @@ export function MaestroEventsProvider({
       // Arm the envelope wrap for the next sendUserMessage.
       interruptPendingRef.current = true;
       setInterruptPending(true);
+      // A pivot discards any stashed voice-context (it belonged to the
+      // now-abandoned direction).
+      pendingVoiceContextRef.current = undefined;
       // Push a synthetic gray-⏸ system row summarizing the pivot.
       const total =
         info.workersKilled.length + info.queuedCancelled.length + info.tasksCancelled.length;
@@ -343,6 +406,7 @@ export function MaestroEventsProvider({
       pushSystem,
       markInterrupted,
       interruptPending,
+      setPendingVoiceContext,
     }),
     [
       state.sessionId,
@@ -353,6 +417,7 @@ export function MaestroEventsProvider({
       pushSystem,
       markInterrupted,
       interruptPending,
+      setPendingVoiceContext,
     ],
   );
 

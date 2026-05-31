@@ -94,6 +94,12 @@ export interface StatusBarProps {
    * is active or has errored.
    */
   readonly voiceStatus?: VoiceStatus;
+  /**
+   * Phase 6E.2 — true while an always-mode summon is armed (Ctrl+G /
+   * wake-word). Promotes the voice chip to a gold `◉ Summoned` label,
+   * distinct from the violet ambient `Listening` chip.
+   */
+  readonly voiceSummoned?: boolean;
 }
 
 function activeCount(workers: readonly WorkerRecordSnapshot[]): number {
@@ -329,7 +335,7 @@ export function StatusBar(props: StatusBarProps): React.JSX.Element {
          * rules) and gates the pulse on `isActive`.
          */}
         {props.voiceStatus !== undefined && props.voiceStatus !== 'off' && (
-          <VoiceChip status={props.voiceStatus} />
+          <VoiceChip status={props.voiceStatus} summoned={props.voiceSummoned === true} />
         )}
       </Text>
     </Box>
@@ -342,9 +348,13 @@ export function StatusBar(props: StatusBarProps): React.JSX.Element {
  * starting) via `useAnimation({ intervalMs: 500, isActive })`; steady on
  * `transcribing`; `theme['warning']` on `error`. Labels are ≤ ~12 chars.
  */
-function VoiceChip(props: { readonly status: VoiceStatus }): React.JSX.Element {
+function VoiceChip(props: {
+  readonly status: VoiceStatus;
+  readonly summoned: boolean;
+}): React.JSX.Element {
   const theme = useTheme();
-  const isMicHot = props.status === 'listening' || props.status === 'starting';
+  const isMicHot =
+    props.status === 'listening' || props.status === 'starting' || props.summoned;
   // Pulse only while hot. Ink's `useAnimation` returns elapsed `time` (ms);
   // we derive a 500ms on/off parity from it (the Equalizer precedent uses
   // `time` rather than the discrete frame so the cadence survives Ink's
@@ -352,6 +362,18 @@ function VoiceChip(props: { readonly status: VoiceStatus }): React.JSX.Element {
   // color (palette is locked).
   const { time } = useAnimation({ interval: 500, isActive: isMicHot });
   const pulseOn = Math.floor(time / 500) % 2 === 0;
+
+  // Phase 6E.2 — an armed always-mode summon takes visual priority: gold
+  // `◉ Summoned` (brand gold #D4A843), distinct from the violet ambient
+  // `Listening` chip below.
+  if (props.summoned && (props.status === 'listening' || props.status === 'transcribing')) {
+    return (
+      <>
+        <Text color={theme['border']}>{SEPARATOR}</Text>
+        <Text color={theme['success']!}>{`${pulseOn ? '◉' : '◌'} Summoned`}</Text>
+      </>
+    );
+  }
 
   let color: string;
   let label: string;

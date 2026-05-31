@@ -36,6 +36,8 @@ const INERT_SNAPSHOT: VoiceSnapshot = Object.freeze({
   status: 'off' as VoiceStatus,
   mode: 'summon' as VoiceMode,
   isListening: false,
+  summoned: false,
+  alwaysActive: false,
 });
 
 export interface UseVoiceInput {
@@ -44,7 +46,13 @@ export interface UseVoiceInput {
   /** Maestro send seam — `useMaestroData().sendUserMessage`. */
   readonly sendUserMessage: (
     text: string,
+    opts?: { readonly voiceContext?: string },
   ) => { ok: true } | { ok: false; reason: string };
+  /**
+   * Stash an ambient `<voice-context>` block for the NEXT manual submit
+   * (review-mode summon). `useMaestroData().setPendingVoiceContext`.
+   */
+  readonly setPendingVoiceContext: (contextText: string) => void;
   /** Toast sink — `useToast().showToast`. */
   readonly showToast: (
     message: string,
@@ -56,6 +64,10 @@ export interface UseVoiceResult {
   readonly status: VoiceStatus;
   readonly mode: VoiceMode;
   readonly isListening: boolean;
+  /** True while an always-mode summon is armed (Ctrl+G / wake-word). */
+  readonly summoned: boolean;
+  /** True while always-mode capture is live — drives App auto-Away ownership. */
+  readonly alwaysActive: boolean;
   /** Toggle the summon session (Ctrl+G). No-op when voice is unavailable. */
   readonly toggle: () => void;
   /** Nonce-guarded transcript injection for the input bar (review mode). */
@@ -67,7 +79,7 @@ export interface UseVoiceResult {
 }
 
 export function useVoice(input: UseVoiceInput): UseVoiceResult {
-  const { controller, sendUserMessage, showToast } = input;
+  const { controller, sendUserMessage, setPendingVoiceContext, showToast } = input;
 
   // Subscribe to the external store. When `controller` is null, both
   // subscribe + getSnapshot are stable no-ops that yield the frozen inert
@@ -115,12 +127,30 @@ export function useVoice(input: UseVoiceInput): UseVoiceResult {
   // here rather than at construction.
   useEffect(() => {
     if (controller === null) return;
-    controller.setInjectToInput(injectToInput);
-    controller.setSendToMaestro((text) => {
-      const result = sendUserMessage(text);
+    // Review-mode inject: drop the utterance into the input bar AND (for an
+    // always-mode summon) stash the ambient context so the user's manual
+    // Enter re-attaches it (mirrors the interrupt-pending pattern).
+    controller.setInjectToInput((text, contextText) => {
+      if (contextText !== undefined && contextText.length > 0) {
+        setPendingVoiceContext(contextText);
+      }
+      injectToInput(text);
+    });
+    // Auto-send: route to Maestro with the ambient context prepended (only
+    // an always-mode summon carries `contextText`; summon mode calls the
+    // bare 1-arg form, byte-identical to 6E.1).
+    controller.setSendToMaestro((text, contextText) => {
+      const result =
+        contextText !== undefined
+          ? sendUserMessage(text, { voiceContext: contextText })
+          : sendUserMessage(text);
       if (result.ok) return result;
       if (result.reason === 'turn_in_flight') {
         // Don't lose the transcript — drop it into the input bar + toast.
+        // Re-stash the context so the manual resend re-attaches it.
+        if (contextText !== undefined && contextText.length > 0) {
+          setPendingVoiceContext(contextText);
+        }
         injectToInput(text);
         showToast('Maestro busy — transcript in the input bar.', {
           tone: 'warning',
@@ -129,7 +159,11 @@ export function useVoice(input: UseVoiceInput): UseVoiceResult {
       }
       return result;
     });
-  }, [controller, sendUserMessage, showToast, injectToInput]);
+    // Transient notices (e.g. summon-timeout dismissal).
+    controller.setNoticeSink((message) => {
+      showToast(message, { tone: 'info', ttlMs: 4_000 });
+    });
+  }, [controller, sendUserMessage, setPendingVoiceContext, showToast, injectToInput]);
 
   // Surface the controller's error state as a toast on the transition INTO
   // `error` (m2). The toast carries the controller's `lastError` — which
@@ -155,6 +189,8 @@ export function useVoice(input: UseVoiceInput): UseVoiceResult {
     status: snapshot.status,
     mode: snapshot.mode,
     isListening: snapshot.isListening,
+    summoned: snapshot.summoned,
+    alwaysActive: snapshot.alwaysActive,
     toggle,
     injected,
     available: controller !== null,
