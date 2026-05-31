@@ -122,8 +122,15 @@ function AppShell(props: AppProps): React.JSX.Element {
   const sessionTotalsResult = useSessionTotals(props.rpc);
   const { mode } = useMode(props.rpc);
   const questionsResult = useQuestions(props.rpc);
-  const { sessionId, pushSystem, turn, markInterrupted, interruptPending, sendUserMessage } =
-    useMaestroData();
+  const {
+    sessionId,
+    pushSystem,
+    turn,
+    markInterrupted,
+    interruptPending,
+    sendUserMessage,
+    setPendingVoiceContext,
+  } = useMaestroData();
 
   // Phase 6E.1 — voice (summon mode). The controller is launcher-owned and
   // passed via props; when undefined the hook is a clean no-op. Routes
@@ -132,6 +139,7 @@ function AppShell(props: AppProps): React.JSX.Element {
   const voice = useVoice({
     controller: props.voice ?? null,
     sendUserMessage,
+    setPendingVoiceContext,
     showToast,
   });
   const toggleVoice = useCallback(() => {
@@ -335,6 +343,45 @@ function AppShell(props: AppProps): React.JSX.Element {
   // fallback DOES apply mid-session via the AppShell effect — the
   // toast reflects that. Don't promise immediate effect for modelMode.
   const { setConfig } = useConfig();
+
+  // Phase 6E.2 — voice owns Away Mode while always-capture is live.
+  // `alwaysActive` is true ONLY while the always-mode bridge is listening /
+  // transcribing (false during starting / error / teardown) so this never
+  // flaps on transients. Three branches:
+  //   1. claim — always-on, not away, voice doesn't own it → enable + own.
+  //   2. relinquish — always-on, away turned OFF manually while voice owned
+  //      it → stop managing (never fight a `<leader>a` / `/away` / settings
+  //      toggle); do NOT re-enable.
+  //   3. release — always-mode stopped while voice owns it → disable (the
+  //      3M awayMode effect flushes the digest on the true→false edge).
+  const voiceOwnsAwayModeRef = React.useRef(false);
+  const voiceAlwaysActive = voice.alwaysActive;
+  useEffect(() => {
+    if (voiceAlwaysActive) {
+      if (!config.awayMode && !voiceOwnsAwayModeRef.current) {
+        voiceOwnsAwayModeRef.current = true;
+        void setConfig((current) => (current.awayMode ? {} : { awayMode: true }));
+      } else if (!config.awayMode && voiceOwnsAwayModeRef.current) {
+        voiceOwnsAwayModeRef.current = false;
+      }
+    } else if (voiceOwnsAwayModeRef.current) {
+      voiceOwnsAwayModeRef.current = false;
+      void setConfig((current) => (current.awayMode ? { awayMode: false } : {}));
+    }
+  }, [voiceAlwaysActive, config.awayMode, setConfig]);
+
+  // Phase 6E.2 — runtime summon↔always switch. The controller tears down +
+  // re-establishes the bridge/store. Mount-guard so the boot value (already
+  // applied at construction in start.ts) doesn't trigger a redundant switch.
+  const voiceConfigMode = config.voice.mode;
+  const prevVoiceModeRef = React.useRef(voiceConfigMode);
+  const voiceControllerRef = props.voice;
+  useEffect(() => {
+    const prev = prevVoiceModeRef.current;
+    if (prev === voiceConfigMode) return;
+    prevVoiceModeRef.current = voiceConfigMode;
+    void voiceControllerRef?.setMode(voiceConfigMode);
+  }, [voiceConfigMode, voiceControllerRef]);
   const cycleModelMode = useCallback(async () => {
     try {
       // Function-patch resolves against the freshly-committed state
@@ -682,6 +729,7 @@ function AppShell(props: AppProps): React.JSX.Element {
               tuiProjectFilter={config.tuiProjectFilter}
               sessionTotals={sessionTotalsResult.totals}
               voiceStatus={voice.available ? voice.status : undefined}
+              voiceSummoned={voice.summoned}
               voiceInjected={voice.injected}
             />
           </Box>

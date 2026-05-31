@@ -23,7 +23,7 @@ import type {
  */
 
 class FakeController {
-  snapshot: VoiceSnapshot = { status: 'off', mode: 'summon', isListening: false };
+  snapshot: VoiceSnapshot = { status: 'off', mode: 'summon', isListening: false, summoned: false, alwaysActive: false };
   private listeners = new Set<() => void>();
   sendFn: SendToMaestroFn | undefined;
   injectFn: InjectToInputFn | undefined;
@@ -42,6 +42,7 @@ class FakeController {
   setInjectToInput(fn: InjectToInputFn): void {
     this.injectFn = fn;
   }
+  setNoticeSink(_fn: (message: string) => void): void {}
   toggle(): void {
     this.toggleCalls += 1;
   }
@@ -66,6 +67,7 @@ function Probe(props: {
   const r = useVoice({
     controller: props.controller,
     sendUserMessage: props.sendUserMessage,
+    setPendingVoiceContext: () => {},
     showToast: props.showToast as never,
   });
   props.apiRef.current = r;
@@ -120,7 +122,7 @@ describe('useVoice routing', () => {
     await flush();
     expect(apiRef.current?.available).toBe(true);
     expect(apiRef.current?.status).toBe('off');
-    await inAct(() => fake.emit({ status: 'listening', mode: 'summon', isListening: true }));
+    await inAct(() => fake.emit({ status: 'listening', mode: 'summon', isListening: true, summoned: false, alwaysActive: false }));
     expect(apiRef.current?.status).toBe('listening');
     expect(apiRef.current?.isListening).toBe(true);
   });
@@ -240,7 +242,7 @@ describe('useVoice routing', () => {
       fake.emit({
         status: 'error',
         mode: 'summon',
-        isListening: false,
+        isListening: false, summoned: false, alwaysActive: false,
         lastError: 'ready-timeout: bridge did not emit ready — run `symphony voice install`',
       }),
     );
@@ -252,13 +254,13 @@ describe('useVoice routing', () => {
 
     // A subsequent non-error snapshot does NOT re-toast; returning to error
     // later fires exactly one more (transition-gated, not per-render).
-    await inAct(() => fake.emit({ status: 'off', mode: 'summon', isListening: false }));
+    await inAct(() => fake.emit({ status: 'off', mode: 'summon', isListening: false, summoned: false, alwaysActive: false }));
     expect(toast).toHaveBeenCalledTimes(1);
     await inAct(() =>
       fake.emit({
         status: 'error',
         mode: 'summon',
-        isListening: false,
+        isListening: false, summoned: false, alwaysActive: false,
         lastError: 'spawn-failed: boom — run `symphony voice install`',
       }),
     );

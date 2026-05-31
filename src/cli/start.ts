@@ -25,6 +25,7 @@ import { runTui } from '../ui/runtime/runTui.js';
 import type { TuiRpc } from '../ui/runtime/rpc.js';
 import { loadConfig } from '../utils/config.js';
 import { VoiceController } from '../voice/voice-controller.js';
+import { voiceWakeModelPath, VoiceWakeModelNotFoundError } from '../voice/path.js';
 
 const SYMPHONY_VERSION = '0.0.0';
 
@@ -592,13 +593,50 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
   const stdinIsTty = (stdin as NodeJS.ReadStream).isTTY === true;
   const stdoutIsTty = (stdout as NodeJS.WriteStream).isTTY === true;
   if (bootConfig?.config.voice.enabled === true && stdinIsTty && stdoutIsTty) {
+    const voiceCfg = bootConfig.config.voice;
+    // Phase 6E.2 — resolve the wake-word model ONLY when enabled. A missing
+    // model must NOT brick always-capture: downgrade to wakeWordEnabled=false
+    // (VAD ambient capture + Ctrl+G summon still work) and warn once.
+    let wakeWordEnabled = voiceCfg.wakeWordEnabled === true;
+    let wakeWordModelPath: string | undefined;
+    if (wakeWordEnabled) {
+      try {
+        wakeWordModelPath = voiceWakeModelPath(voiceCfg.wakeWordModel);
+      } catch (cause) {
+        wakeWordEnabled = false;
+        wakeWordModelPath = undefined;
+        if (cause instanceof VoiceWakeModelNotFoundError) {
+          stderr.write(
+            `[voice] wake-word model "${voiceCfg.wakeWordModel}" not found — ` +
+              `continuing without wake-word (Ctrl+G summon still works).\n`,
+          );
+        } else {
+          stderr.write(`[voice] wake-word resolve failed: ${String(cause)}\n`);
+        }
+      }
+    }
     voiceController = new VoiceController({
-      mode: bootConfig.config.voice.mode,
-      autoSend: bootConfig.config.voice.autoSend,
+      mode: voiceCfg.mode,
+      autoSend: voiceCfg.autoSend,
       ...(options.home !== undefined ? { homeDir: options.home } : {}),
       ...(validatedDefaultProject !== undefined
         ? { projectPath: validatedDefaultProject }
         : {}),
+      // Always-mode (6E.2): rolling-buffer/compaction + STT tuning sourced
+      // from voice config; wake-word resolved above. Inert in summon mode.
+      rawRetentionMs: voiceCfg.bufferRawRetentionMinutes * 60_000,
+      summaryRetentionMs: voiceCfg.bufferSummaryRetentionHours * 3_600_000,
+      maxChunks: voiceCfg.bufferMaxChunks,
+      summaryMaxChars: voiceCfg.bufferSummaryMaxChars,
+      sttModel: voiceCfg.sttModel,
+      maxUtteranceSeconds: voiceCfg.maxUtteranceSeconds,
+      partialIntervalMs: voiceCfg.partialIntervalMs,
+      wakeWordEnabled,
+      ...(wakeWordModelPath !== undefined ? { wakeWordModelPath } : {}),
+      wakeWordModelName: voiceCfg.wakeWordModel,
+      wakeWordThreshold: voiceCfg.wakeWordThreshold,
+      wakeWordSustainFrames: voiceCfg.wakeWordSustainFrames,
+      wakeWordCooldownMs: voiceCfg.wakeWordCooldownMs,
       onStderr: (line) => {
         stderr.write(`[voice-bridge] ${line}\n`);
       },
