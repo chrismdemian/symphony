@@ -29,6 +29,7 @@ export type RemoteSourceKind = 'local' | 'npm' | 'git';
 export type RemoteRefusalReason =
   | 'empty-source'
   | 'unsupported-source'
+  | 'unsafe-source'
   | 'tool-missing'
   | 'npm-fetch-failed'
   | 'git-clone-failed'
@@ -435,8 +436,27 @@ async function resolveGit(
 ): Promise<ResolvedSource | RemoteRefusal> {
   const { url, ref } = splitGitRef(source);
   const cloneDir = path.join(tmp, 'clone');
-  // GIT_TERMINAL_PROMPT=0 → a credential prompt fails fast instead of hanging.
-  const env: NodeJS.ProcessEnv = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+  // A `#ref` that starts with `-` would smuggle a flag into `git checkout`
+  // (the source-level guard in resolveRemoteSource only covers the leading
+  // token, not the fragment).
+  if (ref !== undefined && ref.startsWith('-')) {
+    return {
+      ok: false,
+      reason: 'unsafe-source',
+      message: `refusing a git ref that starts with '-' (argv flag smuggling): ${ref}`,
+      cleanup,
+    };
+  }
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    // A credential prompt fails fast instead of hanging.
+    GIT_TERMINAL_PROMPT: '0',
+    // Transport allowlist — blocks remote-helper transports (`ext::`, `fd::`)
+    // that execute arbitrary commands. `file` keeps local + file:// clones
+    // working; verified empirically. Equivalent to protocol.allow=never with
+    // each listed protocol allowed.
+    GIT_ALLOW_PROTOCOL: 'file:git:http:https:ssh',
+  };
   const doClone = (args: readonly string[]): Promise<RemoteRunResult> =>
     runGit(args, { cwd: tmp, env, timeoutMs: CLONE_TIMEOUT_MS });
 
@@ -445,17 +465,19 @@ async function resolveGit(
   // (works for any branch or tag, incl. hex-looking names); if git rejects it
   // — which is what happens for a raw commit SHA — fall back to a full clone +
   // explicit checkout, which resolves any commit reachable in history.
+  // `--` terminates option parsing so the URL + dir are always positionals,
+  // even if a future code path lets a `-`-leading value slip the guard above.
   let c: RemoteRunResult;
   let needCheckout = false;
   if (ref === undefined) {
-    c = await doClone(['clone', '--depth', '1', url, cloneDir]);
+    c = await doClone(['clone', '--depth', '1', '--', url, cloneDir]);
   } else {
-    c = await doClone(['clone', '--depth', '1', '--branch', ref, url, cloneDir]);
+    c = await doClone(['clone', '--depth', '1', '--branch', ref, '--', url, cloneDir]);
     if (c.exitCode !== 0 && !isToolMissing(c) && c.timedOut !== true) {
       // The partial/empty dir from the failed shallow clone must go — `git
       // clone` refuses a non-empty target.
       await fsp.rm(cloneDir, { recursive: true, force: true }).catch(() => {});
-      c = await doClone(['clone', url, cloneDir]);
+      c = await doClone(['clone', '--', url, cloneDir]);
       needCheckout = c.exitCode === 0;
     }
   }
@@ -564,6 +586,18 @@ export async function resolveRemoteSource(
   const source = opts.source.trim();
   if (source === '') {
     return { ok: false, reason: 'empty-source', message: 'empty plugin source', cleanup: noop };
+  }
+  // Argv flag-smuggling guard: a source starting with `-` would be parsed by
+  // npm/git as an OPTION rather than a positional (e.g. `--registry=…`,
+  // `--upload-pack=…`). Reject before any spawn. (Refs from `#…` are checked
+  // separately in resolveGit.)
+  if (source.startsWith('-')) {
+    return {
+      ok: false,
+      reason: 'unsafe-source',
+      message: `refusing a source that starts with '-' (argv flag smuggling): ${source}`,
+      cleanup: noop,
+    };
   }
 
   const kind = classifySource(source);
