@@ -12,8 +12,9 @@ import {
   type PluginManifest,
 } from './manifest.js';
 import { pluginDir, PLUGIN_MANIFEST } from './paths.js';
-import { PluginClient, type PluginClientFactory } from './client.js';
+import { PluginClient, type PluginClientFactory, type PluginToolDescriptor } from './client.js';
 import { buildProxyToolRegistration, proxyToolName } from './proxy-tool.js';
+import { SYMPHONY_META_EVENT_HANDLER, SYMPHONY_META_PERMISSIONS } from './meta-keys.js';
 import type { PluginStore } from './store.js';
 
 /**
@@ -34,9 +35,12 @@ import type { PluginStore } from './store.js';
 
 /**
  * Re-export of the delivered-event set (single source of truth in
- * `manifest.ts`). The host sources these from the broker callbacks
- * (`onWorkerStatusChange`, `onTaskStatusChange`); other declared events
- * are accepted for forward-compat but logged as undelivered.
+ * `manifest.ts`). The host sources these from server-side callbacks:
+ * `onTaskStatusChange` (completed/failed) + `onTaskCreated` for tasks, and
+ * `onWorkerStatusChange` (completed) + `onWorkerSpawned` for workers (the
+ * create/spawn hooks landed in Phase 7B.3). Other declared events
+ * (`onVoiceTranscript`, `onUserCommand`) are accepted for forward-compat
+ * but logged as undelivered.
  */
 export const HOST_DELIVERED_EVENTS = DELIVERED_PLUGIN_EVENTS;
 
@@ -77,6 +81,45 @@ export interface PluginHostStartReport {
 /** camelCase event → the snake_case handler-tool a plugin exposes. */
 export function eventToHandlerTool(event: PluginEvent): string {
   return event.replace(/([A-Z])/g, '_$1').toLowerCase();
+}
+
+/**
+ * Phase 7B.3 — fail-closed per-tool permission check. A tool may declare
+ * (via `_meta['symphony/permissions']`) the manifest permissions it needs;
+ * those MUST be a subset of the plugin's granted (manifest) permissions.
+ *
+ * Returns `{ ok: true }` when the tool declares no permissions or all of
+ * them are granted. Returns `{ ok: false, reason }` when the `_meta` value
+ * is malformed (not a string array) or a declared permission is outside the
+ * consent ceiling. Malformed → refuse: a tool advertising an unparseable
+ * permission list must not silently register.
+ *
+ * Matching is exact-string set containment. `net:<host>` wildcard-aware
+ * matching (`net:*.notion.com` ⊇ `net:api.notion.com`) is a conservative
+ * follow-up; exact match is the fail-closed default.
+ */
+export function checkToolPermissions(
+  granted: ReadonlySet<string>,
+  descriptor: PluginToolDescriptor,
+): { ok: true } | { ok: false; reason: string } {
+  const raw = descriptor.meta?.[SYMPHONY_META_PERMISSIONS];
+  if (raw === undefined) return { ok: true };
+  if (!Array.isArray(raw) || !raw.every((p): p is string => typeof p === 'string')) {
+    return {
+      ok: false,
+      reason: `malformed '${SYMPHONY_META_PERMISSIONS}' metadata (expected string[])`,
+    };
+  }
+  const missing = raw.filter((p) => !granted.has(p));
+  if (missing.length > 0) {
+    return {
+      ok: false,
+      reason:
+        `requires permission(s) ${missing.map((p) => `'${p}'`).join(', ')} ` +
+        `not in the manifest consent list (fail-closed)`,
+    };
+  }
+  return { ok: true };
 }
 
 export class PluginHost {
@@ -154,10 +197,38 @@ export class PluginHost {
 
     const descriptors = await client.start();
 
+    // Phase 7B.3 — the manifest's declared permissions are the consent
+    // ceiling. Any per-tool permission (via `_meta`) must be a subset.
+    const grantedPermissions = new Set<string>(manifest.permissions);
+
     const proxyToolNames: string[] = [];
     const rawToolNames = new Set<string>();
     for (const descriptor of descriptors) {
+      // Always record the raw name — event delivery (`dispatchEvent`) looks
+      // up the handler tool here even for hidden / refused tools.
       rawToolNames.add(descriptor.name);
+
+      // Phase 7B.3 (deliverable 1) — an `on_<event>` handler tool is a
+      // host-called notification sink, not something Maestro should call.
+      // Keep it OUT of the toolbelt: no proxy registration, but it stays in
+      // `rawToolNames` so `dispatchEvent` can still reach it.
+      if (descriptor.meta?.[SYMPHONY_META_EVENT_HANDLER] === true) {
+        this.log(
+          `plugin '${id}' tool '${descriptor.name}' is an event handler — kept out of the toolbelt`,
+        );
+        continue;
+      }
+
+      // Phase 7B.3 (deliverable 3) — fail-closed per-tool permission gate.
+      // A tool may only be registered if every permission it declares is in
+      // the manifest's consent list. Refuse JUST this tool (7A per-tool
+      // isolation); the plugin's other valid tools still load.
+      const permCheck = checkToolPermissions(grantedPermissions, descriptor);
+      if (!permCheck.ok) {
+        this.log(`plugin '${id}' tool '${descriptor.name}' refused: ${permCheck.reason}`);
+        continue;
+      }
+
       const registration = buildProxyToolRegistration({
         pluginId: id,
         manifest,

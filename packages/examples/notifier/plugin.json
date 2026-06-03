@@ -4,14 +4,14 @@
   "name": "Notifier (example)",
   "version": "0.1.0",
   "author": "Symphony",
-  "description": "Reference plugin: appends a line to a log file whenever a task completes or fails, and exposes a notifier_status tool that returns the most recent notifications. Demonstrates @symphony/plugin-sdk event handlers + a tool.",
+  "description": "Reference plugin: appends a line to a log file whenever a task is created/completed/fails or a worker is spawned, and exposes a notifier_status tool that returns the most recent notifications. Demonstrates @symphony/plugin-sdk event handlers, a tool, and per-tool permissions.",
   "entrypoint": {
     "command": "node",
     "args": ["dist/index.js"]
   },
-  "permissions": ["notify:send"],
+  "permissions": ["notify:send", "task:read"],
   "capabilityFlags": [],
-  "events": ["onTaskCompleted", "onTaskFailed"],
+  "events": ["onTaskCreated", "onTaskCompleted", "onTaskFailed", "onWorkerSpawned"],
   "requiresPluginApi": "^1.0.0",
   "toolScope": "both"
 }

@@ -176,6 +176,15 @@ export interface WorkerLifecycleOptions {
    */
   readonly onWorkerStatusChange?: (record: WorkerRecord, totalRunning: number) => void;
   /**
+   * Phase 7B.3 — fired once when a worker is first spawned, immediately
+   * after `registry.register(record)` (status `'spawning'`). The server
+   * fans this out to subscribed plugins as `onWorkerSpawned`. Fired ONLY
+   * by `doSpawn` — `resume` re-attaches an existing worker and does not
+   * re-fire. Errors thrown by the callback are swallowed so a misbehaving
+   * consumer can't poison the spawn path (mirrors `onWorkerStatusChange`).
+   */
+  readonly onWorkerSpawned?: (record: WorkerRecord) => void;
+  /**
    * Phase 4D.1/4D.2 — fragment-based prompt composer. Default
    * `new PromptComposer()` resolves `research/prompts/fragments` (source
    * runs) or `dist/prompts/fragments` (tsup bundle). Tests inject one
@@ -825,6 +834,16 @@ export function createWorkerLifecycle(opts: WorkerLifecycleOptions): WorkerLifec
         ...(resolvedModel !== undefined ? { model: resolvedModel } : {}),
       };
       registry.register(record);
+      // Phase 7B.3 — fire the spawn hook immediately after registration,
+      // before the event tap / exit wiring. Fire-and-forget; errors
+      // swallowed so a misbehaving consumer can't break the spawn path.
+      if (opts.onWorkerSpawned !== undefined) {
+        try {
+          opts.onWorkerSpawned(record);
+        } catch {
+          // downstream consumer must not poison the spawn path
+        }
+      }
       record.detach = attachEventTap(worker, buffer, registry, recordId, now, onEventRef);
       wireExit(recordId, worker, input.projectPath);
       succeeded = true;

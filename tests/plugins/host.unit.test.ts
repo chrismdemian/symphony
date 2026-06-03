@@ -213,22 +213,53 @@ describe('PluginHost.dispatchEvent', () => {
     expect(conns.get('unsubbed')?.calls).toEqual([]);
   });
 
-  it('does not deliver an undelivered event (onTaskCreated)', async () => {
-    writeManifest('p', { events: ['onTaskCreated', 'onTaskCompleted'] });
+  it('does not deliver an undelivered event (onVoiceTranscript)', async () => {
+    writeManifest('p', { events: ['onVoiceTranscript', 'onTaskCompleted'] });
     store.upsert({ id: 'p', name: 'p', version: '1', source: 's', enabled: true, now: NOW });
     const { registrar } = capturingRegistrar();
     const factory = makeFactory({
       p: [
-        { name: 'on_task_created', inputSchema: objSchema },
+        { name: 'on_voice_transcript', inputSchema: objSchema },
         { name: 'on_task_completed', inputSchema: objSchema },
       ],
     });
     const host = new PluginHost({ store, registry: registrar, home, clientFactory: factory, logger: () => {} });
     await host.start();
 
-    host.dispatchEvent('onTaskCreated', { taskId: 't1' });
+    host.dispatchEvent('onVoiceTranscript', { text: 'hi' });
     await new Promise((r) => setImmediate(r));
-    expect(conns.get('p')?.calls).toEqual([]); // onTaskCreated not sourced in 7A
+    expect(conns.get('p')?.calls).toEqual([]); // onVoiceTranscript not sourced yet
+  });
+
+  it('delivers the Phase 7B.3 create/spawn events (onTaskCreated + onWorkerSpawned)', async () => {
+    writeManifest('p', { events: ['onTaskCreated', 'onWorkerSpawned'] });
+    store.upsert({ id: 'p', name: 'p', version: '1', source: 's', enabled: true, now: NOW });
+    const { registrar } = capturingRegistrar();
+    const factory = makeFactory({
+      p: [
+        { name: 'on_task_created', inputSchema: objSchema },
+        { name: 'on_worker_spawned', inputSchema: objSchema },
+      ],
+    });
+    const host = new PluginHost({ store, registry: registrar, home, clientFactory: factory, logger: () => {} });
+    await host.start();
+
+    host.dispatchEvent('onTaskCreated', { taskId: 't1', projectId: 'pr', description: 'd', status: 'pending' });
+    host.dispatchEvent('onWorkerSpawned', {
+      workerId: 'w1',
+      role: 'implementer',
+      featureIntent: 'do it',
+      projectId: 'pr',
+      taskId: 't1',
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(conns.get('p')?.calls).toEqual([
+      { name: 'on_task_created', args: { taskId: 't1', projectId: 'pr', description: 'd', status: 'pending' } },
+      {
+        name: 'on_worker_spawned',
+        args: { workerId: 'w1', role: 'implementer', featureIntent: 'do it', projectId: 'pr', taskId: 't1' },
+      },
+    ]);
   });
 });
 

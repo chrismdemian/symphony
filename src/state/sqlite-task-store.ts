@@ -61,6 +61,12 @@ export interface SqliteTaskStoreOptions {
    * AND a copy of the new `TaskNote`. Errors swallowed.
    */
   readonly onNotesAppended?: (snapshot: TaskSnapshot, newNote: TaskNote) => void;
+  /**
+   * Phase 7B.3 — fired AFTER `create()` inserts a new task (mirrors
+   * `TaskRegistryOptions.onTaskCreated`). Receives a frozen snapshot of the
+   * just-created record. Errors swallowed.
+   */
+  readonly onTaskCreated?: (snapshot: TaskSnapshot) => void;
 }
 
 function defaultIdGenerator(): string {
@@ -102,6 +108,7 @@ export class SqliteTaskStore implements TaskStore {
   private readonly onNotesAppended:
     | ((snapshot: TaskSnapshot, newNote: TaskNote) => void)
     | undefined;
+  private readonly onTaskCreated: ((snapshot: TaskSnapshot) => void) | undefined;
 
   constructor(private readonly db: Database, opts: SqliteTaskStoreOptions = {}) {
     this.now = opts.now ?? Date.now;
@@ -115,6 +122,7 @@ export class SqliteTaskStore implements TaskStore {
       });
     this.onTaskStatusChange = opts.onTaskStatusChange;
     this.onNotesAppended = opts.onNotesAppended;
+    this.onTaskCreated = opts.onTaskCreated;
     this.stmts = {
       insert: db.prepare(
         `INSERT INTO tasks
@@ -253,6 +261,16 @@ export class SqliteTaskStore implements TaskStore {
     });
     const record = this.get(id);
     if (!record) throw new Error('SqliteTaskStore.create: post-insert row vanished');
+    // Phase 7B.3 — fire AFTER the row is committed + re-read. Frozen
+    // snapshot (notes copied, matching the update-path convention). Errors
+    // swallowed so a misbehaving consumer can't poison the create path.
+    if (this.onTaskCreated !== undefined) {
+      try {
+        this.onTaskCreated(toTaskSnapshot({ ...record, notes: record.notes.slice() }));
+      } catch {
+        // downstream consumer must not poison the create path
+      }
+    }
     return record;
   }
 

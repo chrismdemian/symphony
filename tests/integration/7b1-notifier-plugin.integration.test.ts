@@ -101,9 +101,11 @@ describe('7B.1 SDK-built notifier — real subprocess', () => {
       expect(report.loaded).toEqual(['notifier-example']);
 
       const names = captured.map((r) => r.name).sort();
-      // In 7B.1 the event-handler proxy is still registered (hiding is 7B.3).
+      // 7B.3 — event-handler tools are kept OUT of the toolbelt; the
+      // notifier_status tool (declaring a granted `task:read` permission)
+      // is registered.
       expect(names).toContain('notifier-example__notifier_status');
-      expect(names).toContain('notifier-example__on_task_completed');
+      expect(names).not.toContain('notifier-example__on_task_completed');
 
       const status = captured.find((r) => r.name === 'notifier-example__notifier_status');
       expect(status).toBeDefined();
@@ -118,10 +120,11 @@ describe('7B.1 SDK-built notifier — real subprocess', () => {
 
       const after = await status!.handler({} as never, ctx());
       const sc = after.structuredContent as
-        | { count?: number; notifications?: Array<{ taskId: string; kind: string }> }
+        | { count?: number; notifications?: Array<{ subject: string; kind: string }> }
         | undefined;
       expect(sc?.count).toBe(2);
-      expect(sc?.notifications?.map((n) => `${n.kind}:${n.taskId}`)).toEqual([
+      // 7B.3 — the notifier's notification carries `subject` (task or worker id).
+      expect(sc?.notifications?.map((n) => `${n.kind}:${n.subject}`)).toEqual([
         'completed:t1',
         'failed:t2',
       ]);

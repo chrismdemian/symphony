@@ -80,16 +80,20 @@ export const PLUGIN_EVENTS = [
 export type PluginEvent = (typeof PLUGIN_EVENTS)[number];
 
 /**
- * Events the host actually SOURCES + delivers in Phase 7A — the cleanly
- * available broker callbacks (`onTaskStatusChange`, `onWorkerStatusChange`).
- * `onTaskCreated` / `onWorkerSpawned` (need create/spawn hooks) and
- * `onVoiceTranscript` (Process A / always-capture) / `onUserCommand` (TUI
+ * Events the host actually SOURCES + delivers. Phase 7A shipped the three
+ * status-change events (`onTaskCompleted` / `onTaskFailed` from
+ * `onTaskStatusChange`; `onWorkerCompleted` from `onWorkerStatusChange`).
+ * Phase 7B.3 added the create/spawn sources (`onTaskCreated` from
+ * `TaskStore.create`; `onWorkerSpawned` from the lifecycle's spawn hook).
+ * `onVoiceTranscript` (Process A / always-capture) and `onUserCommand` (TUI
  * slash surface, Phase 7C) are accepted in manifests for forward-
  * compatibility but not yet delivered; the host logs a one-time notice.
  */
 export const DELIVERED_PLUGIN_EVENTS: readonly PluginEvent[] = [
+  'onTaskCreated',
   'onTaskCompleted',
   'onTaskFailed',
+  'onWorkerSpawned',
   'onWorkerCompleted',
 ];
 

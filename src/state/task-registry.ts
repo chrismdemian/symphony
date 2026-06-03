@@ -53,6 +53,14 @@ export interface TaskRegistryOptions {
    * cannot poison the update path.
    */
   readonly onNotesAppended?: (snapshot: TaskSnapshot, newNote: TaskNote) => void;
+  /**
+   * Phase 7B.3 — fired AFTER `create()` inserts a new task. Receives a
+   * frozen `TaskSnapshot` of the just-created record (status `'pending'`).
+   * The server fans this out to subscribed plugins as `onTaskCreated`.
+   * Errors thrown by the callback are swallowed so a misbehaving consumer
+   * cannot poison the create path (same contract as `onTaskStatusChange`).
+   */
+  readonly onTaskCreated?: (snapshot: TaskSnapshot) => void;
 }
 
 function defaultIdGenerator(): string {
@@ -73,6 +81,7 @@ export class TaskRegistry implements TaskStore {
   private readonly onNotesAppended:
     | ((snapshot: TaskSnapshot, newNote: TaskNote) => void)
     | undefined;
+  private readonly onTaskCreated: ((snapshot: TaskSnapshot) => void) | undefined;
 
   constructor(opts: TaskRegistryOptions = {}) {
     this.now = opts.now ?? Date.now;
@@ -80,6 +89,7 @@ export class TaskRegistry implements TaskStore {
     this.projectStore = opts.projectStore;
     this.onTaskStatusChange = opts.onTaskStatusChange;
     this.onNotesAppended = opts.onNotesAppended;
+    this.onTaskCreated = opts.onTaskCreated;
   }
 
   list(filter: TaskListFilter = {}): TaskRecord[] {
@@ -145,6 +155,15 @@ export class TaskRegistry implements TaskStore {
       updatedAt: iso,
     };
     this.records.set(id, record);
+    // Phase 7B.3 — fire AFTER the record is in the map. Frozen snapshot so
+    // the consumer sees create-time state. Errors swallowed.
+    if (this.onTaskCreated !== undefined) {
+      try {
+        this.onTaskCreated(toTaskSnapshot(record));
+      } catch {
+        // downstream consumer must not poison the create path
+      }
+    }
     return record;
   }
 
