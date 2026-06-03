@@ -628,6 +628,10 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
       summaryRetentionMs: voiceCfg.bufferSummaryRetentionHours * 3_600_000,
       maxChunks: voiceCfg.bufferMaxChunks,
       summaryMaxChars: voiceCfg.bufferSummaryMaxChars,
+      // Phase 6E.3 — VAD threshold honored at spawn (the dead-field fix:
+      // pre-6E.3 the bridge used its own Silero default regardless of config)
+      // AND runtime-tunable via the settings slider → setVadThreshold.
+      vadThreshold: voiceCfg.vadThreshold,
       sttModel: voiceCfg.sttModel,
       maxUtteranceSeconds: voiceCfg.maxUtteranceSeconds,
       partialIntervalMs: voiceCfg.partialIntervalMs,

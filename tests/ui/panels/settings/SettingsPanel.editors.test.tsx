@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { render } from 'ink-testing-library';
+import { render as inkRender } from 'ink-testing-library';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -75,6 +75,24 @@ function Harness({ config, captureRef }: HarnessProps): React.JSX.Element {
 const settle = async (ms = 50): Promise<void> => {
   await new Promise((r) => setTimeout(r, ms));
 };
+
+/**
+ * 3H.4 gotcha — ink-testing-library leaves prior renders' `useInput`
+ * listeners alive across tests in the same file. With many trees mounted
+ * (and all sharing the SYMPHONY_CONFIG_FILE write queue), a stray arrow
+ * keypress fans out to every leftover dispatcher and races the on-disk
+ * config. Track every render and `unmount()` it after each test so only the
+ * current tree's dispatcher is live. (Surfaced by 6E.3's slider ←/→ tests.)
+ */
+const liveRenders: Array<{ readonly unmount: () => void }> = [];
+const render = (el: React.JSX.Element): ReturnType<typeof inkRender> => {
+  const r = inkRender(el);
+  liveRenders.push(r);
+  return r;
+};
+afterEach(() => {
+  for (const r of liveRenders.splice(0)) r.unmount();
+});
 
 describe('<SettingsPanel> editors (3H.2)', () => {
   let tmp: string;
@@ -267,8 +285,9 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     const { stdin } = render(<Harness captureRef={captureRef} />);
     await settle();
 
-    // Navigate to leaderTimeoutMs (9th value row — 3O.1 autoMerge shifted +1 from 3H.3).
-    for (let i = 0; i < 8; i += 1) stdin.write('\x1b[B');
+    // Navigate to leaderTimeoutMs (15th value row — index 14 after 6E.3's
+    // Voice section pushed Advanced down by 6).
+    for (let i = 0; i < 14; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();
@@ -297,8 +316,9 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     const { stdin } = render(<Harness captureRef={captureRef} />);
     await settle();
 
-    // Navigate to defaultProjectPath (8th value row — 3O.1 autoMerge shifted +1 from 3H.3).
-    for (let i = 0; i < 7; i += 1) stdin.write('\x1b[B');
+    // Navigate to defaultProjectPath (14th value row — index 13 after 6E.3's
+    // Voice section pushed Project down by 6).
+    for (let i = 0; i < 13; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();
@@ -318,8 +338,8 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     const { stdin, lastFrame } = render(<Harness captureRef={captureRef} />);
     await settle();
 
-    // 3O.1 autoMerge shifted defaultProjectPath +1 (was +1 from 3H.3 awayMode).
-    for (let i = 0; i < 7; i += 1) stdin.write('\x1b[B');
+    // 6E.3 — defaultProjectPath is value row index 13 (Voice section +6).
+    for (let i = 0; i < 13; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();
@@ -340,8 +360,8 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     const { stdin, lastFrame } = render(<Harness captureRef={captureRef} />);
     await settle();
 
-    // 3O.1 autoMerge shifted defaultProjectPath +1 (was +1 from 3H.3 awayMode).
-    for (let i = 0; i < 7; i += 1) stdin.write('\x1b[B');
+    // 6E.3 — defaultProjectPath is value row index 13 (Voice section +6).
+    for (let i = 0; i < 13; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();
@@ -362,8 +382,8 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     const { stdin } = render(<Harness config={initialConfig} captureRef={captureRef} />);
     await settle();
 
-    // 3O.1 autoMerge shifted defaultProjectPath +1 (was +1 from 3H.3 awayMode).
-    for (let i = 0; i < 7; i += 1) stdin.write('\x1b[B');
+    // 6E.3 — defaultProjectPath is value row index 13 (Voice section +6).
+    for (let i = 0; i < 13; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();
@@ -373,5 +393,149 @@ describe('<SettingsPanel> editors (3H.2)', () => {
     stdin.write('\r'); // commit empty
     await settle();
     expect(captureRef.current?.config.defaultProjectPath).toBeUndefined();
+  });
+});
+
+/**
+ * Phase 6E.3 — Voice section rows. Value-row indices (Voice section inserted
+ * after awayMode at index 6):
+ *   7 voice.enabled · 8 voice.mode · 9 voice.autoSend · 10 voice.wakeWordEnabled
+ *   11 voice.vadThreshold · 12 voice.wakeWordThreshold
+ */
+describe('<SettingsPanel> voice rows (6E.3)', () => {
+  let tmp: string;
+  let cfgFile: string;
+  let prevEnv: string | undefined;
+
+  beforeEach(() => {
+    _resetConfigWriteQueue();
+    tmp = mkdtempSync(join(tmpdir(), 'symphony-settings-voice-'));
+    cfgFile = join(tmp, 'config.json');
+    prevEnv = process.env[SYMPHONY_CONFIG_FILE_ENV];
+    process.env[SYMPHONY_CONFIG_FILE_ENV] = cfgFile;
+  });
+
+  afterEach(() => {
+    _resetConfigWriteQueue();
+    if (prevEnv === undefined) delete process.env[SYMPHONY_CONFIG_FILE_ENV];
+    else process.env[SYMPHONY_CONFIG_FILE_ENV] = prevEnv;
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const down = async (stdin: { write: (s: string) => void }, n: number): Promise<void> => {
+    for (let i = 0; i < n; i += 1) {
+      stdin.write('\x1b[B');
+    }
+    await settle();
+  };
+
+  it('Space on voice.enabled toggles the boolean (partial-merge keeps siblings)', async () => {
+    const captureRef: { current?: ConfigController } = {};
+    const { stdin } = render(<Harness captureRef={captureRef} />);
+    await settle();
+    expect(captureRef.current?.config.voice.enabled).toBe(false);
+    // Sibling we expect to survive the partial-merge patch.
+    expect(captureRef.current?.config.voice.vadThreshold).toBe(0.5);
+
+    await down(stdin, 7); // → voice.enabled
+    stdin.write(' ');
+    await settle();
+    expect(captureRef.current?.config.voice.enabled).toBe(true);
+    // The toggle must NOT clobber other voice fields.
+    expect(captureRef.current?.config.voice.vadThreshold).toBe(0.5);
+    expect(captureRef.current?.config.voice.mode).toBe('summon');
+  });
+
+  it('Enter on voice.mode cycles summon ↔ always', async () => {
+    const captureRef: { current?: ConfigController } = {};
+    const { stdin } = render(<Harness captureRef={captureRef} />);
+    await settle();
+    expect(captureRef.current?.config.voice.mode).toBe('summon');
+
+    await down(stdin, 8); // → voice.mode
+    stdin.write('\r');
+    await settle();
+    expect(captureRef.current?.config.voice.mode).toBe('always');
+
+    stdin.write('\r');
+    await settle();
+    expect(captureRef.current?.config.voice.mode).toBe('summon');
+  });
+
+  it('→ raises and ← lowers voice.vadThreshold by 0.05', async () => {
+    const captureRef: { current?: ConfigController } = {};
+    const { stdin } = render(<Harness captureRef={captureRef} />);
+    await settle();
+    expect(captureRef.current?.config.voice.vadThreshold).toBe(0.5);
+
+    await down(stdin, 11); // → voice.vadThreshold
+    stdin.write('\x1b[C'); // → increase
+    await settle();
+    expect(captureRef.current?.config.voice.vadThreshold).toBe(0.55);
+
+    stdin.write('\x1b[D'); // ← decrease
+    await settle();
+    expect(captureRef.current?.config.voice.vadThreshold).toBe(0.5);
+  });
+
+  it('voice.vadThreshold clamps at 1.0 on the high end', async () => {
+    const captureRef: { current?: ConfigController } = {};
+    const initial: SymphonyConfig = {
+      ...defaultConfig(),
+      voice: { ...defaultConfig().voice, vadThreshold: 0.98 },
+    };
+    const { stdin } = render(<Harness config={initial} captureRef={captureRef} />);
+    await settle();
+
+    await down(stdin, 11);
+    stdin.write('\x1b[C'); // 0.98 + 0.05 → clamp 1.0
+    await settle();
+    expect(captureRef.current?.config.voice.vadThreshold).toBe(1);
+    stdin.write('\x1b[C'); // stays clamped
+    await settle();
+    expect(captureRef.current?.config.voice.vadThreshold).toBe(1);
+  });
+
+  it('voice.vadThreshold clamps at 0.0 on the low end', async () => {
+    const captureRef: { current?: ConfigController } = {};
+    const initial: SymphonyConfig = {
+      ...defaultConfig(),
+      voice: { ...defaultConfig().voice, vadThreshold: 0.02 },
+    };
+    const { stdin } = render(<Harness config={initial} captureRef={captureRef} />);
+    await settle();
+
+    await down(stdin, 11);
+    stdin.write('\x1b[D'); // 0.02 - 0.05 → clamp 0.0
+    await settle();
+    expect(captureRef.current?.config.voice.vadThreshold).toBe(0);
+  });
+
+  it('→/← adjust voice.wakeWordThreshold (separate knob from VAD)', async () => {
+    const captureRef: { current?: ConfigController } = {};
+    const { stdin } = render(<Harness captureRef={captureRef} />);
+    await settle();
+    expect(captureRef.current?.config.voice.wakeWordThreshold).toBe(0.5);
+
+    await down(stdin, 12); // → voice.wakeWordThreshold
+    stdin.write('\x1b[C');
+    await settle();
+    expect(captureRef.current?.config.voice.wakeWordThreshold).toBe(0.55);
+    // VAD threshold untouched — separate knob (6C audit-M2).
+    expect(captureRef.current?.config.voice.vadThreshold).toBe(0.5);
+  });
+
+  it('Enter on a slider row shows the ←/→ hint toast (does not edit)', async () => {
+    const captureRef: { current?: ConfigController } = {};
+    const { stdin, lastFrame } = render(<Harness captureRef={captureRef} />);
+    await settle();
+
+    await down(stdin, 11); // → voice.vadThreshold
+    stdin.write('\r');
+    await settle();
+    const frame = stripAnsi(lastFrame() ?? '');
+    expect(frame).toMatch(/adjust/);
+    // Value unchanged by Enter.
+    expect(captureRef.current?.config.voice.vadThreshold).toBe(0.5);
   });
 });

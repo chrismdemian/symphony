@@ -382,6 +382,29 @@ function AppShell(props: AppProps): React.JSX.Element {
     prevVoiceModeRef.current = voiceConfigMode;
     void voiceControllerRef?.setMode(voiceConfigMode);
   }, [voiceConfigMode, voiceControllerRef]);
+
+  // Phase 6E.3 — settings-popup threshold sliders hot-apply to the live
+  // bridge. Same prevRef-guarded config→controller shape as the mode switch
+  // above: the boot value is already applied at construction (start.ts), so
+  // the mount-init prevRef prevents a redundant `set_threshold` on mount;
+  // only a real edit fires the runtime knob. The two thresholds are SEPARATE
+  // knobs (6C audit-M2) — VAD vs wake-word.
+  const voiceVadThreshold = config.voice.vadThreshold;
+  const prevVadThresholdRef = React.useRef(voiceVadThreshold);
+  useEffect(() => {
+    if (prevVadThresholdRef.current === voiceVadThreshold) return;
+    prevVadThresholdRef.current = voiceVadThreshold;
+    void voiceControllerRef?.setVadThreshold(voiceVadThreshold);
+  }, [voiceVadThreshold, voiceControllerRef]);
+
+  const voiceWakeThreshold = config.voice.wakeWordThreshold;
+  const prevWakeThresholdRef = React.useRef(voiceWakeThreshold);
+  useEffect(() => {
+    if (prevWakeThresholdRef.current === voiceWakeThreshold) return;
+    prevWakeThresholdRef.current = voiceWakeThreshold;
+    void voiceControllerRef?.setWakeThreshold(voiceWakeThreshold);
+  }, [voiceWakeThreshold, voiceControllerRef]);
+
   const cycleModelMode = useCallback(async () => {
     try {
       // Function-patch resolves against the freshly-committed state

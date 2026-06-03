@@ -10,7 +10,7 @@ import {
 } from '../state/transcript-store.js';
 import { VoiceBridge, VoiceBridgeError, type VoiceBridgeStartOptions } from './bridge.js';
 import { resolveVoiceVocabPaths } from './path.js';
-import type { VoiceBridgeEvent } from './types.js';
+import type { VoiceBridgeCommand, VoiceBridgeEvent } from './types.js';
 
 /**
  * Phase 6E.1/6E.2 — `VoiceController`.
@@ -175,6 +175,14 @@ export interface VoiceControllerOptions {
   readonly maxUtteranceSeconds?: number;
   /** Partial inference cadence ms (passed through to the bridge). */
   readonly partialIntervalMs?: number;
+  /**
+   * Phase 6E.3 — Silero VAD speech-probability threshold (0..1). Passed to
+   * the bridge at spawn (`--vad-threshold`) AND runtime-mutable via
+   * `setVadThreshold()` (the `{cmd:'set_threshold'}` live knob). When
+   * omitted the bridge uses its own Silero default (0.5). Distinct from the
+   * wake-word threshold (6C audit-M2 — separate knobs).
+   */
+  readonly vadThreshold?: number;
 
   // ---- wake-word (6C; always-mode only) ----
   readonly wakeWordEnabled?: boolean;
@@ -220,9 +228,20 @@ export class VoiceController {
   private readonly wakeWordEnabled: boolean;
   private readonly wakeWordModelPath: string | undefined;
   private readonly wakeWordModelName: string | undefined;
-  private readonly wakeWordThreshold: number | undefined;
   private readonly wakeWordSustainFrames: number | undefined;
   private readonly wakeWordCooldownMs: number | undefined;
+  /**
+   * Phase 6E.3 — current threshold values. MUTABLE (not readonly): the
+   * settings-popup sliders flow `config.voice.{vad,wakeWord}Threshold`
+   * through App.tsx effects into `setVadThreshold`/`setWakeThreshold`,
+   * which update these AND push the live knob to the bridge. `buildStart-
+   * Options` reads them so a later (re)spawn also honors the latest value
+   * (summon mode, where the bridge is off between sessions). `undefined`
+   * → the bridge uses its own default at spawn and no runtime knob is sent
+   * until the user changes it.
+   */
+  private currentVadThreshold: number | undefined;
+  private currentWakeThreshold: number | undefined;
 
   /** Stable session id for the controller's lifetime (matches voice-capture). */
   private readonly sessionId: string;
@@ -299,9 +318,12 @@ export class VoiceController {
     this.wakeWordEnabled = options.wakeWordEnabled ?? false;
     this.wakeWordModelPath = options.wakeWordModelPath;
     this.wakeWordModelName = options.wakeWordModelName;
-    this.wakeWordThreshold = options.wakeWordThreshold;
     this.wakeWordSustainFrames = options.wakeWordSustainFrames;
     this.wakeWordCooldownMs = options.wakeWordCooldownMs;
+    this.currentVadThreshold =
+      options.vadThreshold !== undefined ? clamp01(options.vadThreshold) : undefined;
+    this.currentWakeThreshold =
+      options.wakeWordThreshold !== undefined ? clamp01(options.wakeWordThreshold) : undefined;
 
     this.sessionId = randomUUID();
     this.snapshot = this.buildSnapshot();
@@ -414,6 +436,50 @@ export class VoiceController {
 
     if (next === 'always') {
       void this.enterAlwaysMode();
+    }
+  }
+
+  /**
+   * Phase 6E.3 — set the Silero VAD speech-probability threshold (0..1).
+   * Stores the value (so a later (re)spawn honors it via `buildStart-
+   * Options`) AND, when a bridge is live, pushes the `{cmd:'set_threshold'}`
+   * runtime knob. Best-effort: a torn-down / stdin-closed bridge never
+   * throws. The settings-popup VAD slider drives this through App.tsx.
+   */
+  async setVadThreshold(value: number): Promise<void> {
+    if (this.disposed) return;
+    this.currentVadThreshold = clamp01(value);
+    await this.sendBridgeCommand({ cmd: 'set_threshold', value: this.currentVadThreshold });
+  }
+
+  /**
+   * Phase 6E.3 — set the openWakeWord score threshold (0..1). Separate knob
+   * from the VAD threshold (6C audit-M2). Stores the value for the next
+   * spawn AND pushes `{cmd:'set_wake_threshold'}` to a live bridge. When
+   * wake-word is disabled the bridge replies with a `warning` event
+   * (`wake-word-disabled`) rather than dropping it silently; the controller
+   * surfaces that through its existing `error`/warning channel handling.
+   */
+  async setWakeThreshold(value: number): Promise<void> {
+    if (this.disposed) return;
+    this.currentWakeThreshold = clamp01(value);
+    await this.sendBridgeCommand({ cmd: 'set_wake_threshold', value: this.currentWakeThreshold });
+  }
+
+  /**
+   * Push one command to the live bridge, best-effort. No bridge (summon
+   * mode idle, or mid-teardown) → the stored value applies at the next
+   * spawn instead. `bridge.send` throws on a dead/closed stdin; swallow it
+   * so a settings nudge during teardown never crashes the TUI.
+   */
+  private async sendBridgeCommand(command: VoiceBridgeCommand): Promise<void> {
+    const bridge = this.bridge;
+    if (bridge === undefined) return;
+    try {
+      await bridge.send(command);
+    } catch {
+      // best-effort — stdin may be closing; the stored value still applies
+      // at the next spawn via buildStartOptions.
     }
   }
 
@@ -572,8 +638,8 @@ export class VoiceController {
             ...(this.wakeWordModelName !== undefined
               ? { wakeWordModelName: this.wakeWordModelName }
               : {}),
-            ...(this.wakeWordThreshold !== undefined
-              ? { wakeWordThreshold: this.wakeWordThreshold }
+            ...(this.currentWakeThreshold !== undefined
+              ? { wakeWordThreshold: this.currentWakeThreshold }
               : {}),
             ...(this.wakeWordSustainFrames !== undefined
               ? { wakeWordSustainFrames: this.wakeWordSustainFrames }
@@ -587,6 +653,9 @@ export class VoiceController {
       inputMode: 'mic',
       sttEnabled: true,
       sttVocabPaths: vocabPaths,
+      ...(this.currentVadThreshold !== undefined
+        ? { vadThreshold: this.currentVadThreshold }
+        : {}),
       ...(this.scriptPath !== undefined ? { scriptPath: this.scriptPath } : {}),
       ...(this.pythonPath !== undefined ? { pythonPath: this.pythonPath } : {}),
       ...(this.pythonPackageDir !== undefined
@@ -967,6 +1036,14 @@ export class VoiceController {
       ? { ...base, lastError: this.lastError }
       : base;
   }
+}
+
+/** Clamp a threshold into the valid [0, 1] range. Non-finite → 0. */
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
 }
 
 function snapshotsEqual(a: VoiceSnapshot, b: VoiceSnapshot): boolean {

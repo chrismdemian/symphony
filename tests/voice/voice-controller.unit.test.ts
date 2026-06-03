@@ -66,6 +66,15 @@ class FakeBridge extends EventEmitter {
     this.stopCalls += 1;
   }
 
+  /** Phase 6E.3 — capture runtime commands (`set_threshold` etc.). */
+  sentCommands: Array<{ readonly cmd: string; readonly value?: number }> = [];
+  /** When true, `send()` rejects (dead/closed stdin) — best-effort path. */
+  failSend = false;
+  async send(command: { readonly cmd: string; readonly value?: number }): Promise<void> {
+    if (this.failSend) throw new VoiceBridgeError('stdin-closed', 'fake stdin closed');
+    this.sentCommands.push(command);
+  }
+
   getStderrTail(): string {
     return '';
   }
@@ -459,5 +468,89 @@ describe('VoiceController (summon)', () => {
     const calls = bridge.stopCalls;
     await controller.shutdown();
     expect(bridge.stopCalls).toBe(calls);
+  });
+});
+
+describe('VoiceController threshold setters (6E.3)', () => {
+  it('setVadThreshold sends {cmd:set_threshold} to a live bridge', async () => {
+    const { controller, bridge } = makeController();
+    controller.toggle(); // → listening
+    await flush();
+    await controller.setVadThreshold(0.7);
+    expect(bridge.sentCommands).toContainEqual({ cmd: 'set_threshold', value: 0.7 });
+    await controller.shutdown();
+  });
+
+  it('setWakeThreshold sends {cmd:set_wake_threshold} — separate knob', async () => {
+    const { controller, bridge } = makeController();
+    controller.toggle();
+    await flush();
+    await controller.setWakeThreshold(0.65);
+    expect(bridge.sentCommands).toContainEqual({ cmd: 'set_wake_threshold', value: 0.65 });
+    // VAD command not sent — distinct knobs (6C audit-M2).
+    expect(bridge.sentCommands.some((c) => c.cmd === 'set_threshold')).toBe(false);
+    await controller.shutdown();
+  });
+
+  it('clamps the value into [0,1] before sending', async () => {
+    const { controller, bridge } = makeController();
+    controller.toggle();
+    await flush();
+    await controller.setVadThreshold(2);
+    await controller.setVadThreshold(-1);
+    expect(bridge.sentCommands).toContainEqual({ cmd: 'set_threshold', value: 1 });
+    expect(bridge.sentCommands).toContainEqual({ cmd: 'set_threshold', value: 0 });
+    await controller.shutdown();
+  });
+
+  it('with no live bridge: no throw, value applies at the next spawn', async () => {
+    const bridge = new FakeBridge();
+    const controller = new VoiceController({
+      bridgeFactory: () => bridge as unknown as VoiceBridge,
+      homeDir: '/tmp/voice-controller-test-home',
+    });
+    // Bridge is OFF (summon mode idle) — set before any session.
+    await controller.setVadThreshold(0.8);
+    expect(bridge.sentCommands).toHaveLength(0); // nothing sent yet
+    // Now start a session — buildStartOptions must carry the stored value.
+    controller.toggle();
+    await flush();
+    const opts = bridge.startOpts as { vadThreshold?: number };
+    expect(opts.vadThreshold).toBe(0.8);
+    await controller.shutdown();
+  });
+
+  it('constructor vadThreshold option is passed to bridge.start (dead-field fix)', async () => {
+    const bridge = new FakeBridge();
+    const controller = new VoiceController({
+      vadThreshold: 0.42,
+      bridgeFactory: () => bridge as unknown as VoiceBridge,
+      homeDir: '/tmp/voice-controller-test-home',
+    });
+    controller.toggle();
+    await flush();
+    const opts = bridge.startOpts as { vadThreshold?: number };
+    expect(opts.vadThreshold).toBe(0.42);
+    await controller.shutdown();
+  });
+
+  it('best-effort: a failing bridge.send never throws out of the setter', async () => {
+    const { controller, bridge } = makeController();
+    controller.toggle();
+    await flush();
+    bridge.failSend = true;
+    // Must resolve, not reject.
+    await expect(controller.setVadThreshold(0.6)).resolves.toBeUndefined();
+    await controller.shutdown();
+  });
+
+  it('after shutdown the setter is an inert no-op', async () => {
+    const { controller, bridge } = makeController();
+    controller.toggle();
+    await flush();
+    await controller.shutdown();
+    const before = bridge.sentCommands.length;
+    await controller.setVadThreshold(0.9);
+    expect(bridge.sentCommands.length).toBe(before);
   });
 });
