@@ -182,10 +182,19 @@ plugin
 
 plugin
   .command('install <source>')
-  .description('Install a plugin from a local directory (containing plugin.json) or a plugin.json path.')
-  .action(async (source: string) => {
+  .description(
+    'Install a plugin from a local directory / plugin.json path, an npm package spec (pkg, @scope/pkg, pkg@1.2.3), or a git URL (optional #ref). Remote fetches run with --ignore-scripts.',
+  )
+  .option(
+    '--allow-scripts',
+    'Run the plugin’s install/build scripts during a remote fetch (executes author code; off by default).',
+  )
+  .action(async (source: string, opts: { allowScripts?: boolean }) => {
     const { runPluginInstall } = await import('./cli/plugin.js');
-    const result = await runPluginInstall({ source });
+    const result = await runPluginInstall({
+      source,
+      ...(opts.allowScripts === true ? { allowScripts: true } : {}),
+    });
     process.exit(result.exitCode);
   });
 

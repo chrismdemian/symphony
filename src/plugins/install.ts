@@ -40,6 +40,13 @@ export type InstallRefusal =
 export interface InstallPluginInput {
   /** Local plugin directory, or a path to its `plugin.json`. */
   readonly source: string;
+  /**
+   * What to record as the DB `source` (defaults to `path.resolve(source)`).
+   * Remote installs (Phase 7B.2) pass the original npm spec / git URL here so
+   * the registry records the spec, not the ephemeral temp dir it was fetched
+   * into.
+   */
+  readonly sourceLabel?: string;
   readonly store: PluginStore;
   /** ISO timestamp for the install (no `Date.now()` in core logic). */
   readonly now: string;
@@ -152,7 +159,7 @@ export async function installPlugin(input: InstallPluginInput): Promise<InstallP
     id: manifest.id,
     name: manifest.name,
     version: manifest.version,
-    source: path.resolve(input.source),
+    source: input.sourceLabel ?? path.resolve(input.source),
     now: input.now,
     // enabled defaults to false on first install; preserved on reinstall.
   });
