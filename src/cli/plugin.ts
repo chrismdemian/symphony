@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { promises as fsp } from 'node:fs';
+import { existsSync, promises as fsp } from 'node:fs';
 
 import { SymphonyDatabase } from '../state/db.js';
 import { resolveDatabasePath } from '../state/path.js';
@@ -10,6 +10,7 @@ import {
   removePlugin,
   type ListedPlugin,
 } from '../plugins/install.js';
+import { resolveRemoteSource, type RemoteRunner } from '../plugins/remote.js';
 import {
   assertPluginApiCompatible,
   parsePluginManifest,
@@ -62,16 +63,46 @@ async function withDb<T>(
 }
 
 export interface RunPluginInstallOptions extends BaseOpts {
+  /** Local dir / `plugin.json` path, an npm package spec, or a git URL (Phase 7B.2). */
   readonly source: string;
+  /** Opt-in to running install/build scripts during a remote fetch (default off). */
+  readonly allowScripts?: boolean;
+  /** DI seams (tests): default spawn real npm/git. */
+  readonly runNpm?: RemoteRunner;
+  readonly runGit?: RemoteRunner;
+  readonly tmpRoot?: string;
 }
 
 export async function runPluginInstall(opts: RunPluginInstallOptions): Promise<PluginCliResult> {
   const err = writer(opts.stderr, process.stderr);
   const now = opts.now ?? new Date().toISOString();
+
+  if (opts.allowScripts === true) {
+    err(
+      `[symphony plugin] WARNING: --allow-scripts is set — install/build scripts from '${opts.source}' ` +
+        'will execute author code on your machine before any review.',
+    );
+  }
+
+  // Resolve npm/git sources into a temp dir; local sources pass through. The
+  // `--ignore-scripts` supply-chain guard lives in resolveRemoteSource.
+  const resolved = await resolveRemoteSource({
+    source: opts.source,
+    ...(opts.allowScripts !== undefined ? { allowScripts: opts.allowScripts } : {}),
+    ...(opts.runNpm !== undefined ? { runNpm: opts.runNpm } : {}),
+    ...(opts.runGit !== undefined ? { runGit: opts.runGit } : {}),
+    ...(opts.tmpRoot !== undefined ? { tmpRoot: opts.tmpRoot } : {}),
+  });
+
   try {
+    if (!resolved.ok) {
+      err(`[symphony plugin] install failed (${resolved.reason}): ${resolved.message}`);
+      return { exitCode: 1 };
+    }
     return await withDb(opts.dbFilePath, async (store) => {
       const result = await installPlugin({
-        source: opts.source,
+        source: resolved.dir,
+        sourceLabel: resolved.label,
         store,
         now,
         ...(opts.home !== undefined ? { home: opts.home } : {}),
@@ -97,11 +128,29 @@ export async function runPluginInstall(opts: RunPluginInstallOptions): Promise<P
       if (result.manifest && result.manifest.permissions.length > 0) {
         err(`[symphony plugin] requests permissions: ${result.manifest.permissions.join(', ')}`);
       }
+      // For remote installs, warn (don't refuse) when the entrypoint references
+      // a relative file that the fetched plugin didn't ship — the common
+      // "git plugin forgot to commit dist/" case. Guarded for flag args and
+      // absolute paths (a legitimately argless / PATH-resolved entrypoint is
+      // fine). Not applied to local 7A installs (no behavior change there).
+      if (resolved.kind !== 'local' && result.manifest && result.installedTo !== undefined) {
+        const a0 = result.manifest.entrypoint.args[0];
+        if (a0 !== undefined && !a0.startsWith('-') && !path.isAbsolute(a0)) {
+          if (!existsSync(path.join(result.installedTo, a0))) {
+            err(
+              `[symphony plugin] WARNING: entrypoint file '${a0}' not found in the installed plugin. ` +
+                'git-installed plugins must commit their built dist/, or reinstall with --allow-scripts.',
+            );
+          }
+        }
+      }
       return { exitCode: 0 };
     });
   } catch (e) {
     err(`[symphony plugin] install error: ${e instanceof Error ? e.message : String(e)}`);
     return { exitCode: 1 };
+  } finally {
+    await resolved.cleanup();
   }
 }
 
