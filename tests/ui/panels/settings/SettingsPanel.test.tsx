@@ -1,6 +1,6 @@
 import React from 'react';
-import { describe, it, expect } from 'vitest';
-import { render } from 'ink-testing-library';
+import { describe, it, expect, afterEach } from 'vitest';
+import { render as inkRender } from 'ink-testing-library';
 import { ThemeProvider } from '../../../../src/ui/theme/context.js';
 import { FocusProvider, type FocusState } from '../../../../src/ui/focus/focus.js';
 import { KeybindProvider } from '../../../../src/ui/keybinds/dispatcher.js';
@@ -49,20 +49,37 @@ async function settle(ms = 80): Promise<void> {
   await new Promise((r) => setTimeout(r, ms));
 }
 
+// 3H.4 gotcha — unmount prior renders so leftover `useInput` listeners don't
+// intercept the arrow-key navigation added in 6E.3 (see editors test file).
+const liveRenders: Array<{ readonly unmount: () => void }> = [];
+const render = (el: React.JSX.Element): ReturnType<typeof inkRender> => {
+  const r = inkRender(el);
+  liveRenders.push(r);
+  return r;
+};
+afterEach(() => {
+  for (const r of liveRenders.splice(0)) r.unmount();
+});
+
 describe('<SettingsPanel> (3H.1 read-only popup)', () => {
-  it('renders all 6 section headers with default config', async () => {
+  it('renders all section headers with default config', async () => {
     const { lastFrame } = render(<Harness />);
     await settle();
     const frame = stripAnsi(lastFrame() ?? '');
     expect(frame).toContain('Settings');
-    // Match loosely: 3H.3 bumped this to "Phase 3H.3"; future phases will too.
-    expect(frame).toMatch(/Phase 3H\./);
+    // Match loosely on the major version: 6E.3 bumped this to "Phase 6E.3";
+    // future phases will too.
+    expect(frame).toMatch(/Phase \d/);
+    // 6E.3 — the Voice section (6 rows) pushes total rows past VISIBLE_ROWS,
+    // so the popup now scrolls. The default top-of-list view shows Model →
+    // Voice; Project/Advanced scroll into view on navigation (covered by the
+    // keybindOverrides / leaderTimeoutMs navigation tests). Assert the
+    // always-visible top sections here, including the new Voice header.
     expect(frame).toContain('Model');
     expect(frame).toContain('Workers');
     expect(frame).toContain('Appearance');
     expect(frame).toContain('Notifications');
-    expect(frame).toContain('Project');
-    expect(frame).toContain('Advanced');
+    expect(frame).toContain('Voice');
   });
 
   it('renders default values with (default) annotations', async () => {
@@ -116,7 +133,11 @@ describe('<SettingsPanel> (3H.1 read-only popup)', () => {
   });
 
   it('renders defaultProjectPath as "(none)" when undefined', async () => {
-    const { lastFrame } = render(<Harness />);
+    const { stdin, lastFrame } = render(<Harness />);
+    await settle();
+    // 6E.3 — defaultProjectPath is the 14th value row (index 13) now that the
+    // Voice section's 6 rows precede Project. Navigate down so it's in view.
+    for (let i = 0; i < 13; i += 1) stdin.write('\x1b[B');
     await settle();
     const frame = stripAnsi(lastFrame() ?? '');
     expect(frame).toContain('defaultProjectPath');
@@ -129,7 +150,9 @@ describe('<SettingsPanel> (3H.1 read-only popup)', () => {
       defaultProjectPath: '/home/chris/projects/symphony',
     };
     const source: ConfigSource = { kind: 'file', path: '/x', warnings: [] };
-    const { lastFrame } = render(<Harness config={config} source={source} />);
+    const { stdin, lastFrame } = render(<Harness config={config} source={source} />);
+    await settle();
+    for (let i = 0; i < 13; i += 1) stdin.write('\x1b[B'); // → defaultProjectPath
     await settle();
     const frame = stripAnsi(lastFrame() ?? '');
     expect(frame).toContain('/home/chris/projects/symphony');
@@ -144,7 +167,10 @@ describe('<SettingsPanel> (3H.1 read-only popup)', () => {
       },
     };
     const source: ConfigSource = { kind: 'file', path: '/x', warnings: [] };
-    const { lastFrame } = render(<Harness config={config} source={source} />);
+    const { stdin, lastFrame } = render(<Harness config={config} source={source} />);
+    await settle();
+    // 6E.3 — keybindOverrides is the last (17th) value row (index 16).
+    for (let i = 0; i < 16; i += 1) stdin.write('\x1b[B');
     await settle();
     const frame = stripAnsi(lastFrame() ?? '');
     expect(frame).toContain('keybindOverrides');
@@ -177,11 +203,11 @@ describe('<SettingsPanel> (3H.1 read-only popup)', () => {
   it('Enter on the keybindOverrides row surfaces the 3H.4 deferral toast', async () => {
     const { stdin, lastFrame } = render(<Harness />);
     await settle();
-    // Navigate down to keybindOverrides (last row). 3O.1 added the
-    // autoMerge row, bumping the value-row count to 11. From the default
-    // selection (modelMode at index 0) we need 10 ↓ presses to land on
-    // keybindOverrides at index 10.
-    for (let i = 0; i < 10; i += 1) stdin.write('\x1b[B');
+    // Navigate down to keybindOverrides (last value row). 6E.3 inserted the
+    // Voice section's 6 rows before Project/Advanced, bumping keybindOverrides
+    // from index 10 → 16. From the default selection (modelMode at index 0)
+    // that's 16 ↓ presses.
+    for (let i = 0; i < 16; i += 1) stdin.write('\x1b[B');
     await settle();
     stdin.write('\r');
     await settle();

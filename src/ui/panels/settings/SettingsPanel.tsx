@@ -45,7 +45,7 @@ import type { SymphonyConfig } from '../../../utils/config-schema.js';
 const SCOPE = 'settings';
 const VISIBLE_ROWS = 18;
 
-type RowKind = 'bool' | 'enum' | 'int' | 'text-path' | 'readonly';
+type RowKind = 'bool' | 'enum' | 'int' | 'text-path' | 'readonly' | 'slider';
 
 type Row =
   | { readonly kind: 'header'; readonly label: string }
@@ -56,7 +56,17 @@ type Row =
       readonly source: 'default' | 'file';
       readonly editKind: RowKind;
       readonly description?: string;
+      /**
+       * Phase 6E.3 — for `editKind: 'slider'` rows, the raw [0,1] value so
+       * `<SettingsRow>` can draw a colored bar. Absent for non-slider rows.
+       */
+      readonly sliderValue?: number;
     };
+
+/** Phase 6E.3 — threshold slider step (per ←/→ nudge). */
+const SLIDER_STEP = 0.05;
+/** Phase 6E.3 — number of cells in the rendered slider bar. */
+const SLIDER_CELLS = 10;
 
 /**
  * Active inline-edit sub-state. `idle` means the popup is in navigation
@@ -177,6 +187,23 @@ export function SettingsPanel(): React.JSX.Element {
         void applyPatch((current) => ({ awayMode: !current.awayMode }));
         return;
       }
+      // Phase 6E.3 — voice boolean toggles. Partial `voice` patch (the
+      // cascade merges `{...current.voice, ...patch.voice}` at every site,
+      // so toggling one flag never clobbers the user's thresholds/mode).
+      if (label === 'voice.enabled') {
+        void applyPatch((current) => ({ voice: { enabled: !current.voice.enabled } }));
+        return;
+      }
+      if (label === 'voice.autoSend') {
+        void applyPatch((current) => ({ voice: { autoSend: !current.voice.autoSend } }));
+        return;
+      }
+      if (label === 'voice.wakeWordEnabled') {
+        void applyPatch((current) => ({
+          voice: { wakeWordEnabled: !current.voice.wakeWordEnabled },
+        }));
+        return;
+      }
     },
     [applyPatch],
   );
@@ -198,6 +225,36 @@ export function SettingsPanel(): React.JSX.Element {
           const next = order[(idx + 1) % order.length] ?? 'ask';
           return { autoMerge: next };
         });
+        return;
+      }
+      if (label === 'voice.mode') {
+        // Phase 6E.3 — two-way cycle: summon ↔ always. App.tsx's
+        // config→controller effect runtime-switches the bridge on change.
+        void applyPatch((current) => ({
+          voice: { mode: current.voice.mode === 'summon' ? 'always' : 'summon' },
+        }));
+        return;
+      }
+    },
+    [applyPatch],
+  );
+
+  // Phase 6E.3 — nudge a threshold slider by ±SLIDER_STEP, clamped [0,1].
+  // Function-patch (3H.2 audit-C2) so rapid ←/→ presses always read the
+  // just-committed value. App.tsx's config→controller effect pushes the
+  // live `set_threshold` / `set_wake_threshold` knob to the bridge.
+  const nudgeSlider = useCallback(
+    (label: string, dir: 1 | -1): void => {
+      if (label === 'voice.vadThreshold') {
+        void applyPatch((current) => ({
+          voice: { vadThreshold: stepThreshold(current.voice.vadThreshold, dir) },
+        }));
+        return;
+      }
+      if (label === 'voice.wakeWordThreshold') {
+        void applyPatch((current) => ({
+          voice: { wakeWordThreshold: stepThreshold(current.voice.wakeWordThreshold, dir) },
+        }));
         return;
       }
     },
@@ -332,6 +389,10 @@ export function SettingsPanel(): React.JSX.Element {
       case 'text-path':
         startTextEdit(selectedIdxRef.current, row.label, config.defaultProjectPath ?? '');
         return;
+      case 'slider':
+        // Phase 6E.3 — sliders adjust with ←/→, not Enter. Point the way.
+        showToast('Use ←/→ to adjust (step 0.05).', { tone: 'info' });
+        return;
       case 'readonly':
         if (row.label === 'keybindOverrides') {
           // Phase 3H.4 — push the editor popup. The settings popup
@@ -354,6 +415,19 @@ export function SettingsPanel(): React.JSX.Element {
       toggleBool(row.label);
     }
   }, [toggleBool]);
+
+  // Phase 6E.3 — handle ←/→ on a slider row. No-op on any other row kind so
+  // the arrows fall through harmlessly when the selection isn't a slider.
+  const handleSliderNudge = useCallback(
+    (dir: 1 | -1): void => {
+      const row = rowsRef.current[selectedIdxRef.current];
+      if (row === undefined || row.kind !== 'value') return;
+      if (row.editKind === 'slider') {
+        nudgeSlider(row.label, dir);
+      }
+    },
+    [nudgeSlider],
+  );
 
   const popupCommands = useMemo<readonly Command[]>(
     () => [
@@ -421,8 +495,34 @@ export function SettingsPanel(): React.JSX.Element {
           if (editRef.current.kind === 'idle') handleSpace();
         },
       },
+      {
+        // Phase 6E.3 — ←/→ nudge the selected threshold slider. Internal +
+        // scope 'settings' so they only fire while the popup is focused;
+        // no-op on non-slider rows. Surfaces in the Help overlay's settings
+        // group (the in-popup footer also advertises them on slider rows).
+        id: 'settings.decrement',
+        title: 'decrease',
+        key: { kind: 'leftArrow' },
+        scope: SCOPE,
+        displayOnScreen: false,
+        internal: true,
+        onSelect: () => {
+          if (editRef.current.kind === 'idle') handleSliderNudge(-1);
+        },
+      },
+      {
+        id: 'settings.increment',
+        title: 'increase',
+        key: { kind: 'rightArrow' },
+        scope: SCOPE,
+        displayOnScreen: false,
+        internal: true,
+        onSelect: () => {
+          if (editRef.current.kind === 'idle') handleSliderNudge(1);
+        },
+      },
     ],
-    [popPopup, cancelEdit, move, handleEnter, commitEdit, handleSpace],
+    [popPopup, cancelEdit, move, handleEnter, commitEdit, handleSpace, handleSliderNudge],
   );
 
   useRegisterCommands(popupCommands, isFocused);
@@ -503,10 +603,18 @@ export function SettingsPanel(): React.JSX.Element {
   const sourceLine = useMemo(() => formatSourceLine(source), [source]);
   const visible = useMemo(() => sliceVisible(rows, selectedIdx), [rows, selectedIdx]);
 
+  const selectedRow = rows[selectedIdx];
+  const selectedIsSlider =
+    selectedRow !== undefined &&
+    selectedRow.kind === 'value' &&
+    selectedRow.editKind === 'slider';
   const footerHint = useMemo(() => {
     if (edit.kind !== 'idle') return 'Enter commit · Esc cancel · Backspace delete';
+    // Phase 6E.3 — advertise the ←/→ slider keys only when a slider row is
+    // selected; otherwise the standard idle hint.
+    if (selectedIsSlider) return '↑↓ navigate · ←→ adjust (0.05) · Esc close';
     return '↑↓ navigate · Space toggle · Enter edit · Esc close';
-  }, [edit.kind]);
+  }, [edit.kind, selectedIsSlider]);
 
   return (
     <Box
@@ -522,7 +630,7 @@ export function SettingsPanel(): React.JSX.Element {
         </Text>
         <Text color={theme['textMuted']}>
           {' '}
-          · Phase 3H.3
+          · Phase 6E.3
         </Text>
       </Box>
       <Box flexDirection="column" marginTop={1}>
@@ -593,6 +701,14 @@ function SettingsRow({ row, selected, editing, editValue, theme }: SettingsRowPr
               {' '}
             </Text>
           </>
+        ) : row.editKind === 'slider' && row.sliderValue !== undefined ? (
+          <>
+            {/* Phase 6E.3 — slider bar (filled = primary violet, empty = muted)
+                then the numeric value + source tag. */}
+            <SliderBar value={row.sliderValue} theme={theme} />
+            <Text color={valueColor}>{` ${row.value}`}</Text>
+            <Text color={theme['textMuted']}>{` ${sourceTag}`}</Text>
+          </>
         ) : (
           <>
             <Text color={valueColor}>{row.value}</Text>
@@ -605,6 +721,35 @@ function SettingsRow({ row, selected, editing, editValue, theme }: SettingsRowPr
           <Text color={theme['textMuted']}>    {row.description}</Text>
         </Box>
       ) : null}
+    </Box>
+  );
+}
+
+/**
+ * Phase 6E.3 — a fixed-width `[████░░░░░░]` threshold bar. Filled cells use
+ * the brand violet (`theme.accent` — the popup's own active/highlight color,
+ * matching `borderActive` / `workerRunning`); empty cells use muted gray.
+ * The two colors render as separate `<Text>` runs so a skeptical visual
+ * review can grep each hex independently. `value` is clamped to [0,1]
+ * defensively. NOTE: `theme.primary` is GOLD in this codebase — do NOT use
+ * it here (6E.2 token lesson); violet is `theme.accent`.
+ */
+function SliderBar({
+  value,
+  theme,
+}: {
+  readonly value: number;
+  readonly theme: Record<string, string>;
+}): React.JSX.Element {
+  const clamped = clampUnit(value);
+  const filled = Math.round(clamped * SLIDER_CELLS);
+  const empty = SLIDER_CELLS - filled;
+  return (
+    <Box flexDirection="row" flexShrink={0}>
+      <Text color={theme['textMuted']}>[</Text>
+      {filled > 0 ? <Text color={theme['accent']}>{'█'.repeat(filled)}</Text> : null}
+      {empty > 0 ? <Text color={theme['textMuted']}>{'░'.repeat(empty)}</Text> : null}
+      <Text color={theme['textMuted']}>]</Text>
     </Box>
   );
 }
@@ -676,6 +821,59 @@ function buildRows(
       editKind: 'bool',
       description: 'Suppress notifications; deliver one batched digest when toggled off (Phase 3H.3).',
     },
+    // Phase 6E.3 — voice input. Toggles + the two threshold sliders. Other
+    // voice knobs (VAD timing, STT model, buffer retention) stay file-only.
+    { kind: 'header', label: 'Voice' },
+    {
+      kind: 'value',
+      label: 'voice.enabled',
+      value: String(config.voice.enabled),
+      source: fromFileSource,
+      editKind: 'bool',
+      description: 'Master switch — when on, the voice bridge boots with `symphony start`. Restart to take effect.',
+    },
+    {
+      kind: 'value',
+      label: 'voice.mode',
+      value: config.voice.mode,
+      source: fromFileSource,
+      editKind: 'enum',
+      description: 'summon = mic off until Ctrl+G · always = continuous ambient capture + wake-word/Ctrl+G summon',
+    },
+    {
+      kind: 'value',
+      label: 'voice.autoSend',
+      value: String(config.voice.autoSend),
+      source: fromFileSource,
+      editKind: 'bool',
+      description: 'false = transcript lands in the input bar to review · true = sent to Maestro immediately on final',
+    },
+    {
+      kind: 'value',
+      label: 'voice.wakeWordEnabled',
+      value: String(config.voice.wakeWordEnabled),
+      source: fromFileSource,
+      editKind: 'bool',
+      description: 'Always-mode only — "hey symphony" arms a summon. Needs the wake model installed.',
+    },
+    {
+      kind: 'value',
+      label: 'voice.vadThreshold',
+      value: formatThreshold(config.voice.vadThreshold),
+      sliderValue: config.voice.vadThreshold,
+      source: fromFileSource,
+      editKind: 'slider',
+      description: 'Silero speech-detection gate. Higher = needs louder/clearer speech. Hot-applies to the live mic.',
+    },
+    {
+      kind: 'value',
+      label: 'voice.wakeWordThreshold',
+      value: formatThreshold(config.voice.wakeWordThreshold),
+      sliderValue: config.voice.wakeWordThreshold,
+      source: fromFileSource,
+      editKind: 'slider',
+      description: 'openWakeWord score gate. Raise to 0.6–0.7 if "hey symphony" fires by accident. Hot-applies live.',
+    },
     { kind: 'header', label: 'Project' },
     {
       kind: 'value',
@@ -711,6 +909,29 @@ function buildRows(
       description: 'Per-command keybind overrides. Enter opens the editor (Phase 3H.4).',
     },
   ];
+}
+
+/** Phase 6E.3 — clamp a slider value into [0, 1]; non-finite → 0. */
+function clampUnit(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  if (value < 0) return 0;
+  if (value > 1) return 1;
+  return value;
+}
+
+/**
+ * Phase 6E.3 — nudge a threshold by ±SLIDER_STEP, clamped [0,1], rounded to
+ * 2 decimals so float drift (0.30000000000000004) never lands in the config
+ * file or fails the Zod `.min(0).max(1)` check.
+ */
+function stepThreshold(current: number, dir: 1 | -1): number {
+  const next = clampUnit(current) + dir * SLIDER_STEP;
+  return Math.round(clampUnit(next) * 100) / 100;
+}
+
+/** Phase 6E.3 — render a threshold as a fixed 2-decimal string ("0.50"). */
+function formatThreshold(value: number): string {
+  return clampUnit(value).toFixed(2);
 }
 
 function formatSourceLine(
