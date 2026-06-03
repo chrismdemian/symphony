@@ -206,6 +206,21 @@ export function validateSchemaContract(db: BetterSqlite3Database, dbPath: string
     ])
       requireColumn('transcript_chunks', col);
   }
+  // Phase 7A — plugin registry. SqlitePluginStore reads/writes every
+  // column below; future migrations that swap-rebuild the table MUST
+  // carry these columns forward (mirror 4G.1 / 4G.2 / 5A / 6D.1 hazard).
+  if (requireTable('plugins')) {
+    for (const col of [
+      'id',
+      'name',
+      'version',
+      'source',
+      'enabled',
+      'installed_at',
+      'updated_at',
+    ])
+      requireColumn('plugins', col);
+  }
   // Reserved tables — presence check only (no columns yet exercised).
   requireTable('conversations');
   requireTable('messages');

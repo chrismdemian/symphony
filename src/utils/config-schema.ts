@@ -176,6 +176,18 @@ export const SymphonyConfigSchema = z.object({
    */
   tuiProjectFilter: z.enum(['all', 'active']).default('all'),
   /**
+   * Phase 7A — plugin framework master switch. Default `false`
+   * (default-deny): even an installed + per-plugin-enabled plugin does
+   * NOT load unless this is `true`. Two-gate posture from the security
+   * envelope — this top-level switch AND the per-plugin `enabled` flag in
+   * the `plugins` table must both be on. Read ONCE at orchestrator-server
+   * boot (`startOrchestratorServer`) in Maestro's MCP child; flipping it
+   * applies on the next Symphony start (no live hot-reload in 7A). 5-site
+   * cascade (no runtime dispatch-context propagation — the dispatch
+   * cursor doesn't read it).
+   */
+  pluginsEnabled: z.boolean().default(false),
+  /**
    * Phase 6A/6B — voice input subsystem.
    *
    * `enabled: false` is the default (opt-in feature). When false, the

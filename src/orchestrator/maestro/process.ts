@@ -200,6 +200,12 @@ export class MaestroProcess {
       ...(this.defaultProjectPath !== undefined
         ? { defaultProjectPath: this.defaultProjectPath }
         : {}),
+      // Phase 7A — always grant Maestro's MCP child the `--plugins`
+      // capability; the user's `pluginsEnabled` config master switch is
+      // the real gate (read server-side at boot). The bootstrap RPC
+      // server is started elsewhere WITHOUT this flag, so plugins load in
+      // exactly one process.
+      enablePlugins: true,
     });
     this.mcpConfigPath = mcpConfig.path;
 
