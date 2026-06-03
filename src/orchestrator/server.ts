@@ -512,17 +512,30 @@ export async function startOrchestratorServer(
       );
     }
   };
+  // Phase 7B.3 — fan task creation out to subscribed plugins (onTaskCreated).
+  // Fires for every TaskStore.create caller uniformly. Payload mirrors the
+  // SDK's TaskCreatedEvent field set byte-for-byte.
+  const fanOutTaskCreated = (snapshot: TaskSnapshot): void => {
+    pluginHostRef.current?.dispatchEvent('onTaskCreated', {
+      taskId: snapshot.id,
+      projectId: snapshot.projectId,
+      description: snapshot.description,
+      status: snapshot.status,
+    });
+  };
   const taskStore: TaskStore =
     options.taskStore ??
     (options.database
       ? new SqliteTaskStore(options.database.db, {
           onTaskStatusChange: fanOutTaskStatusChange,
           onNotesAppended: taskNotesOnAppend,
+          onTaskCreated: fanOutTaskCreated,
         })
       : new TaskRegistry({
           projectStore,
           onTaskStatusChange: fanOutTaskStatusChange,
           onNotesAppended: taskNotesOnAppend,
+          onTaskCreated: fanOutTaskCreated,
         }));
   // Phase 3H.3 — instantiate the notifications dispatcher BEFORE the
   // question store so its `onQuestionEnqueued` hook is wired at the
@@ -955,6 +968,18 @@ export async function startOrchestratorServer(
           // (worker prompt vars are display-only).
           ...(rec?.previewCommand !== undefined ? { preview: rec.previewCommand } : {}),
         };
+      },
+      // Phase 7B.3 — fan a worker spawn out to subscribed plugins
+      // (onWorkerSpawned). Fires once per spawn at `'spawning'` status;
+      // payload mirrors the SDK's WorkerSpawnedEvent field set (no status).
+      onWorkerSpawned: (record) => {
+        pluginHostRef.current?.dispatchEvent('onWorkerSpawned', {
+          workerId: record.id,
+          role: record.role,
+          featureIntent: record.featureIntent,
+          projectId: record.projectId,
+          taskId: record.taskId,
+        });
       },
       // Phase 3H.3 — dispatcher receives the post-decrement total
       // running count. The lifecycle fires this AFTER markCompleted +

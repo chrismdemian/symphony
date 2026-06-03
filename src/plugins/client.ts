@@ -30,6 +30,13 @@ export interface PluginToolDescriptor {
   readonly description?: string;
   /** JSON Schema for the tool's input (MCP `inputSchema`). */
   readonly inputSchema: unknown;
+  /**
+   * Phase 7B.3 — the tool's MCP `_meta` passthrough, if any. The SDK
+   * attaches `symphony/eventHandler` + `symphony/permissions` here; the
+   * host reads them at load time (see `host.ts` + `meta-keys.ts`). Undefined
+   * when the plugin registered the tool with no `_meta`.
+   */
+  readonly meta?: Record<string, unknown>;
 }
 
 export interface PluginClientOptions {
@@ -148,6 +155,9 @@ function defaultConnection(opts: PluginClientOptions): PluginClientConnection {
         name: t.name,
         ...(t.description !== undefined ? { description: t.description } : {}),
         inputSchema: t.inputSchema,
+        // Phase 7B.3 — pass the `_meta` passthrough through so the host can
+        // read the eventHandler / permissions markers the SDK attaches.
+        ...(t._meta !== undefined ? { meta: t._meta as Record<string, unknown> } : {}),
       }));
     },
     async callTool(name: string, args: Record<string, unknown>): Promise<PluginCallResult> {

@@ -113,7 +113,9 @@ describe('7B.1 scenario — install an SDK-built plugin and call it end-to-end',
         { name: 'notifier-example__notifier_status', arguments: {} },
         CallToolResultSchema,
       );
-      expect((res.content as Array<{ text?: string }>)[0]?.text).toContain('No task notifications yet');
+      // 7B.3 — the notifier now tracks task + worker events; its empty-state
+      // message is "No notifications yet." (it gained worker handlers).
+      expect((res.content as Array<{ text?: string }>)[0]?.text).toContain('No notifications yet');
 
       // 5. Non-defeatable audit recorded the call.
       const called = handle.auditStore

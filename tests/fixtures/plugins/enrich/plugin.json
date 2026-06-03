@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "enrich",
+  "name": "Enrich Test Plugin",
+  "version": "1.0.0",
+  "author": "symphony-tests",
+  "description": "Phase 7B.3 fixture: hidden event handlers, a granted-permission tool, an over-permissioned tool that must be refused, and get_event_count to observe deliveries.",
+  "entrypoint": { "command": "node", "args": ["server.mjs"] },
+  "events": ["onTaskCreated", "onWorkerSpawned"],
+  "toolScope": "both",
+  "permissions": ["task:read"],
+  "capabilityFlags": []
+}
