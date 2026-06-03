@@ -163,7 +163,7 @@ function fakeNpmInstall(cfg: {
 
 interface FakeGit {
   runner: RemoteRunner;
-  calls: { args: string[]; cwd?: string }[];
+  calls: { args: string[]; cwd?: string; env?: NodeJS.ProcessEnv }[];
 }
 
 /**
@@ -180,9 +180,9 @@ function fakeGit(cfg: {
   checkoutExit?: number;
   stderr?: string;
 } = {}): FakeGit {
-  const calls: { args: string[]; cwd?: string }[] = [];
+  const calls: { args: string[]; cwd?: string; env?: NodeJS.ProcessEnv }[] = [];
   const runner: RemoteRunner = async (args, options) => {
-    calls.push({ args: [...args], cwd: options.cwd });
+    calls.push({ args: [...args], cwd: options.cwd, env: options.env });
     const sub = args[0];
     if (sub === 'clone') {
       const exit = args.includes('--branch') ? (cfg.branchExit ?? 0) : (cfg.cloneExit ?? 0);
@@ -428,6 +428,72 @@ describe('resolveRemoteSource (git)', () => {
       expect(existsSync(path.join(r.dir, 'dist', 'index.js'))).toBe(true);
       await r.cleanup();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveRemoteSource — security hardening (argv injection + transports)
+// ---------------------------------------------------------------------------
+
+describe('resolveRemoteSource (security)', () => {
+  it('refuses an npm-ish source that starts with `-` (flag smuggling)', async () => {
+    let called = false;
+    const r = await resolveRemoteSource({
+      source: '--registry=http://evil',
+      runNpm: async () => {
+        called = true;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+      tmpRoot,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe('unsafe-source');
+    expect(called).toBe(false); // never spawned
+  });
+
+  it('refuses a git-ish source that starts with `-` (e.g. `--upload-pack=…`.git)', async () => {
+    let called = false;
+    const r = await resolveRemoteSource({
+      source: '--upload-pack=touch x.git',
+      runGit: async () => {
+        called = true;
+        return { exitCode: 0, stdout: '', stderr: '' };
+      },
+      tmpRoot,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe('unsafe-source');
+    expect(called).toBe(false);
+  });
+
+  it('refuses a git ref (#fragment) that starts with `-`', async () => {
+    const git = fakeGit();
+    const r = await resolveRemoteSource({
+      source: 'https://example.com/u/r.git#--upload-pack=evil',
+      runGit: git.runner,
+      tmpRoot,
+    });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe('unsafe-source');
+    expect(git.calls).toHaveLength(0); // refused before any git call
+  });
+
+  it('sets GIT_ALLOW_PROTOCOL (blocks ext::/fd:: helper transports) and passes `--` to clone', async () => {
+    const git = fakeGit();
+    const r = await resolveRemoteSource({
+      source: 'https://example.com/u/r.git',
+      runGit: git.runner,
+      tmpRoot,
+    });
+    expect(r.ok).toBe(true);
+    const clone = git.calls[0]!;
+    expect(clone.env?.GIT_ALLOW_PROTOCOL).toBe('file:git:http:https:ssh');
+    expect(clone.env?.GIT_TERMINAL_PROMPT).toBe('0');
+    // `--` terminates options before the positional URL + dir.
+    const dashIdx = clone.args.indexOf('--');
+    expect(dashIdx).toBeGreaterThan(-1);
+    expect(clone.args[dashIdx + 1]).toBe('https://example.com/u/r.git');
+    if (r.ok) await r.cleanup();
   });
 });
 
