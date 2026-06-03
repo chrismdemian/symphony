@@ -1,0 +1,29 @@
+{
+  "name": "@symphony/plugin-notifier-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reference Symphony plugin — logs a line when a task completes or fails, and exposes a notifier_status tool. Dogfoods @symphony/plugin-sdk.",
+  "type": "module",
+  "files": [
+    "dist",
+    "plugin.json"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@symphony/plugin-sdk": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3"
+  },
+  "license": "MIT"
+}

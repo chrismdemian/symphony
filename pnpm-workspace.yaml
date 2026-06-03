@@ -1,0 +1,16 @@
+# Phase 7B — pnpm workspace.
+#
+# The repo root stays the `symphony` CLI package (src/ → dist/ via tsup).
+# Plugin-authoring packages live under `packages/`:
+#   - packages/plugin-sdk      → @symphony/plugin-sdk (the authoring SDK)
+#   - packages/examples/*      → in-repo dogfood plugins that import the SDK
+#                                via `workspace:*` (faithful to how an
+#                                external author would import it)
+#
+# Scaffolded plugins (`symphony plugin new`) live OUTSIDE this repo, so they
+# cannot use `workspace:*`. The generator vendors the built SDK into each
+# scaffold as a single bundled file instead. Switch the scaffold to a real
+# `@symphony/plugin-sdk` npm dependency once the SDK is published.
+packages:
+  - 'packages/plugin-sdk'
+  - 'packages/examples/*'

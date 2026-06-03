@@ -19,3 +19,8 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm build
+      # Phase 7B — build + typecheck the workspace plugin packages
+      # (@symphony/plugin-sdk and the in-repo example). Build first so the
+      # example can typecheck against the SDK's emitted .d.ts.
+      - run: pnpm build:packages
+      - run: pnpm typecheck:packages

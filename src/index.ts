@@ -164,6 +164,23 @@ const plugin = program
   .description('Manage Symphony plugins (~/.symphony/plugins). Phase 7A.');
 
 plugin
+  .command('new <name>')
+  .description('Scaffold a new plugin project (uses @symphony/plugin-sdk). Phase 7B.')
+  .option('--out <dir>', 'Target directory (default: ./<id>).')
+  .option('--author <author>', 'Plugin author for the manifest.')
+  .option('--force', 'Scaffold into a non-empty directory.')
+  .action(async (name: string, opts: { out?: string; author?: string; force?: boolean }) => {
+    const { runPluginNew } = await import('./cli/plugin-new.js');
+    const result = await runPluginNew({
+      name,
+      ...(opts.out !== undefined ? { out: opts.out } : {}),
+      ...(opts.author !== undefined ? { author: opts.author } : {}),
+      ...(opts.force === true ? { force: true } : {}),
+    });
+    process.exit(result.exitCode);
+  });
+
+plugin
   .command('install <source>')
   .description('Install a plugin from a local directory (containing plugin.json) or a plugin.json path.')
   .action(async (source: string) => {

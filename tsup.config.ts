@@ -82,6 +82,20 @@ export default defineConfig({
       path.resolve('src/voice/vocab-seed.json'),
       path.resolve('dist/voice/vocab-seed.json'),
     );
+    // Phase 7B.1 — vendored plugin SDK bundle for `symphony plugin new`.
+    // The generator copies this into each scaffolded plugin's `lib/`.
+    // Guarded: on a fresh build the SDK package may not be built yet
+    // (`pnpm build:packages` runs after the root build); the generator's
+    // resolver also walks the workspace `packages/` dir as a fallback.
+    {
+      const sdkVendor = path.resolve(
+        'packages/plugin-sdk/dist/vendor/symphony-plugin-sdk.mjs',
+      );
+      if (fs.existsSync(sdkVendor)) {
+        fs.mkdirSync(path.resolve('dist/plugin-sdk'), { recursive: true });
+        fs.copyFileSync(sdkVendor, path.resolve('dist/plugin-sdk/symphony-plugin-sdk.mjs'));
+      }
+    }
     // Phase 6C — bundled wake-word ONNX models + LICENSE + checksums.
     // Loaded at runtime via `src/voice/path.ts:voiceWakeModelPath` which
     // walks `import.meta.url` candidates. The `.onnx` may legitimately
