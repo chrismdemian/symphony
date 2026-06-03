@@ -159,6 +159,56 @@ skills
     process.exit(result.exitCode);
   });
 
+const plugin = program
+  .command('plugin')
+  .description('Manage Symphony plugins (~/.symphony/plugins). Phase 7A.');
+
+plugin
+  .command('install <source>')
+  .description('Install a plugin from a local directory (containing plugin.json) or a plugin.json path.')
+  .action(async (source: string) => {
+    const { runPluginInstall } = await import('./cli/plugin.js');
+    const result = await runPluginInstall({ source });
+    process.exit(result.exitCode);
+  });
+
+plugin
+  .command('list')
+  .description('List installed plugins and their enabled state.')
+  .option('--json', 'Print as JSON instead of a table (for scripting).')
+  .action(async (opts: { json?: boolean }) => {
+    const { runPluginList } = await import('./cli/plugin.js');
+    const result = await runPluginList({ format: opts.json === true ? 'json' : 'table' });
+    process.exit(result.exitCode);
+  });
+
+plugin
+  .command('remove <id>')
+  .description('Uninstall a plugin by id (removes the dir and the registry row).')
+  .action(async (id: string) => {
+    const { runPluginRemove } = await import('./cli/plugin.js');
+    const result = await runPluginRemove({ id });
+    process.exit(result.exitCode);
+  });
+
+plugin
+  .command('enable <id>')
+  .description('Enable an installed plugin (loads at next Symphony start).')
+  .action(async (id: string) => {
+    const { runPluginEnable } = await import('./cli/plugin.js');
+    const result = await runPluginEnable({ id });
+    process.exit(result.exitCode);
+  });
+
+plugin
+  .command('disable <id>')
+  .description('Disable an installed plugin (stops loading at next Symphony start).')
+  .action(async (id: string) => {
+    const { runPluginDisable } = await import('./cli/plugin.js');
+    const result = await runPluginDisable({ id });
+    process.exit(result.exitCode);
+  });
+
 program
   .command('update-catalogs')
   .description(
@@ -458,6 +508,7 @@ program
   .option('--rpc-port <n>', 'Bind port for the RPC server (0 = ephemeral).', (v) => Number.parseInt(v, 10))
   .option('--rpc-token-file <path>', 'Path for the RPC descriptor JSON (default ~/.symphony/rpc.json).')
   .option('--default-project <path>', 'Absolute path to the default project (overrides cwd).')
+  .option('--plugins', 'Activate the plugin host (Phase 7A). Only Maestro’s MCP child passes this.')
   .action(
     async (opts: {
       inMemory?: boolean;
@@ -465,6 +516,7 @@ program
       rpcPort?: number;
       rpcTokenFile?: string;
       defaultProject?: string;
+      plugins?: boolean;
     }) => {
       const { startOrchestratorServer, SymphonyDatabase } = await import('./orchestrator/index.js');
       const database = opts.inMemory ? undefined : SymphonyDatabase.open();
@@ -476,6 +528,7 @@ program
         handle = await startOrchestratorServer({
           ...(database !== undefined ? { database } : {}),
           ...(opts.defaultProject !== undefined ? { defaultProjectPath: opts.defaultProject } : {}),
+          ...(opts.plugins === true ? { plugins: { enabled: true } } : {}),
           rpc: rpcEnabled
             ? {
                 enabled: true,

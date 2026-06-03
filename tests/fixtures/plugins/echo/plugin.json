@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "echo",
+  "name": "Echo Test Plugin",
+  "version": "1.0.0",
+  "author": "symphony-tests",
+  "description": "Phase 7A fixture: ping/echo tools, an on_task_completed event handler, and get_event_count to observe deliveries.",
+  "entrypoint": { "command": "node", "args": ["server.mjs"] },
+  "events": ["onTaskCompleted"],
+  "toolScope": "both",
+  "permissions": ["task:read"],
+  "capabilityFlags": []
+}

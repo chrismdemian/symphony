@@ -38,6 +38,13 @@ export interface WriteMaestroMcpConfigInput {
   outputPath?: string;
   /** Extra MCP servers to register alongside Symphony. Off by default. */
   extraServers?: Record<string, McpServerEntry>;
+  /**
+   * Phase 7A — when true, pass `--plugins` to Maestro's MCP child so it
+   * (and ONLY it, never the bootstrap RPC server) activates the plugin
+   * host. The user's `pluginsEnabled` config master switch still gates
+   * actual loading inside the server. Defaults to false.
+   */
+  enablePlugins?: boolean;
 }
 
 export interface McpServerEntry {
@@ -72,6 +79,7 @@ export async function writeMaestroMcpConfig(
   if (input.defaultProjectPath !== undefined && input.defaultProjectPath.length > 0) {
     args.push('--default-project', input.defaultProjectPath);
   }
+  if (input.enablePlugins === true) args.push('--plugins');
 
   const config = {
     mcpServers: {

@@ -107,6 +107,8 @@ import type {
 } from '../state/audit-store.js';
 import { createAuditLogger } from '../audit/logger.js';
 import { createAuditFileSink } from '../audit/file-sink.js';
+import { PluginHost } from '../plugins/host.js';
+import { SqlitePluginStore } from '../plugins/store.js';
 import type { AuditLogger } from '../audit/types.js';
 import type { ToolAuditRecord, ToolAuditSink } from './dispatch.js';
 import type { WorkerStatus } from '../workers/types.js';
@@ -235,6 +237,18 @@ export interface OrchestratorServerOptions {
    * untouched. Defaults to `~/.symphony/audit.log`.
    */
   auditFilePath?: string;
+  /**
+   * Phase 7A — plugin framework activation. When `enabled: true` (set
+   * ONLY by Maestro's MCP child via the `--plugins` arg, NOT the bootstrap
+   * RPC server) AND the user's `pluginsEnabled` config master switch is
+   * true AND a `database` is present, the orchestrator constructs a
+   * `PluginHost` that spawns one MCP client per enabled plugin and
+   * registers their tools as namespaced proxies. Default off — the
+   * bootstrap RPC server never spawns plugins, so plugin subprocesses are
+   * not double-spawned. Test seam: pass `{ enabled: true }` with a
+   * `database` to exercise the host.
+   */
+  plugins?: { enabled?: boolean };
 }
 
 export interface RpcOptions {
@@ -284,6 +298,8 @@ export interface OrchestratorServerHandle {
   auditLogger: AuditLogger;
   /** Phase 3R — exposed for tests + the RPC layer's `audit.list`. */
   auditStore: AuditStore;
+  /** Phase 7A — present when the plugin host was activated (Maestro MCP child + master switch on). */
+  pluginHost?: PluginHost;
   defaultProjectPath: string;
   resolveProjectPath: (project?: string) => string;
   setContext: (partial: Partial<DispatchContext>) => void;
@@ -408,6 +424,12 @@ export async function startOrchestratorServer(
     auditSink: toolAuditSink,
   });
 
+  // Phase 7A — holder for the plugin host. Constructed late (after all
+  // built-in tools register), but the worker/task status callbacks below
+  // close over this ref so events fan out to plugins once the host fills
+  // it in. `current` stays undefined when plugins aren't activated.
+  const pluginHostRef: { current?: PluginHost } = {};
+
   const defaultProjectPath = path.resolve(options.defaultProjectPath ?? process.cwd());
   const projects = options.projects ?? {};
 
@@ -480,6 +502,15 @@ export async function startOrchestratorServer(
   const fanOutTaskStatusChange = (snapshot: TaskSnapshot): void => {
     taskReadyOnTaskStatusChange(snapshot);
     sagaRollupListener(snapshot);
+    // Phase 7A — fan task terminal transitions out to subscribed plugins.
+    // `completed` → onTaskCompleted, `failed` → onTaskFailed; other
+    // statuses produce no event. Fire-and-forget inside dispatchEvent.
+    if (snapshot.status === 'completed' || snapshot.status === 'failed') {
+      pluginHostRef.current?.dispatchEvent(
+        snapshot.status === 'completed' ? 'onTaskCompleted' : 'onTaskFailed',
+        { taskId: snapshot.id, projectId: snapshot.projectId, status: snapshot.status },
+      );
+    }
   };
   const taskStore: TaskStore =
     options.taskStore ??
@@ -788,6 +819,8 @@ export async function startOrchestratorServer(
   let globalModelMode: 'opus' | 'mixed';
   let bootAwayMode: boolean;
   let bootAutonomyTier: AutonomyTier;
+  // Phase 7A — plugin master switch, read once at boot.
+  let bootPluginsEnabled: boolean;
   // Phase 5D — boot-time active-project resolution. Reads
   // `config.activeProject` from disk; validates against the
   // (post-`ensureDefault`) projectStore so a project that was removed
@@ -802,6 +835,7 @@ export async function startOrchestratorServer(
     bootAwayMode = bootGlobalConfig.config.awayMode;
     bootAutonomyTier = bootGlobalConfig.config.autonomyTier;
     bootActiveProjectName = bootGlobalConfig.config.activeProject;
+    bootPluginsEnabled = bootGlobalConfig.config.pluginsEnabled;
   } catch {
     const fallback = (await import('../utils/config-schema.js')).defaultConfig();
     globalMaxWorkers = fallback.maxConcurrentWorkers;
@@ -809,6 +843,7 @@ export async function startOrchestratorServer(
     bootAwayMode = fallback.awayMode;
     bootAutonomyTier = fallback.autonomyTier;
     bootActiveProjectName = fallback.activeProject;
+    bootPluginsEnabled = fallback.pluginsEnabled;
   }
   // Phase 5D — initialize the active-project cursor. The cursor is the
   // CONFIG's `activeProject` when it names a known project; otherwise
@@ -934,6 +969,20 @@ export async function startOrchestratorServer(
         notificationDispatcher.onWorkerExit(record, totalRunning);
         completionSummarizer.onWorkerExit(record);
         auditWorkerExit(auditLogger, record);
+        // Phase 7A — fan a successful worker completion out to subscribed
+        // plugins. Only `completed` maps to onWorkerCompleted (the 7A
+        // taxonomy has no worker-failure event); the payload carries the
+        // status so plugins can branch. Fire-and-forget.
+        if (record.status === 'completed') {
+          pluginHostRef.current?.dispatchEvent('onWorkerCompleted', {
+            workerId: record.id,
+            role: record.role,
+            status: record.status,
+            featureIntent: record.featureIntent,
+            projectId: record.projectId,
+            taskId: record.taskId,
+          });
+        }
         // Phase 4E — route the worker's `open_questions` into the 3E
         // question subsystem as advisory, auto-acknowledged entries
         // (rule #7: surfaced in History on demand, never blocking).
@@ -1119,6 +1168,35 @@ export async function startOrchestratorServer(
     }),
   );
 
+  // Phase 7A — plugin host. Activated only when this is Maestro's MCP
+  // child (`options.plugins.enabled`, set via `--plugins`) AND the user's
+  // `pluginsEnabled` master switch is on AND a persistent DB exists (the
+  // plugin registry lives in SQLite). The bootstrap RPC server never sets
+  // `options.plugins.enabled`, so plugin subprocesses are not double-
+  // spawned. A plugin failure is isolated inside the host — boot proceeds.
+  let pluginHost: PluginHost | undefined;
+  if (
+    options.plugins?.enabled === true &&
+    bootPluginsEnabled === true &&
+    options.database !== undefined
+  ) {
+    const host = new PluginHost({
+      store: new SqlitePluginStore(options.database.db),
+      registry,
+    });
+    try {
+      await host.start();
+      pluginHost = host;
+      pluginHostRef.current = host;
+    } catch (err) {
+      // Defensive — `start()` already isolates per-plugin failures, so a
+      // throw here is unexpected (e.g. the store query). Never block boot.
+      console.error(
+        `[symphony] plugin host failed to start: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
   const transport = options.transport ?? new StdioServerTransport();
   await server.connect(transport);
 
@@ -1245,6 +1323,12 @@ export async function startOrchestratorServer(
 
   const close = async (): Promise<void> => {
     offModeChange();
+    // Phase 7A — close plugin subprocesses FIRST so their stdio teardown
+    // doesn't race the registry/server close. Isolated + best-effort.
+    if (pluginHost !== undefined) {
+      pluginHostRef.current = undefined;
+      await pluginHost.shutdown().catch(() => {});
+    }
     registry.close();
     // Order: stop accepting RPC clients first so no new reads outlive
     // stores; then flush the notifications dispatcher so any awayMode
@@ -1321,6 +1405,7 @@ export async function startOrchestratorServer(
     taskReadyDispatcher,
     auditLogger,
     auditStore,
+    ...(pluginHost !== undefined ? { pluginHost } : {}),
     defaultProjectPath,
     resolveProjectPath,
     setContext: (partial) => {

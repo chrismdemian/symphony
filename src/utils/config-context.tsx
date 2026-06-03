@@ -339,6 +339,11 @@ export function applyPatchInMemory(
   if (patch.tuiProjectFilter !== undefined) {
     next.tuiProjectFilter = patch.tuiProjectFilter;
   }
+  // Phase 7A — plugin master switch. Mirror of disk-side mergePatch
+  // (5-site invariant; read once at server boot, no runtime propagation).
+  if (patch.pluginsEnabled !== undefined) {
+    next.pluginsEnabled = patch.pluginsEnabled;
+  }
   if (patch.notifications !== undefined) {
     next.notifications = { ...current.notifications, ...patch.notifications };
   }
