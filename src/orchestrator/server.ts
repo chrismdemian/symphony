@@ -53,6 +53,13 @@ import {
   type NotionConnectorHandle,
 } from '../integrations/notion.js';
 import { NOTION_INTEGRATION } from '../integrations/notion-config.js';
+import { makeSyncObsidianTool } from './tools/sync-obsidian.js';
+import {
+  createObsidianConnectorFromDisk,
+  type ObsidianConnectorHandle,
+} from '../integrations/obsidian.js';
+import { loadObsidianConfig, OBSIDIAN_INTEGRATION } from '../integrations/obsidian-config.js';
+import { ObsidianVaultWatcher } from '../integrations/obsidian-watcher.js';
 import { makeTaskNotesTool } from './tools/task-notes.js';
 import { makeSetActiveProjectTool } from './tools/set-active-project.js';
 import { makeCreateSagaTool } from './tools/create-saga.js';
@@ -273,9 +280,28 @@ export interface OrchestratorServerOptions {
   /** Override / inject the Notion connector. Test seam (bypasses disk read). */
   notionConnector?: NotionConnectorHandle;
   /**
+   * Phase 8B — Obsidian integration activation. When `enabled: true` (set
+   * only by the real CLI boot paths, NEVER by tests) and no
+   * `obsidianConnector` is injected, the server reads `~/.symphony/
+   * integrations/obsidian.json` and constructs an `ObsidianConnector` if a
+   * vault is configured. The `sync_obsidian` tool, the checkbox-writeback
+   * hook, and the live vault watcher are wired only when a connector exists.
+   * Test seam: inject `obsidianConnector` directly.
+   */
+  obsidian?: { enabled?: boolean };
+  /** Override / inject the Obsidian connector. Test seam (bypasses disk read). */
+  obsidianConnector?: ObsidianConnectorHandle;
+  /**
+   * Phase 8B test seam — disable the live chokidar watcher even when an
+   * Obsidian connector is present (unit/integration tests that don't want a
+   * real fs watcher). Production leaves this undefined and honors the config's
+   * `watch` flag.
+   */
+  obsidianWatch?: boolean;
+  /**
    * Phase 8A — override the task↔external-source link store. Defaults to
    * SQLite-backed when `database` is provided, else in-memory. Used for
-   * sync dedup + the Notion status writeback.
+   * sync dedup + the Notion / Obsidian status writeback.
    */
   externalLinkStore?: ExternalLinkStore;
 }
@@ -309,6 +335,8 @@ export interface OrchestratorServerHandle {
   externalLinkStore: ExternalLinkStore;
   /** Phase 8A — present when Notion is configured + activated. */
   notionConnector?: NotionConnectorHandle;
+  /** Phase 8B — present when Obsidian is configured + activated. */
+  obsidianConnector?: ObsidianConnectorHandle;
   /** Phase 5E — exposed for tests + tools that need to read saga membership. */
   sagaStore: SagaStore;
   questionStore: QuestionStore;
@@ -538,6 +566,8 @@ export async function startOrchestratorServer(
   // page. Fire-and-forget + internally guarded — never throws into the
   // event bus (mirrors plugin dispatch).
   const notionWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
+  // Phase 8B — Obsidian checkbox writeback hook (same shape as Notion's).
+  const obsidianWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
   const fanOutTaskStatusChange = (snapshot: TaskSnapshot): void => {
     taskReadyOnTaskStatusChange(snapshot);
     sagaRollupListener(snapshot);
@@ -550,6 +580,7 @@ export async function startOrchestratorServer(
         { taskId: snapshot.id, projectId: snapshot.projectId, status: snapshot.status },
       );
       notionWritebackRef.current?.(snapshot);
+      obsidianWritebackRef.current?.(snapshot);
     }
   };
   // Phase 7B.3 — fan task creation out to subscribed plugins (onTaskCreated).
@@ -625,6 +656,53 @@ export async function startOrchestratorServer(
       );
     };
   }
+  // Phase 8B — Obsidian connector. Injected (test seam) or auto-constructed
+  // from disk when activated by the CLI boot path (`obsidian.enabled`). No
+  // token — a vault is a local folder. Undefined when Obsidian isn't
+  // configured; the `sync_obsidian` tool, the checkbox-writeback hook, and the
+  // vault watcher are wired only when a connector exists. The watcher itself is
+  // started later (it needs `resolveProjectPath`, defined below).
+  const obsidianLog = (level: 'info' | 'warn' | 'error', message: string): void => {
+    const line = `[symphony] obsidian: ${message}`;
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    // info stays quiet — TUI owns stdout.
+  };
+  const obsidianConnector: ObsidianConnectorHandle | undefined =
+    options.obsidianConnector ??
+    (options.obsidian?.enabled === true
+      ? await createObsidianConnectorFromDisk({ log: obsidianLog })
+      : undefined);
+  if (obsidianConnector !== undefined) {
+    obsidianWritebackRef.current = (snapshot: TaskSnapshot): void => {
+      if (snapshot.status !== 'completed' && snapshot.status !== 'failed') return;
+      const link = externalLinkStore
+        .listByTaskId(snapshot.id)
+        .find((l) => l.source === OBSIDIAN_INTEGRATION);
+      if (link === undefined) return;
+      void obsidianConnector.writeBackStatus(link.externalId, snapshot.status).then(
+        (result) => {
+          if (result.written) {
+            obsidianLog('info', `task ${link.externalId} → [${result.value}]`);
+          } else if (result.code !== 'skipped') {
+            // not-found (locator drift — the task line was edited/deleted in
+            // the vault) or error: surface it, never fail silently (audit M3).
+            obsidianLog('warn', `writeback skipped for ${link.externalId}: ${result.reason}`);
+          }
+        },
+        (err: unknown) => {
+          obsidianLog(
+            'warn',
+            `writeback failed for ${link.externalId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        },
+      );
+    };
+  }
+  // Started below (needs `resolveProjectPath`); stopped in `close()`.
+  let obsidianWatcher: ObsidianVaultWatcher | undefined;
   // Phase 3H.3 — instantiate the notifications dispatcher BEFORE the
   // question store so its `onQuestionEnqueued` hook is wired at the
   // store's construction. The dispatcher reads `loadConfig` fresh per
@@ -1228,6 +1306,54 @@ export async function startOrchestratorServer(
       }),
     );
   }
+  // Phase 8B — sync_obsidian + the live vault watcher are wired ONLY when an
+  // Obsidian connector is active (configured vault). The watcher uses
+  // `ignoreInitial` so it never bulk-imports on boot — `sync_obsidian` seeds,
+  // the watcher tops up. It's started unless config `watch === false` or the
+  // `obsidianWatch` test seam forces it off.
+  if (obsidianConnector !== undefined) {
+    registry.register(
+      makeSyncObsidianTool({
+        connector: obsidianConnector,
+        taskStore,
+        projectStore,
+        externalLinkStore,
+        resolveProjectPath,
+      }),
+    );
+    // The watcher reads the on-disk config for the vault path; only run it on
+    // the REAL boot path (`obsidian.enabled === true`). Injected-connector
+    // tests never touch disk and exercise the watcher standalone.
+    // `obsidianWatch === false` force-disables even on the real boot path.
+    //
+    // EXACTLY-ONE-WATCHER: under `symphony start` both the bootstrap RPC server
+    // (Process B) AND Maestro's MCP child (Process C) construct the connector
+    // (shared SQLite). The writeback hook is safe in both (a given update fires
+    // in one process), but the watcher is a task SOURCE — two watchers on the
+    // same vault would double-create. `--plugins` runs ONLY in Process C (the
+    // documented PluginHost invariant), so the watcher runs in the non-plugin
+    // server (bootstrap / standalone) only.
+    if (
+      options.obsidian?.enabled === true &&
+      options.obsidianWatch !== false &&
+      options.plugins?.enabled !== true
+    ) {
+      const obsidianConfig = await loadObsidianConfig().catch(() => undefined);
+      if (obsidianConfig !== undefined && obsidianConfig.watch) {
+        obsidianWatcher = new ObsidianVaultWatcher({
+          connector: obsidianConnector,
+          taskStore,
+          projectStore,
+          externalLinkStore,
+          resolveProjectPath,
+          vaultRoot: obsidianConfig.vaultPath,
+          exclude: obsidianConfig.exclude,
+          log: obsidianLog,
+        });
+        obsidianWatcher.start();
+      }
+    }
+  }
   // Phase 5E — cross-project sagas. `create_saga` writes both the saga
   // row AND the member tasks atomically; downstream `spawn_worker
   // (task_id=...)` claims members per the existing 3P pattern. The
@@ -1466,6 +1592,11 @@ export async function startOrchestratorServer(
 
   const close = async (): Promise<void> => {
     offModeChange();
+    // Phase 8B — stop the vault watcher first so no late fs event ingests a
+    // task into stores that are about to tear down. Independent + best-effort.
+    if (obsidianWatcher !== undefined) {
+      await obsidianWatcher.stop().catch(() => {});
+    }
     // Phase 7A — close plugin subprocesses FIRST so their stdio teardown
     // doesn't race the registry/server close. Isolated + best-effort.
     if (pluginHost !== undefined) {
@@ -1538,6 +1669,7 @@ export async function startOrchestratorServer(
     taskStore,
     externalLinkStore,
     ...(notionConnector !== undefined ? { notionConnector } : {}),
+    ...(obsidianConnector !== undefined ? { obsidianConnector } : {}),
     sagaStore,
     questionStore,
     waveStore,
