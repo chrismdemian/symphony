@@ -196,8 +196,11 @@ describe('ObsidianVaultWatcher', () => {
     watcher.start();
     const ig = fw.ignored!;
     const file = { isFile: () => true };
+    const dir = { isFile: () => false };
     expect(ig(path.join('/vault', '.obsidian', 'app.json'), file)).toBe(true);
     expect(ig(path.join('/vault', 'Archive', 'old.md'), file)).toBe(true);
+    // The excluded DIRECTORY itself is pruned from traversal too (audit m4).
+    expect(ig(path.join('/vault', 'Archive'), dir)).toBe(true);
     expect(ig(path.join('/vault', 'notes.md.symphony-1.tmp'), file)).toBe(true);
     expect(ig(path.join('/vault', 'pic.png'), file)).toBe(true);
     expect(ig(path.join('/vault', 'notes.md'), file)).toBe(false);

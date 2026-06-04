@@ -107,7 +107,10 @@ export class ObsidianVaultWatcher {
       // Skip dotfolders/dotfiles (`.obsidian`, `.git`, `.trash`) + tmp writes.
       if (rel.split('/').some((seg) => seg.startsWith('.'))) return true;
       if (p.endsWith('.tmp')) return true;
-      if (exclude.some((frag) => rel.includes(frag))) return true;
+      // Match excludes against both the path AND a dir-style `rel/` form so an
+      // excluded DIRECTORY (e.g. `Archive/`) is pruned from traversal, not just
+      // its files — parity with the connector walk (audit m4).
+      if (exclude.some((frag) => rel.includes(frag) || `${rel}/`.includes(frag))) return true;
       // Ignore non-markdown FILES; let directories through to keep traversing.
       if (stats?.isFile() === true && !p.toLowerCase().endsWith('.md')) return true;
       return false;

@@ -684,6 +684,10 @@ export async function startOrchestratorServer(
         (result) => {
           if (result.written) {
             obsidianLog('info', `task ${link.externalId} → [${result.value}]`);
+          } else if (result.code !== 'skipped') {
+            // not-found (locator drift — the task line was edited/deleted in
+            // the vault) or error: surface it, never fail silently (audit M3).
+            obsidianLog('warn', `writeback skipped for ${link.externalId}: ${result.reason}`);
           }
         },
         (err: unknown) => {

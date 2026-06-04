@@ -204,7 +204,62 @@ describe('ObsidianConnector.writeBackStatus', () => {
     writes.length = 0;
     const again = await conn.writeBackStatus(c?.externalId ?? '', 'completed');
     expect(again.written).toBe(false);
+    expect(again.code).toBe('skipped');
     expect(writes).toHaveLength(0);
+  });
+
+  it('NEVER flips a [ ]-shaped line inside YAML frontmatter (audit M1)', async () => {
+    // A frontmatter value that LOOKS like a task. Fetch parses only the body,
+    // so the only candidate is the real body task. Even if its locator somehow
+    // matched a frontmatter line, writeback must not touch frontmatter.
+    const raw = [
+      '---',
+      'project: main',
+      'note: |',
+      '  - [ ] Reply to Bob',
+      '---',
+      '- [ ] Reply to Bob',
+    ].join('\n');
+    const { conn, files } = connector(
+      { 'n.md': raw },
+      defaultObsidianConfig('/vault'),
+      { now: () => Date.parse('2026-06-10T00:00:00Z') },
+    );
+    const candidates = await conn.fetchOpenTasks();
+    // Only the BODY task is a candidate (frontmatter is stripped by fetch).
+    expect(candidates).toHaveLength(1);
+    const result = await conn.writeBackStatus(candidates[0]?.externalId ?? '', 'completed');
+    expect(result.written).toBe(true);
+    const out = files['n.md'] as string;
+    // The frontmatter pseudo-task is byte-untouched; the body task flipped.
+    expect(out).toContain('  - [ ] Reply to Bob\n---'); // frontmatter intact
+    expect(out).toContain('- [x] Reply to Bob ✅ 2026-06-10'); // body flipped
+  });
+
+  it('round-trips TWO identical task lines to TWO tasks; writeback flips the right one (audit M2)', async () => {
+    const { conn, files } = connector(
+      { 'dup.md': ['- [ ] Reply to Bob', '- [ ] Reply to Bob'].join('\n') },
+      defaultObsidianConfig('/vault'),
+      { now: () => Date.parse('2026-06-10T00:00:00Z') },
+    );
+    const candidates = await conn.fetchOpenTasks();
+    expect(candidates).toHaveLength(2);
+    // Distinct external ids → both would be imported (no silent dedup loss).
+    expect(candidates[0]?.externalId).not.toBe(candidates[1]?.externalId);
+    // Completing the SECOND flips the second line, leaving the first open.
+    await conn.writeBackStatus(candidates[1]?.externalId ?? '', 'completed');
+    const out = (files['dup.md'] as string).split('\n');
+    expect(out[0]).toBe('- [ ] Reply to Bob');
+    expect(out[1]).toBe('- [x] Reply to Bob ✅ 2026-06-10');
+  });
+
+  it('writeback on a deleted/edited task reports not-found (observable, audit M3)', async () => {
+    const { conn, files } = connector({ 'a.md': '- [ ] Original' });
+    const [c] = await conn.fetchOpenTasks();
+    files['a.md'] = '- [ ] Edited so the hash no longer matches';
+    const result = await conn.writeBackStatus(c?.externalId ?? '', 'completed');
+    expect(result.written).toBe(false);
+    expect(result.code).toBe('not-found');
   });
 });
 

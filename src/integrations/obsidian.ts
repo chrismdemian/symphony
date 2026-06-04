@@ -7,8 +7,7 @@ import {
   type ObsidianConfig,
 } from './obsidian-config.js';
 import {
-  detectTaskFormat,
-  parseTaskLine,
+  bodyStartLine,
   parseTasksFromBody,
   rewriteTaskLineStatus,
   type StatusClassification,
@@ -60,6 +59,14 @@ export interface ObsidianWritebackResult {
   readonly value?: string;
   /** Why nothing was written (no `failed` char configured, line not found). */
   readonly reason?: string;
+  /**
+   * Discriminates the non-written cases so callers log appropriately:
+   *   - `skipped`   — expected no-op (no char configured / already at target)
+   *   - `not-found` — the task line is gone/edited (locator drift) — a real miss
+   *   - `error`     — malformed id / read / write failure
+   * Absent when `written` is true.
+   */
+  readonly code?: 'skipped' | 'not-found' | 'error';
 }
 
 export interface ObsidianVaultCheck {
@@ -190,11 +197,15 @@ export class ObsidianConnector implements ObsidianConnectorHandle {
         ? this.config.statusWriteback.completed
         : this.config.statusWriteback.failed;
     if (targetChar === undefined) {
-      return { written: false, reason: `no '${status}' writeback char configured` };
+      return {
+        written: false,
+        code: 'skipped',
+        reason: `no '${status}' writeback char configured`,
+      };
     }
     const parsed = splitExternalId(externalId);
     if (parsed === undefined) {
-      return { written: false, reason: `malformed external id: ${externalId}` };
+      return { written: false, code: 'error', reason: `malformed external id: ${externalId}` };
     }
     const { relPath, locator } = parsed;
 
@@ -204,6 +215,7 @@ export class ObsidianConnector implements ObsidianConnectorHandle {
     } catch (err) {
       return {
         written: false,
+        code: 'error',
         reason: `cannot read ${relPath}: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
@@ -212,7 +224,7 @@ export class ObsidianConnector implements ObsidianConnectorHandle {
     const matchIdx = this.findLineByLocator(lines, locator);
     const matchedLine = matchIdx === -1 ? undefined : lines[matchIdx];
     if (matchIdx === -1 || matchedLine === undefined) {
-      return { written: false, reason: `task line not found for locator ${locator}` };
+      return { written: false, code: 'not-found', reason: `task line not found for locator ${locator}` };
     }
 
     const doneDate =
@@ -224,7 +236,7 @@ export class ObsidianConnector implements ObsidianConnectorHandle {
     });
     if (rewritten === undefined) {
       // Already at the target char with nothing to add — idempotent no-op.
-      return { written: false, reason: 'line already at target status' };
+      return { written: false, code: 'skipped', reason: 'line already at target status' };
     }
     // Surgical splice: replace ONLY the matched line's content, leaving every
     // other byte (including each line's own terminator and a trailing newline)
@@ -236,6 +248,7 @@ export class ObsidianConnector implements ObsidianConnectorHandle {
     } catch (err) {
       return {
         written: false,
+        code: 'error',
         reason: `write failed for ${relPath}: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
@@ -253,35 +266,22 @@ export class ObsidianConnector implements ObsidianConnectorHandle {
   }
 
   /**
-   * Scan raw file lines (frontmatter + body; non-task lines naturally don't
-   * match) for the task line whose locator equals `target`. Fenced code blocks
-   * are skipped so an example `- [ ]` isn't matched. Returns the line index or
-   * -1. The locator is format-independent, so we needn't thread the configured
-   * format here.
+   * Find the RAW line index of the task whose locator equals `target`. Scans
+   * ONLY the body (frontmatter skipped) using the exact same `parseTasksFromBody`
+   * pass fetch uses — so the fetch and writeback paths agree on the task-line
+   * set, the ordinal disambiguation, and the fence handling (audit M1/M2/m3). A
+   * `- [ ]`-shaped line inside YAML frontmatter is therefore never matched.
+   * Returns -1 when no body task carries `target`.
    */
   private findLineByLocator(lines: readonly string[], target: string): number {
-    const format: 'emoji' | 'dataview' = detectTaskFormat(lines);
-    let inFence = false;
-    let fenceMarker = '';
-    for (let i = 0; i < lines.length; i += 1) {
-      const line = lines[i] ?? '';
-      const fence = /^\s*(```+|~~~+)/u.exec(line);
-      if (fence !== null) {
-        const marker = (fence[1] ?? '')[0] ?? '`';
-        if (!inFence) {
-          inFence = true;
-          fenceMarker = marker;
-        } else if (marker === fenceMarker) {
-          inFence = false;
-          fenceMarker = '';
-        }
-        continue;
-      }
-      if (inFence) continue;
-      const task = parseTaskLine(line, { format, statusMap: this.statusMap });
-      if (task !== undefined && task.locator === target) return i;
-    }
-    return -1;
+    const bodyStart = bodyStartLine(lines);
+    const body = lines.slice(bodyStart).join('\n');
+    const tasks = parseTasksFromBody(body, {
+      format: this.config.taskFormat,
+      statusMap: this.statusMap,
+    });
+    const match = tasks.find((t) => t.locator === target);
+    return match === undefined ? -1 : bodyStart + match.lineIndex;
   }
 
   private obsidianUri(relPath: string): string {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  bodyStartLine,
   classifyStatusChar,
   cleanDescription,
   computeLocator,
@@ -168,6 +169,37 @@ describe('parseTasksFromBody', () => {
   it('honors ~~~ fences as well as ```', () => {
     const body = ['~~~', '- [ ] hidden', '~~~', '- [ ] shown'].join('\n');
     expect(parseTasksFromBody(body).map((t) => t.description)).toEqual(['shown']);
+  });
+
+  it('disambiguates identical task lines with an occurrence ordinal (audit M2)', () => {
+    const body = ['- [ ] Reply to Bob', '- [ ] Reply to Bob', '- [ ] Reply to Bob'].join('\n');
+    const tasks = parseTasksFromBody(body);
+    expect(tasks).toHaveLength(3);
+    const [a, b, c] = tasks;
+    // First keeps the base hash; subsequent get :2 / :3.
+    expect(a?.locator).toMatch(/^h:[0-9a-f]{16}$/u);
+    expect(b?.locator).toBe(`${a?.locator}:2`);
+    expect(c?.locator).toBe(`${a?.locator}:3`);
+    // All three are distinct → all three round-trip to distinct tasks.
+    expect(new Set(tasks.map((t) => t.locator)).size).toBe(3);
+  });
+});
+
+describe('bodyStartLine', () => {
+  it('returns 0 when there is no frontmatter', () => {
+    expect(bodyStartLine(['- [ ] task', 'prose'])).toBe(0);
+  });
+
+  it('returns the line after the closing --- for a frontmatter block', () => {
+    expect(bodyStartLine(['---', 'project: x', 'tags:', '  - a', '---', '- [ ] task'])).toBe(5);
+  });
+
+  it('returns 0 when the opening --- has no closing delimiter (no frontmatter)', () => {
+    expect(bodyStartLine(['---', 'project: x', '- [ ] task'])).toBe(0);
+  });
+
+  it('returns 0 when the first line is not the delimiter', () => {
+    expect(bodyStartLine(['', '---', 'x', '---'])).toBe(0);
   });
 });
 

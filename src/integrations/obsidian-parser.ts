@@ -287,6 +287,14 @@ export function parseTasksFromBody(
       ? detectTaskFormat(lines)
       : opts.format;
   const out: ParsedTaskWithLine[] = [];
+  // Disambiguate duplicate locators WITHIN the file: two identical task lines
+  // (no 🆔/block id → same content hash) would otherwise collide on one
+  // external id, silently dropping the second on sync and making writeback
+  // ambiguous. The first keeps the base locator; the Nth gets `:N` appended so
+  // every line round-trips to a distinct task (audit M2). The ordinal is stable
+  // as long as the order of the identical lines doesn't change — inherently the
+  // best achievable for genuinely identical text without a user-supplied id.
+  const seen = new Map<string, number>();
   let inFence = false;
   let fenceMarker = '';
   for (let i = 0; i < lines.length; i += 1) {
@@ -308,9 +316,30 @@ export function parseTasksFromBody(
       format,
       ...(opts.statusMap !== undefined ? { statusMap: opts.statusMap } : {}),
     });
-    if (parsed !== undefined) out.push({ ...parsed, lineIndex: i });
+    if (parsed === undefined) continue;
+    const n = (seen.get(parsed.locator) ?? 0) + 1;
+    seen.set(parsed.locator, n);
+    const locator = n > 1 ? `${parsed.locator}:${n}` : parsed.locator;
+    out.push({ ...parsed, locator, lineIndex: i });
   }
   return out;
+}
+
+/**
+ * Index of the first BODY line — i.e. the line after a leading YAML frontmatter
+ * block, or 0 when there's none. Matches gray-matter's rule: frontmatter exists
+ * only when the file opens with the `---` delimiter; it ends at the next `---`.
+ * A missing closing delimiter ⇒ gray-matter sees no frontmatter ⇒ body starts
+ * at 0. Lets the writeback path scan exactly the same line set fetch parses
+ * (gray-matter's `content`), so a `- [ ]`-shaped line inside frontmatter is
+ * never matched/flipped (audit M1).
+ */
+export function bodyStartLine(lines: readonly string[]): number {
+  if (lines.length === 0 || (lines[0] ?? '').trim() !== '---') return 0;
+  for (let i = 1; i < lines.length; i += 1) {
+    if ((lines[i] ?? '').trim() === '---') return i + 1;
+  }
+  return 0;
 }
 
 /**
