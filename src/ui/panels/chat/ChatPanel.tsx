@@ -80,6 +80,8 @@ export function ChatPanel(props: ChatPanelProps = {}): React.JSX.Element {
         openDeps: () => focus.pushPopup('deps'),
         // Phase 3R — `/log` opens the audit-log popup.
         openLog: () => focus.pushPopup('log'),
+        // Phase 7C — `/plugins` opens the plugin management popup.
+        openPlugins: () => focus.pushPopup('plugins'),
       }),
     [actions.onRequestExit, actions.toggleAwayMode, focus.pushPopup],
   );

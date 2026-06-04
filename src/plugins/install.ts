@@ -248,6 +248,59 @@ export async function removePlugin(input: RemovePluginInput): Promise<RemovePlug
   return { ok: true, removedRow, removedDir, message: `removed plugin '${input.id}'` };
 }
 
+/**
+ * Phase 7C — shared enable/disable core. Both the CLI runners
+ * (`runPluginEnable`/`runPluginDisable`) and the RPC `plugins.setEnabled`
+ * procedure call this so the enable-time manifest validation lives in ONE
+ * place. Enable refuses a plugin whose on-disk manifest is missing,
+ * invalid, or api-incompatible (it would just fail at host load); disable
+ * never validates (you can always turn a plugin off). The flip applies on
+ * the next Symphony start — there is no live hot-reload (the host loads
+ * enabled plugins at orchestrator-server boot).
+ */
+export type SetEnabledRefusal = 'not-found' | 'manifest-invalid' | 'api-incompatible';
+
+export interface SetPluginEnabledInput {
+  readonly id: string;
+  readonly enabled: boolean;
+  readonly store: PluginStore;
+  /** ISO timestamp for the update (no `Date.now()` in core logic). */
+  readonly now: string;
+  readonly home?: string;
+}
+
+export interface SetEnabledResult {
+  readonly ok: boolean;
+  readonly reason?: SetEnabledRefusal;
+  readonly message?: string;
+  /** The resulting enabled state on success. */
+  readonly enabled?: boolean;
+}
+
+export async function setPluginEnabled(input: SetPluginEnabledInput): Promise<SetEnabledResult> {
+  const record = input.store.get(input.id);
+  if (record === undefined) {
+    return { ok: false, reason: 'not-found', message: `plugin '${input.id}' is not installed` };
+  }
+  if (input.enabled) {
+    // Refuse to enable a plugin whose on-disk manifest is missing,
+    // invalid, or api-incompatible — it would just fail at host load.
+    try {
+      const manifestPath = path.join(pluginDir(input.id, input.home), PLUGIN_MANIFEST);
+      const raw = await fsp.readFile(manifestPath, 'utf8');
+      assertPluginApiCompatible(parsePluginManifest(JSON.parse(raw) as unknown));
+    } catch (err) {
+      if (err instanceof PluginApiMismatchError) {
+        return { ok: false, reason: 'api-incompatible', message: err.message };
+      }
+      const why = `manifest unreadable/invalid: ${err instanceof Error ? err.message : String(err)}`;
+      return { ok: false, reason: 'manifest-invalid', message: why };
+    }
+  }
+  input.store.setEnabled(input.id, input.enabled, input.now);
+  return { ok: true, enabled: input.enabled };
+}
+
 export interface ListedPlugin {
   readonly record: PluginRecord;
   /** Parsed manifest from disk, when present + valid. */

@@ -687,6 +687,9 @@ function AppShell(props: AppProps): React.JSX.Element {
           // Phase 3P — palette entry "show task dep graph". Slash
           // command `/deps` is wired in ChatPanel.
           openDeps: () => focus.pushPopup('deps'),
+          // Phase 7C — palette entry "manage plugins". Slash command
+          // `/plugins` is wired in ChatPanel.
+          openPlugins: () => focus.pushPopup('plugins'),
           // Phase 3T — Esc + Ctrl+C handlers. Two-tap exit on Ctrl+C.
           pivotInterruptEsc,
           pivotInterruptCtrlC,
