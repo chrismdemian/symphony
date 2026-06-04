@@ -14,6 +14,7 @@ import {
   type NotionConfig,
 } from './notion-config.js';
 import { readToken } from './secrets.js';
+import { RequestThrottle, defaultSleep } from './throttle.js';
 
 /**
  * Phase 8A — the in-tree Notion connector. Owns all Notion I/O behind an
@@ -91,44 +92,6 @@ export class NotionError extends Error {
 const DEFAULT_MIN_GAP_MS = 334;
 const DEFAULT_FETCH_LIMIT = 100;
 const QUERY_PAGE_SIZE = 100;
-
-/**
- * Serialized request throttle: chains every call so the `fn()`s run
- * one-at-a-time (never overlapping) with at least `minGapMs` between request
- * starts. A rejected call does NOT break the chain — the next call still
- * runs. Both the inter-request wait AND the request body are part of the
- * serialized chain, so fire-and-forget callers (e.g. the writeback hook
- * firing on N simultaneous task completions) can't issue overlapping HTTP
- * requests.
- */
-class RequestThrottle {
-  private last = 0;
-  private chain: Promise<void> = Promise.resolve();
-
-  constructor(
-    private readonly minGapMs: number,
-    private readonly now: () => number,
-    private readonly sleep: (ms: number) => Promise<void>,
-  ) {}
-
-  run<T>(fn: () => Promise<T>): Promise<T> {
-    const result = this.chain.then(async () => {
-      const elapsed = this.now() - this.last;
-      const wait = this.minGapMs - elapsed;
-      if (wait > 0) await this.sleep(wait);
-      this.last = this.now();
-      return fn();
-    });
-    // The NEXT call's gate waits for THIS call's fn() to settle (so calls
-    // never overlap). Swallow the outcome here so one rejection doesn't
-    // poison the chain — the caller still observes it via `result`.
-    this.chain = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
-  }
-}
 
 interface ResolvedSchema {
   readonly dataSourceId: string;
@@ -374,13 +337,5 @@ export async function createNotionConnectorFromDisk(opts: {
     client,
     config,
     ...(opts.log !== undefined ? { log: opts.log } : {}),
-  });
-}
-
-function defaultSleep(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    // Don't keep the event loop alive solely for a throttle gap.
-    if (typeof timer.unref === 'function') timer.unref();
   });
 }

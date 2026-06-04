@@ -60,6 +60,11 @@ import {
 } from '../integrations/obsidian.js';
 import { loadObsidianConfig, OBSIDIAN_INTEGRATION } from '../integrations/obsidian-config.js';
 import { ObsidianVaultWatcher } from '../integrations/obsidian-watcher.js';
+import { makeSyncIssuesTool } from './tools/make-sync-issues.js';
+import { makeIssueWritebackRef } from './issue-writeback.js';
+import type { IssueConnectorHandle } from '../integrations/issue-connector.js';
+import { createLinearConnectorFromDisk } from '../integrations/linear.js';
+import { LINEAR_INTEGRATION } from '../integrations/linear-config.js';
 import { makeTaskNotesTool } from './tools/task-notes.js';
 import { makeSetActiveProjectTool } from './tools/set-active-project.js';
 import { makeCreateSagaTool } from './tools/create-saga.js';
@@ -299,9 +304,20 @@ export interface OrchestratorServerOptions {
    */
   obsidianWatch?: boolean;
   /**
+   * Phase 8C — Linear integration activation. When `enabled: true` (set only
+   * by the real CLI boot paths, NEVER by tests) and no `linearConnector` is
+   * injected, the server reads the stored Linear API key (+ optional
+   * `linear.json`) and constructs a `LinearConnector` when a key is present.
+   * The `sync_linear` tool + the terminal-status writeback hook are wired only
+   * when a connector exists. Test seam: inject `linearConnector` directly.
+   */
+  linear?: { enabled?: boolean };
+  /** Override / inject the Linear connector. Test seam (bypasses disk read). */
+  linearConnector?: IssueConnectorHandle;
+  /**
    * Phase 8A — override the task↔external-source link store. Defaults to
    * SQLite-backed when `database` is provided, else in-memory. Used for
-   * sync dedup + the Notion / Obsidian status writeback.
+   * sync dedup + the Notion / Obsidian / Linear status writeback.
    */
   externalLinkStore?: ExternalLinkStore;
 }
@@ -337,6 +353,8 @@ export interface OrchestratorServerHandle {
   notionConnector?: NotionConnectorHandle;
   /** Phase 8B — present when Obsidian is configured + activated. */
   obsidianConnector?: ObsidianConnectorHandle;
+  /** Phase 8C — present when Linear is configured + activated. */
+  linearConnector?: IssueConnectorHandle;
   /** Phase 5E — exposed for tests + tools that need to read saga membership. */
   sagaStore: SagaStore;
   questionStore: QuestionStore;
@@ -568,6 +586,8 @@ export async function startOrchestratorServer(
   const notionWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
   // Phase 8B — Obsidian checkbox writeback hook (same shape as Notion's).
   const obsidianWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
+  // Phase 8C — Linear issue writeback hook (same shape; built by makeIssueWritebackRef).
+  const linearWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
   const fanOutTaskStatusChange = (snapshot: TaskSnapshot): void => {
     taskReadyOnTaskStatusChange(snapshot);
     sagaRollupListener(snapshot);
@@ -581,6 +601,7 @@ export async function startOrchestratorServer(
       );
       notionWritebackRef.current?.(snapshot);
       obsidianWritebackRef.current?.(snapshot);
+      linearWritebackRef.current?.(snapshot);
     }
   };
   // Phase 7B.3 — fan task creation out to subscribed plugins (onTaskCreated).
@@ -703,6 +724,31 @@ export async function startOrchestratorServer(
   }
   // Started below (needs `resolveProjectPath`); stopped in `close()`.
   let obsidianWatcher: ObsidianVaultWatcher | undefined;
+  // Phase 8C — Linear connector. Injected (test seam) or auto-constructed from
+  // the stored API key when activated by the CLI boot path (`linear.enabled`).
+  // Undefined when no key is stored — the `sync_linear` tool + writeback hook
+  // wire up only when a connector exists. Construction is lazy (no network
+  // until a tool / writeback fires); gating off `enabled` keeps tests from
+  // reading the user's real keychain/config.
+  const linearLog = (level: 'info' | 'warn' | 'error', message: string): void => {
+    const line = `[symphony] linear: ${message}`;
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    // info stays quiet — TUI owns stdout.
+  };
+  const linearConnector: IssueConnectorHandle | undefined =
+    options.linearConnector ??
+    (options.linear?.enabled === true
+      ? await createLinearConnectorFromDisk({ log: linearLog })
+      : undefined);
+  if (linearConnector !== undefined) {
+    linearWritebackRef.current = makeIssueWritebackRef({
+      connector: linearConnector,
+      source: LINEAR_INTEGRATION,
+      externalLinkStore,
+      log: linearLog,
+    });
+  }
   // Phase 3H.3 — instantiate the notifications dispatcher BEFORE the
   // question store so its `onQuestionEnqueued` hook is wired at the
   // store's construction. The dispatcher reads `loadConfig` fresh per
@@ -1354,6 +1400,23 @@ export async function startOrchestratorServer(
       }
     }
   }
+  // Phase 8C — sync_linear is registered ONLY when a Linear connector is active
+  // (API key present). Maestro's prompt calls it on an explicit "sync linear"
+  // request; absent the connector the tool simply isn't on the surface.
+  if (linearConnector !== undefined) {
+    registry.register(
+      makeSyncIssuesTool({
+        connector: linearConnector,
+        name: 'sync_linear',
+        description:
+          'Pull open issues from Linear into Symphony. Creates one pending task per new issue (idempotent — already-imported issues are skipped). Routes by Linear project/team, skips issues already in a completed/canceled state. On task completion Symphony moves the Linear issue to a completed workflow state. Requires `symphony config linear`.',
+        taskStore,
+        projectStore,
+        externalLinkStore,
+        resolveProjectPath,
+      }),
+    );
+  }
   // Phase 5E — cross-project sagas. `create_saga` writes both the saga
   // row AND the member tasks atomically; downstream `spawn_worker
   // (task_id=...)` claims members per the existing 3P pattern. The
@@ -1670,6 +1733,7 @@ export async function startOrchestratorServer(
     externalLinkStore,
     ...(notionConnector !== undefined ? { notionConnector } : {}),
     ...(obsidianConnector !== undefined ? { obsidianConnector } : {}),
+    ...(linearConnector !== undefined ? { linearConnector } : {}),
     sagaStore,
     questionStore,
     waveStore,

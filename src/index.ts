@@ -167,6 +167,45 @@ config
     },
   );
 
+config
+  .command('linear')
+  .description('Configure the Linear integration (API key, team scope, writeback states). Phase 8C.')
+  .option(
+    '--token <key>',
+    'Linear personal API key (stored in the OS keychain, or ~/.symphony/integrations fallback).',
+  )
+  .option('--team <key>', 'Restrict the sync to one Linear team by key (e.g. "ENG"). Omit for all teams.')
+  .option(
+    '--writeback-completed <state>',
+    'Linear workflow state name to set on task completion (default: first completed-type state).',
+  )
+  .option(
+    '--writeback-failed <state>',
+    'Linear workflow state name to set on task failure (default: no failure writeback).',
+  )
+  .option('--status', 'Run a connection check against Linear instead of writing config.')
+  .action(
+    async (opts: {
+      token?: string;
+      team?: string;
+      writebackCompleted?: string;
+      writebackFailed?: string;
+      status?: boolean;
+    }) => {
+      const { runLinearConfig } = await import('./cli/linear-config.js');
+      const result = await runLinearConfig({
+        ...(opts.token !== undefined ? { token: opts.token } : {}),
+        ...(opts.team !== undefined ? { team: opts.team } : {}),
+        ...(opts.writebackCompleted !== undefined
+          ? { writebackCompleted: opts.writebackCompleted }
+          : {}),
+        ...(opts.writebackFailed !== undefined ? { writebackFailed: opts.writebackFailed } : {}),
+        ...(opts.status === true ? { check: true } : {}),
+      });
+      process.exit(result.exitCode);
+    },
+  );
+
 program
   .command('reset')
   .description(
@@ -641,6 +680,12 @@ program
           // double-construction across both servers is fine — a given task
           // update() fires its writeback in exactly one process (single-writer).
           ...(database !== undefined ? { obsidian: { enabled: true } } : {}),
+          // Phase 8C — activate the Linear connector whenever a DB is open.
+          // Reads the stored Linear API key (OS keychain / file fallback);
+          // undefined (zero overhead) when no key is stored. The sync_linear
+          // tool + issue writeback wire up only when configured. Same
+          // double-construction-is-safe property as Notion/Obsidian.
+          ...(database !== undefined ? { linear: { enabled: true } } : {}),
           rpc: rpcEnabled
             ? {
                 enabled: true,
