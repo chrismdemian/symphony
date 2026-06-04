@@ -16,6 +16,7 @@ import { KeybindEditorPopup } from '../panels/settings/KeybindEditorPopup.js';
 import { StatsPanel } from '../panels/stats/StatsPanel.js';
 import { DepsPanel } from '../panels/deps/DepsPanel.js';
 import { LogPanel } from '../panels/audit/LogPanel.js';
+import { PluginsPanel } from '../panels/plugins/PluginsPanel.js';
 import { useFocus, type FocusContext } from '../focus/focus.js';
 import { KeybindBar } from './KeybindBar.js';
 import { StatusBar } from './StatusBar.js';
@@ -48,8 +49,10 @@ import type { VoiceStatus } from '../../voice/voice-controller.js';
  * `position: 'absolute'` natively (Yoga POSITION_TYPE_ABSOLUTE).
  *
  * Popup keys handled: `'question'` (3E), `'palette'`, `'worker-select'`,
- * `'help'` (3F.1), `'question-history'` (3F.3). Unknown keys silently
- * render no popup so a stale `pushPopup('typo')` doesn't crash.
+ * `'help'` (3F.1), `'question-history'` (3F.3), `'settings'` (3H),
+ * `'stats'` (3N.3), `'deps'` (3P), `'log'` (3R), `'keybind-*'` (3H.4),
+ * `'plugins'` (7C). Unknown keys silently render no popup so a stale
+ * `pushPopup('typo')` doesn't crash.
  */
 
 export const NARROW_THRESHOLD = 100;
@@ -229,6 +232,10 @@ function renderPopup(
       // Phase 3R — `/log` opens the audit-log popup (scrollable,
       // inline filter row).
       return <LogPanel rpc={props.rpc} />;
+    case 'plugins':
+      // Phase 7C — `/plugins` (+ palette) opens the plugin management
+      // popup: master switch, per-plugin enable/disable, install, remove.
+      return <PluginsPanel rpc={props.rpc} />;
     case 'keybind-list':
     case 'keybind-capture':
       // Phase 3H.4 — both scopes route to the same component instance

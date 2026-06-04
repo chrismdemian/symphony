@@ -82,6 +82,12 @@ export interface SlashHandlers {
    * `/log` is NOT registered (surfaces as "Unknown command: log").
    */
   readonly openLog?: () => void;
+  /**
+   * Phase 7C — `/plugins` opens the plugin management popup. Optional so
+   * tests building SlashHandlers without it keep working. When omitted,
+   * `/plugins` is NOT registered (surfaces as "Unknown command: plugins").
+   */
+  readonly openPlugins?: () => void;
 }
 
 export interface SlashTable {
@@ -111,6 +117,10 @@ export function buildSlashTable(handlers: SlashHandlers): SlashTable {
   if (handlers.openLog !== undefined) {
     const open = handlers.openLog;
     table['log'] = () => open();
+  }
+  if (handlers.openPlugins !== undefined) {
+    const open = handlers.openPlugins;
+    table['plugins'] = () => open();
   }
   return table;
 }

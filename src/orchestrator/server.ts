@@ -109,6 +109,7 @@ import { createAuditLogger } from '../audit/logger.js';
 import { createAuditFileSink } from '../audit/file-sink.js';
 import { PluginHost } from '../plugins/host.js';
 import { SqlitePluginStore } from '../plugins/store.js';
+import { createPluginAdmin } from '../plugins/admin.js';
 import type { AuditLogger } from '../audit/types.js';
 import type { ToolAuditRecord, ToolAuditSink } from './dispatch.js';
 import type { WorkerStatus } from '../workers/types.js';
@@ -1232,6 +1233,17 @@ export async function startOrchestratorServer(
   let rpcHandle: (RpcServerHandle & { token: string; tokenFilePath?: string }) | undefined;
   if (rpcEnabled) {
     const token = rpcConfig.token ?? generateRpcToken();
+    // Phase 7C — Plugins panel RPC surface. The plugin registry lives in
+    // SQLite (shared with Maestro's plugin host via WAL), so wire the admin
+    // whenever a persistent DB exists — independent of `options.plugins`
+    // (the bootstrap RPC server never sets `plugins.enabled`, but it owns
+    // the human-driven RPC view the TUI talks to). Reads + mutations land
+    // on the shared registry; the host picks up `enabled`/install changes
+    // on its next start.
+    const pluginAdmin =
+      options.database !== undefined
+        ? createPluginAdmin({ store: new SqlitePluginStore(options.database.db) })
+        : undefined;
     const router = createSymphonyRouter({
       projectStore,
       taskStore,
@@ -1305,6 +1317,10 @@ export async function startOrchestratorServer(
       recoveryReport,
       // Phase 3R — read-only audit surface for the `/log` popup.
       auditStore,
+      // Phase 7C — Plugins panel surface (list / enable-disable / install /
+      // remove). Undefined in no-DB mode → `plugins.list` returns [] and
+      // the mutators throw a typed bad_args.
+      ...(pluginAdmin !== undefined ? { pluginAdmin } : {}),
     });
     const handle = await startRpcServer({
       router: router as unknown as Parameters<typeof startRpcServer>[0]['router'],

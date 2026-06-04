@@ -171,6 +171,14 @@ export interface GlobalCommandHandlers {
    * when omitted.
    */
   toggleVoice?(): void;
+  /**
+   * Phase 7C — `/plugins` slash + `app.plugins` palette entry push the
+   * plugin management popup (master switch, per-plugin enable/disable,
+   * install, remove). No dedicated hotkey (palette + slash are the
+   * surfaces, matching stats/deps/log). Optional during the 7C
+   * transition; renders the command as a no-op when omitted.
+   */
+  openPlugins?(): void;
 }
 
 export interface GlobalCommandState {
@@ -413,6 +421,17 @@ export function buildGlobalCommands(
       scope: 'global',
       displayOnScreen: false,
       onSelect: handlers.openLog ?? (() => undefined),
+    },
+    // Phase 7C — palette-only entry into the plugins popup. No hotkey;
+    // `/plugins` slash is the keystroke surface. Listed so users browsing
+    // for "plugin"/"extension" find it without memorizing the slash.
+    {
+      id: 'app.plugins',
+      title: 'manage plugins',
+      key: { kind: 'none' },
+      scope: 'global',
+      displayOnScreen: false,
+      onSelect: handlers.openPlugins ?? (() => undefined),
     },
     // Phase 3S — Ctrl+Y cycles autonomy tier. `scope: 'global'` matches
     // app.exit / focus.cycle / palette.open so the chord fires from

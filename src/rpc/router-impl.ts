@@ -47,6 +47,8 @@ import {
   type AuditSeverity,
   type AuditStore,
 } from '../state/audit-store.js';
+import type { PluginAdmin } from '../plugins/admin.js';
+import { assertSafePluginId, PluginIdError } from '../plugins/paths.js';
 
 /**
  * Symphony WS-RPC router definition — Phase 2B.2.
@@ -171,6 +173,17 @@ export interface RouterDeps {
    * wires the real store (SQLite-backed, or in-memory for no-db mode).
    */
   readonly auditStore?: AuditStore;
+  /**
+   * Phase 7C — optional. Backs the `plugins.list` / `plugins.setEnabled` /
+   * `plugins.install` / `plugins.remove` procedures the TUI's Plugins
+   * panel calls. When omitted, `plugins.list` returns `[]` and the
+   * mutating procedures throw a typed `bad_args` ("plugin management is
+   * not available"). The CLI server wires it whenever a persistent DB
+   * exists (the registry lives in SQLite, shared with Maestro's plugin
+   * host via WAL). Mutations apply on the next Symphony start — there is
+   * no live hot-reload.
+   */
+  readonly pluginAdmin?: PluginAdmin;
 }
 
 // ── Argument shapes (validated at the boundary) ──────────────────────
@@ -430,6 +443,66 @@ export interface StatsByWorkerRow {
   readonly cacheReadTokens: number | null;
   readonly cacheWriteTokens: number | null;
 }
+
+// ── Plugin argument + result shapes (Phase 7C) ───────────────────────
+
+/**
+ * Phase 7C — one row for the TUI's Plugins panel. Flattens the DB record
+ * (always present) with the on-disk manifest's display fields (present
+ * when the manifest reads cleanly). `manifestError` is set for an
+ * orphaned / corrupt install — the row still renders so the user can
+ * remove it. Mirrors the CLI `plugin list --json` shape.
+ */
+export interface PluginListItem {
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+  readonly enabled: boolean;
+  readonly source: string;
+  readonly installedAt: string;
+  readonly author?: string;
+  readonly description?: string;
+  readonly permissions?: readonly string[];
+  readonly capabilityFlags?: readonly string[];
+  readonly events?: readonly string[];
+  readonly toolScope?: string;
+  readonly manifestError?: string;
+}
+
+export interface PluginsSetEnabledArgs {
+  readonly id: string;
+  readonly enabled: boolean;
+}
+
+export interface PluginsSetEnabledResult {
+  readonly id: string;
+  readonly enabled: boolean;
+}
+
+export interface PluginsInstallArgs {
+  /** Local dir / `plugin.json` path, an npm package spec, or a git URL. */
+  readonly source: string;
+}
+
+export interface PluginsInstallResult {
+  readonly id: string;
+  readonly name: string;
+  readonly version: string;
+  readonly reinstall: boolean;
+}
+
+export interface PluginsRemoveArgs {
+  readonly id: string;
+}
+
+export interface PluginsRemoveResult {
+  readonly id: string;
+  readonly removedRow: boolean;
+  readonly removedDir: boolean;
+}
+
+/** Generous cap for the install source string (a git URL + ref / npm spec). */
+const PLUGINS_SOURCE_MAX = 2 * 1024;
 
 // ── Router builder ────────────────────────────────────────────────────
 
@@ -1136,6 +1209,105 @@ export function createSymphonyRouter(deps: RouterDeps) {
     },
   });
 
+  /**
+   * Phase 7C — Plugins panel surface. `list` is a read-only DB+manifest
+   * enrichment; `setEnabled` / `install` / `remove` mutate the shared
+   * SQLite registry + the `~/.symphony/plugins/` filesystem. All mutations
+   * apply on the next Symphony start (the plugin host loads enabled
+   * plugins at boot — no live hot-reload). When `deps.pluginAdmin` is
+   * absent (test rigs / no-DB mode), `list` returns `[]` and the mutators
+   * throw a typed `bad_args` so the TUI surfaces a clear error.
+   *
+   * Security: `install` is ALWAYS ignore-scripts (the loud
+   * `--allow-scripts` opt-in is CLI-only — the TUI never runs untrusted
+   * plugin lifecycle code).
+   */
+  const requirePluginAdmin = (): PluginAdmin => {
+    if (deps.pluginAdmin === undefined) {
+      throw badArgs('plugin management is not available (no plugin registry wired)');
+    }
+    return deps.pluginAdmin;
+  };
+  const plugins = createRPCController({
+    async list(): Promise<PluginListItem[]> {
+      if (deps.pluginAdmin === undefined) return [];
+      const listed = await deps.pluginAdmin.list();
+      return listed.map((p) => {
+        const m = p.manifest;
+        return {
+          id: p.record.id,
+          name: p.record.name,
+          version: p.record.version,
+          enabled: p.record.enabled,
+          source: p.record.source,
+          installedAt: p.record.installedAt,
+          ...(m !== undefined
+            ? {
+                author: m.author,
+                description: m.description,
+                permissions: m.permissions,
+                capabilityFlags: m.capabilityFlags,
+                events: m.events,
+                toolScope: m.toolScope,
+              }
+            : {}),
+          ...(p.manifestError !== undefined ? { manifestError: p.manifestError } : {}),
+        };
+      });
+    },
+    async setEnabled(args: PluginsSetEnabledArgs): Promise<PluginsSetEnabledResult> {
+      const id = requireSafePluginId(args?.id);
+      if (typeof args?.enabled !== 'boolean') {
+        throw badArgs('enabled must be a boolean');
+      }
+      const admin = requirePluginAdmin();
+      const result = await admin.setEnabled(id, args.enabled);
+      if (!result.ok) {
+        // not-found → typed not_found; manifest-invalid / api-incompatible
+        // → bad_args. The message carries the actionable detail.
+        if (result.reason === 'not-found') {
+          throw notFound(result.message ?? `plugin '${id}' is not installed`);
+        }
+        throw badArgs(result.message ?? `cannot enable '${id}'`);
+      }
+      return { id, enabled: args.enabled };
+    },
+    async install(args: PluginsInstallArgs): Promise<PluginsInstallResult> {
+      requireBoundedString(args?.source, 'source', PLUGINS_SOURCE_MAX);
+      const admin = requirePluginAdmin();
+      const result = await admin.install(args.source);
+      if (!result.ok) {
+        throw badArgs(
+          result.message ?? `install failed${result.reason !== undefined ? ` (${result.reason})` : ''}`,
+        );
+      }
+      // installPlugin always resolves id/name/version from the manifest on
+      // success; the `?? ''` is defensive for the impossible missing case.
+      return {
+        id: result.id ?? '',
+        name: result.name ?? '',
+        version: result.version ?? '',
+        reinstall: result.reinstall ?? false,
+      };
+    },
+    async remove(args: PluginsRemoveArgs): Promise<PluginsRemoveResult> {
+      const id = requireSafePluginId(args?.id);
+      const admin = requirePluginAdmin();
+      const result = await admin.remove(id);
+      if (!result.ok) {
+        if (result.reason === 'not-found') {
+          throw notFound(result.message ?? `plugin '${id}' is not installed`);
+        }
+        throw badArgs(result.message ?? `remove failed for '${id}'`);
+      }
+      return {
+        id,
+        removedRow: result.removedRow ?? false,
+        removedDir: result.removedDir ?? false,
+      };
+    },
+  });
+
   return createRPCRouter({
     projects,
     tasks,
@@ -1149,6 +1321,7 @@ export function createSymphonyRouter(deps: RouterDeps) {
     stats,
     recovery,
     audit,
+    plugins,
   });
 }
 
@@ -1217,6 +1390,23 @@ function requireBoundedString(
   requireString(value, name);
   if (Buffer.byteLength(value, 'utf8') > maxBytes) {
     throw badArgs(`${name} exceeds ${maxBytes}-byte cap`);
+  }
+}
+
+/**
+ * Phase 7C — validate a plugin id at the RPC boundary. `assertSafePluginId`
+ * is the same hard security boundary the install/remove paths use (it
+ * gates the id before it's interpolated into the central plugin dir + the
+ * tool-namespace prefix); surface its rejection as a typed `bad_args`
+ * rather than letting the raw `PluginIdError` cross the wire.
+ */
+function requireSafePluginId(value: unknown): string {
+  requireString(value, 'id');
+  try {
+    return assertSafePluginId(value);
+  } catch (err) {
+    if (err instanceof PluginIdError) throw badArgs(err.message);
+    throw err;
   }
 }
 

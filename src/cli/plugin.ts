@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { existsSync, promises as fsp } from 'node:fs';
+import { existsSync } from 'node:fs';
 
 import { SymphonyDatabase } from '../state/db.js';
 import { resolveDatabasePath } from '../state/path.js';
@@ -8,15 +8,10 @@ import {
   installPlugin,
   listPlugins,
   removePlugin,
+  setPluginEnabled,
   type ListedPlugin,
 } from '../plugins/install.js';
 import { resolveRemoteSource, type RemoteRunner } from '../plugins/remote.js';
-import {
-  assertPluginApiCompatible,
-  parsePluginManifest,
-  PluginApiMismatchError,
-} from '../plugins/manifest.js';
-import { pluginDir, PLUGIN_MANIFEST } from '../plugins/paths.js';
 
 /**
  * Phase 7A — `symphony plugin …` CLI runners.
@@ -189,26 +184,22 @@ export async function runPluginEnable(opts: RunPluginToggleOptions): Promise<Plu
   const now = opts.now ?? new Date().toISOString();
   try {
     return await withDb(opts.dbFilePath, async (store) => {
-      const record = store.get(opts.id);
-      if (record === undefined) {
-        err(`[symphony plugin] '${opts.id}' is not installed`);
+      // Phase 7C — shared enable core (manifest validation lives there).
+      const result = await setPluginEnabled({
+        id: opts.id,
+        enabled: true,
+        store,
+        now,
+        ...(opts.home !== undefined ? { home: opts.home } : {}),
+      });
+      if (!result.ok) {
+        if (result.reason === 'not-found') {
+          err(`[symphony plugin] '${opts.id}' is not installed`);
+        } else {
+          err(`[symphony plugin] cannot enable '${opts.id}': ${result.message ?? result.reason}`);
+        }
         return { exitCode: 1 };
       }
-      // Refuse to enable a plugin whose on-disk manifest is missing,
-      // invalid, or api-incompatible — it would just fail at host load.
-      try {
-        const manifestPath = path.join(pluginDir(opts.id, opts.home), PLUGIN_MANIFEST);
-        const raw = await fsp.readFile(manifestPath, 'utf8');
-        assertPluginApiCompatible(parsePluginManifest(JSON.parse(raw) as unknown));
-      } catch (e) {
-        const why =
-          e instanceof PluginApiMismatchError
-            ? e.message
-            : `manifest unreadable/invalid: ${e instanceof Error ? e.message : String(e)}`;
-        err(`[symphony plugin] cannot enable '${opts.id}': ${why}`);
-        return { exitCode: 1 };
-      }
-      store.setEnabled(opts.id, true, now);
       err(`[symphony plugin] enabled '${opts.id}' — applies on next Symphony start`);
       return { exitCode: 0 };
     });
@@ -222,12 +213,20 @@ export async function runPluginDisable(opts: RunPluginToggleOptions): Promise<Pl
   const err = writer(opts.stderr, process.stderr);
   const now = opts.now ?? new Date().toISOString();
   try {
-    return await withDb(opts.dbFilePath, (store) => {
-      if (store.get(opts.id) === undefined) {
+    return await withDb(opts.dbFilePath, async (store) => {
+      const result = await setPluginEnabled({
+        id: opts.id,
+        enabled: false,
+        store,
+        now,
+        ...(opts.home !== undefined ? { home: opts.home } : {}),
+      });
+      if (!result.ok) {
+        // Disable never validates the manifest, so the only refusal is
+        // not-found — keep the original phrasing.
         err(`[symphony plugin] '${opts.id}' is not installed`);
         return { exitCode: 1 };
       }
-      store.setEnabled(opts.id, false, now);
       err(`[symphony plugin] disabled '${opts.id}' — applies on next Symphony start`);
       return { exitCode: 0 };
     });
