@@ -67,7 +67,7 @@ program
     process.exit(result.ok ? 0 : 1);
   });
 
-program
+const config = program
   .command('config')
   .description(
     'Open Symphony settings (TUI). With --edit, opens ~/.symphony/config.json in $EDITOR.',
@@ -97,6 +97,40 @@ program
     await handle.done;
     process.exit(0);
   });
+
+config
+  .command('notion')
+  .description('Configure the Notion integration (token, database, property mapping). Phase 8A.')
+  .option(
+    '--token <token>',
+    'Notion internal-integration token (stored at ~/.symphony/integrations, mode 0600).',
+  )
+  .option('--database <id>', 'Notion database id or URL to sync tasks from.')
+  .option('--status-prop <name>', 'Notion property mapped to task status (default "Status").')
+  .option('--project-prop <name>', 'Notion property mapped to project routing (default "Project").')
+  .option('--priority-prop <name>', 'Notion property mapped to priority (default "Priority").')
+  .option('--status', 'Run a connection check against the configured database instead of writing config.')
+  .action(
+    async (opts: {
+      token?: string;
+      database?: string;
+      statusProp?: string;
+      projectProp?: string;
+      priorityProp?: string;
+      status?: boolean;
+    }) => {
+      const { runNotionConfig } = await import('./cli/notion-config.js');
+      const result = await runNotionConfig({
+        ...(opts.token !== undefined ? { token: opts.token } : {}),
+        ...(opts.database !== undefined ? { database: opts.database } : {}),
+        ...(opts.statusProp !== undefined ? { statusProp: opts.statusProp } : {}),
+        ...(opts.projectProp !== undefined ? { projectProp: opts.projectProp } : {}),
+        ...(opts.priorityProp !== undefined ? { priorityProp: opts.priorityProp } : {}),
+        ...(opts.status === true ? { check: true } : {}),
+      });
+      process.exit(result.exitCode);
+    },
+  );
 
 program
   .command('reset')
@@ -555,6 +589,15 @@ program
           ...(database !== undefined ? { database } : {}),
           ...(opts.defaultProject !== undefined ? { defaultProjectPath: opts.defaultProject } : {}),
           ...(opts.plugins === true ? { plugins: { enabled: true } } : {}),
+          // Phase 8A — activate the Notion connector whenever a DB is open
+          // (both the bootstrap RPC server AND Maestro's MCP child). The
+          // connector reads ~/.symphony/integrations/notion.json + token and
+          // is undefined (zero overhead) when Notion isn't configured; no
+          // network call happens until sync_notion / a writeback fires.
+          // Construction in both processes gives complete writeback coverage
+          // (Maestro-driven AND TUI/RPC-driven task transitions) with no
+          // double-fire — a given update() runs in exactly one process.
+          ...(database !== undefined ? { notion: { enabled: true } } : {}),
           rpc: rpcEnabled
             ? {
                 enabled: true,

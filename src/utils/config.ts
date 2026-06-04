@@ -286,7 +286,7 @@ export function applyConfigEdits(existing: string, next: SymphonyConfig): string
  * On failure, the tmp file is best-effort unlinked. A leaked tmp won't
  * affect subsequent reads (different filename) but does waste disk.
  */
-async function writeFileAtomic600(filePath: string, text: string): Promise<void> {
+export async function writeFileAtomic600(filePath: string, text: string): Promise<void> {
   const tmp = `${filePath}.tmp-${randomBytes(6).toString('hex')}`;
   let handle: FileHandle | undefined;
   try {
