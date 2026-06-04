@@ -58,6 +58,9 @@ export const TOOL_VERB: Readonly<Record<string, string>> = Object.freeze({
   list_sagas: 'Listening',
   get_saga: 'Listening',
 
+  // Phase 8A — external integrations
+  sync_notion: 'Transcribing',
+
   // Worktree
   create_worktree: 'Arranging',
 

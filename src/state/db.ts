@@ -221,6 +221,21 @@ export function validateSchemaContract(db: BetterSqlite3Database, dbPath: string
     ])
       requireColumn('plugins', col);
   }
+  // Phase 8A — task ↔ external-source links (migration 0013).
+  // SqliteExternalLinkStore reads/writes every column below; future
+  // migrations that swap-rebuild the table MUST carry them forward
+  // (mirror 4G.1 / 4G.2 / 5A / 6D.1 / 7A hazard pattern).
+  if (requireTable('task_external_links')) {
+    for (const col of [
+      'task_id',
+      'source',
+      'external_id',
+      'data_source_id',
+      'url',
+      'created_at',
+    ])
+      requireColumn('task_external_links', col);
+  }
   // Reserved tables — presence check only (no columns yet exercised).
   requireTable('conversations');
   requireTable('messages');

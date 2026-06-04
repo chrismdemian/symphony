@@ -75,6 +75,7 @@
     "@inkjs/ui": "^2.0.0",
     "@json-render/ink": "0.18.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "@notionhq/client": "^5.22.0",
     "better-sqlite3": "^12.9.0",
     "commander": "^14.0.3",
     "figures": "^6.1.0",

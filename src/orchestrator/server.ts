@@ -10,6 +10,9 @@ import type { TaskSnapshot, TaskStore } from '../state/types.js';
 import type { SymphonyDatabase } from '../state/db.js';
 import { SqliteProjectStore } from '../state/sqlite-project-store.js';
 import { SqliteTaskStore } from '../state/sqlite-task-store.js';
+import type { ExternalLinkStore } from '../state/external-link-store.js';
+import { MemoryExternalLinkStore } from '../state/external-link-store.js';
+import { SqliteExternalLinkStore } from '../state/sqlite-external-link-store.js';
 import { SagaRegistry } from '../state/saga-registry.js';
 import { SqliteSagaStore } from '../state/sqlite-saga-store.js';
 import { createSagaRollupListener } from '../state/saga-rollup.js';
@@ -44,6 +47,12 @@ import { makeCreateWorktreeTool } from './tools/create-worktree.js';
 import { makeListTasksTool } from './tools/list-tasks.js';
 import { makeCreateTaskTool } from './tools/create-task.js';
 import { makeUpdateTaskTool } from './tools/update-task.js';
+import { makeSyncNotionTool } from './tools/sync-notion.js';
+import {
+  createNotionConnectorFromDisk,
+  type NotionConnectorHandle,
+} from '../integrations/notion.js';
+import { NOTION_INTEGRATION } from '../integrations/notion-config.js';
 import { makeTaskNotesTool } from './tools/task-notes.js';
 import { makeSetActiveProjectTool } from './tools/set-active-project.js';
 import { makeCreateSagaTool } from './tools/create-saga.js';
@@ -250,6 +259,25 @@ export interface OrchestratorServerOptions {
    * `database` to exercise the host.
    */
   plugins?: { enabled?: boolean };
+  /**
+   * Phase 8A — Notion integration activation. When `enabled: true` (set
+   * only by the real CLI boot paths, NEVER by tests) and no
+   * `notionConnector` is injected, the server reads `~/.symphony/
+   * integrations/notion.json` + token and constructs a `NotionConnector`
+   * if Notion is configured. Gating off `enabled` keeps tests from
+   * accidentally reading the user's real Notion config off disk. The
+   * `sync_notion` tool + the terminal-status writeback hook are wired only
+   * when a connector exists. Test seam: inject `notionConnector` directly.
+   */
+  notion?: { enabled?: boolean };
+  /** Override / inject the Notion connector. Test seam (bypasses disk read). */
+  notionConnector?: NotionConnectorHandle;
+  /**
+   * Phase 8A — override the task↔external-source link store. Defaults to
+   * SQLite-backed when `database` is provided, else in-memory. Used for
+   * sync dedup + the Notion status writeback.
+   */
+  externalLinkStore?: ExternalLinkStore;
 }
 
 export interface RpcOptions {
@@ -277,6 +305,10 @@ export interface OrchestratorServerHandle {
   worktreeManager: WorktreeManager;
   projectStore: ProjectStore;
   taskStore: TaskStore;
+  /** Phase 8A — task↔external-source links (Notion sync dedup + writeback). */
+  externalLinkStore: ExternalLinkStore;
+  /** Phase 8A — present when Notion is configured + activated. */
+  notionConnector?: NotionConnectorHandle;
   /** Phase 5E — exposed for tests + tools that need to read saga membership. */
   sagaStore: SagaStore;
   questionStore: QuestionStore;
@@ -500,6 +532,12 @@ export async function startOrchestratorServer(
       ? new SqliteSagaStore(options.database.db, { projectStore })
       : new SagaRegistry({ projectStore }));
   const sagaRollupListener = createSagaRollupListener({ sagaStore });
+  // Phase 8A — Notion status writeback hook. Filled in after the connector
+  // is constructed (it's async + gated). When a task with a Notion external
+  // link reaches a terminal status, push that status back to the Notion
+  // page. Fire-and-forget + internally guarded — never throws into the
+  // event bus (mirrors plugin dispatch).
+  const notionWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
   const fanOutTaskStatusChange = (snapshot: TaskSnapshot): void => {
     taskReadyOnTaskStatusChange(snapshot);
     sagaRollupListener(snapshot);
@@ -511,6 +549,7 @@ export async function startOrchestratorServer(
         snapshot.status === 'completed' ? 'onTaskCompleted' : 'onTaskFailed',
         { taskId: snapshot.id, projectId: snapshot.projectId, status: snapshot.status },
       );
+      notionWritebackRef.current?.(snapshot);
     }
   };
   // Phase 7B.3 — fan task creation out to subscribed plugins (onTaskCreated).
@@ -538,6 +577,54 @@ export async function startOrchestratorServer(
           onNotesAppended: taskNotesOnAppend,
           onTaskCreated: fanOutTaskCreated,
         }));
+  // Phase 8A — task↔external-source link store. Always constructed (cheap;
+  // dedup + writeback both need it); SQLite-backed when a database is
+  // present, in-memory otherwise (tests / `--in-memory`).
+  const externalLinkStore: ExternalLinkStore =
+    options.externalLinkStore ??
+    (options.database
+      ? new SqliteExternalLinkStore(options.database.db)
+      : new MemoryExternalLinkStore());
+  // Phase 8A — Notion connector. Injected (test seam) or auto-constructed
+  // from disk when activated by the CLI boot path (`notion.enabled`).
+  // Gating off `enabled` keeps tests from reading the user's real Notion
+  // config. Undefined when Notion isn't configured — the `sync_notion`
+  // tool + writeback hook are wired only when a connector exists.
+  const notionLog = (level: 'info' | 'warn' | 'error', message: string): void => {
+    const line = `[symphony] notion: ${message}`;
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    // info stays quiet — writeback success etc. shouldn't spam stderr.
+  };
+  const notionConnector: NotionConnectorHandle | undefined =
+    options.notionConnector ??
+    (options.notion?.enabled === true
+      ? await createNotionConnectorFromDisk({ log: notionLog })
+      : undefined);
+  if (notionConnector !== undefined) {
+    notionWritebackRef.current = (snapshot: TaskSnapshot): void => {
+      if (snapshot.status !== 'completed' && snapshot.status !== 'failed') return;
+      const link = externalLinkStore
+        .listByTaskId(snapshot.id)
+        .find((l) => l.source === NOTION_INTEGRATION);
+      if (link === undefined) return;
+      void notionConnector.writeBackStatus(link.externalId, snapshot.status).then(
+        (result) => {
+          if (result.written) {
+            notionLog('info', `page ${link.externalId} → ${result.value}`);
+          }
+        },
+        (err: unknown) => {
+          notionLog(
+            'warn',
+            `writeback failed for page ${link.externalId}: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        },
+      );
+    };
+  }
   // Phase 3H.3 — instantiate the notifications dispatcher BEFORE the
   // question store so its `onQuestionEnqueued` hook is wired at the
   // store's construction. The dispatcher reads `loadConfig` fresh per
@@ -1126,6 +1213,21 @@ export async function startOrchestratorServer(
   );
   registry.register(makeUpdateTaskTool({ taskStore }));
   registry.register(makeTaskNotesTool({ taskStore, projectStore }));
+  // Phase 8A — sync_notion is registered ONLY when a Notion connector is
+  // active (configured + token present). Maestro's prompt instructs it to
+  // call this only on an explicit "sync notion" request; absent the
+  // connector the tool simply isn't on the surface.
+  if (notionConnector !== undefined) {
+    registry.register(
+      makeSyncNotionTool({
+        connector: notionConnector,
+        taskStore,
+        projectStore,
+        externalLinkStore,
+        resolveProjectPath,
+      }),
+    );
+  }
   // Phase 5E — cross-project sagas. `create_saga` writes both the saga
   // row AND the member tasks atomically; downstream `spawn_worker
   // (task_id=...)` claims members per the existing 3P pattern. The
@@ -1434,6 +1536,8 @@ export async function startOrchestratorServer(
     worktreeManager,
     projectStore,
     taskStore,
+    externalLinkStore,
+    ...(notionConnector !== undefined ? { notionConnector } : {}),
     sagaStore,
     questionStore,
     waveStore,
