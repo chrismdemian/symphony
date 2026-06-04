@@ -208,8 +208,6 @@ export class ObsidianConnector implements ObsidianConnectorHandle {
       };
     }
 
-    const eol = raw.includes('\r\n') ? '\r\n' : '\n';
-    const endsWithEol = /\r?\n$/u.test(raw);
     const lines = raw.split(/\r?\n/u);
     const matchIdx = this.findLineByLocator(lines, locator);
     const matchedLine = matchIdx === -1 ? undefined : lines[matchIdx];
@@ -228,10 +226,11 @@ export class ObsidianConnector implements ObsidianConnectorHandle {
       // Already at the target char with nothing to add — idempotent no-op.
       return { written: false, reason: 'line already at target status' };
     }
-    lines[matchIdx] = rewritten;
-
-    let next = lines.join(eol);
-    if (endsWithEol && !next.endsWith(eol)) next += eol;
+    // Surgical splice: replace ONLY the matched line's content, leaving every
+    // other byte (including each line's own terminator and a trailing newline)
+    // exactly as-is. A split/join would normalize the whole file's EOLs — a
+    // noisy, unwanted diff in the user's vault.
+    const next = spliceLineContent(raw, matchIdx, rewritten);
     try {
       await this.vault.writeFile(relPath, next);
     } catch (err) {
@@ -290,6 +289,30 @@ export class ObsidianConnector implements ObsidianConnectorHandle {
     const fileNoExt = relPath.replace(/\.md$/iu, '');
     return `obsidian://open?vault=${encodeURIComponent(vaultName)}&file=${encodeURIComponent(fileNoExt)}`;
   }
+}
+
+/**
+ * Replace the CONTENT of line `lineIndex` (0-based, lines split on `\n` with an
+ * optional preceding `\r`) in `raw`, preserving every terminator and trailing
+ * newline byte-for-byte. Line numbering matches `raw.split(/\r?\n/)`. Returns
+ * `raw` unchanged when `lineIndex` is out of range.
+ */
+function spliceLineContent(raw: string, lineIndex: number, newContent: string): string {
+  let start = 0;
+  let line = 0;
+  for (let i = 0; i <= raw.length; i += 1) {
+    if (i === raw.length || raw[i] === '\n') {
+      if (line === lineIndex) {
+        // Exclude a trailing `\r` from the content range (CRLF terminator).
+        let end = i;
+        if (end > start && raw[end - 1] === '\r') end -= 1;
+        return raw.slice(0, start) + newContent + raw.slice(end);
+      }
+      line += 1;
+      start = i + 1;
+    }
+  }
+  return raw;
 }
 
 /** Read a frontmatter value as a trimmed string, or null when absent/non-scalar. */

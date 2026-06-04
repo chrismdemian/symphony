@@ -179,6 +179,20 @@ describe('ObsidianConnector.writeBackStatus', () => {
     expect(result.reason).toContain('malformed');
   });
 
+  it('preserves CRLF terminators and other lines byte-for-byte on writeback', async () => {
+    const raw = ['# Title', '- [ ] Target', '- [ ] Sibling', 'trailing prose'].join('\r\n') + '\r\n';
+    const { conn, files } = connector({ 'win.md': raw });
+    const [c] = await conn.fetchOpenTasks();
+    await conn.writeBackStatus(c?.externalId ?? '', 'completed');
+    const out = files['win.md'] as string;
+    // Still CRLF throughout, trailing CRLF kept, only the target line changed.
+    expect(out.split('\r\n').length).toBe(raw.split('\r\n').length);
+    expect(out).not.toContain('\n\n'); // no bare-LF normalization crept in
+    expect(out).toContain('# Title\r\n- [x] Target');
+    expect(out).toContain('- [ ] Sibling\r\n');
+    expect(out.endsWith('trailing prose\r\n')).toBe(true);
+  });
+
   it('is an idempotent no-op when the line is already at the target', async () => {
     const cfg: ObsidianConfig = {
       ...defaultObsidianConfig('/vault'),
