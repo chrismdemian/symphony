@@ -132,6 +132,41 @@ config
     },
   );
 
+config
+  .command('obsidian')
+  .description('Configure the Obsidian integration (vault path, task format, routing). Phase 8B.')
+  .option('--vault <path>', 'Absolute path to the Obsidian vault root (a folder of markdown).')
+  .option(
+    '--project-prop <name>',
+    'Note frontmatter key mapped to project routing (default "project").',
+  )
+  .option(
+    '--task-format <format>',
+    'Task metadata format: emoji | dataview | auto (default "auto").',
+  )
+  .option('--watch', 'Enable the live vault watcher (default).')
+  .option('--no-watch', 'Disable the live vault watcher (sync on demand only).')
+  .option('--status', 'Run a vault check (path exists, count open tasks) instead of writing config.')
+  .action(
+    async (opts: {
+      vault?: string;
+      projectProp?: string;
+      taskFormat?: string;
+      watch?: boolean;
+      status?: boolean;
+    }) => {
+      const { runObsidianConfig } = await import('./cli/obsidian-config.js');
+      const result = await runObsidianConfig({
+        ...(opts.vault !== undefined ? { vault: opts.vault } : {}),
+        ...(opts.projectProp !== undefined ? { projectProp: opts.projectProp } : {}),
+        ...(opts.taskFormat !== undefined ? { taskFormat: opts.taskFormat } : {}),
+        ...(opts.watch !== undefined ? { watch: opts.watch } : {}),
+        ...(opts.status === true ? { check: true } : {}),
+      });
+      process.exit(result.exitCode);
+    },
+  );
+
 program
   .command('reset')
   .description(
@@ -598,6 +633,14 @@ program
           // (Maestro-driven AND TUI/RPC-driven task transitions) with no
           // double-fire — a given update() runs in exactly one process.
           ...(database !== undefined ? { notion: { enabled: true } } : {}),
+          // Phase 8B — activate the Obsidian connector whenever a DB is open.
+          // Reads ~/.symphony/integrations/obsidian.json (no token — a vault is
+          // a local folder); undefined (zero overhead) when unconfigured. The
+          // sync_obsidian tool + checkbox writeback + the live watcher wire up
+          // only when a vault is configured. The watcher runs in this process;
+          // double-construction across both servers is fine — a given task
+          // update() fires its writeback in exactly one process (single-writer).
+          ...(database !== undefined ? { obsidian: { enabled: true } } : {}),
           rpc: rpcEnabled
             ? {
                 enabled: true,
