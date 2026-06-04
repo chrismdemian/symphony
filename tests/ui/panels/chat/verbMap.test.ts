@@ -46,6 +46,16 @@ describe('verbMap', () => {
       expect(KNOWN_VERBS.has(verb)).toBe(true);
     }
   });
+
+  // Issue-tracker sync tools (Phase 8C) register via the generic
+  // `makeSyncIssuesTool` factory with a dynamic `name: deps.name`, so the
+  // tools-dir literal walk above can't see them. Assert their verbs explicitly
+  // so a new connector's verb isn't silently missing.
+  test('issue-connector sync tools have verbs', () => {
+    for (const name of ['sync_linear']) {
+      expect(TOOL_VERB[name], `missing verb for tool '${name}'`).toBeDefined();
+    }
+  });
 });
 
 describe('pickVerb', () => {

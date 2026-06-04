@@ -13,6 +13,11 @@
  */
 import gradient from 'gradient-string';
 
+// Phase 8C — never touch the real OS keychain from the test suite. The
+// secrets module honors this flag (file-only fallback); keychain-path unit
+// tests opt back in via `__setSecretBackendForTests` with a fake backend.
+process.env.SYMPHONY_DISABLE_KEYRING = '1';
+
 // Force a small priming render so the chalk module behind gradient-string
 // is fully initialized, then poke its level. We import chalk dynamically
 // via require because it's a transitive dep — direct ESM import would
