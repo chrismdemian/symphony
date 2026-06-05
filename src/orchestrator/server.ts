@@ -67,6 +67,10 @@ import { createLinearConnectorFromDisk } from '../integrations/linear.js';
 import { LINEAR_INTEGRATION } from '../integrations/linear-config.js';
 import { createGitHubConnectorFromDisk } from '../integrations/github.js';
 import { GITHUB_INTEGRATION } from '../integrations/github-config.js';
+import { createJiraConnectorFromDisk } from '../integrations/jira.js';
+import { JIRA_INTEGRATION } from '../integrations/jira-config.js';
+import { createGitLabConnectorFromDisk } from '../integrations/gitlab.js';
+import { GITLAB_INTEGRATION } from '../integrations/gitlab-config.js';
 import { makeTaskNotesTool } from './tools/task-notes.js';
 import { makeSetActiveProjectTool } from './tools/set-active-project.js';
 import { makeCreateSagaTool } from './tools/create-saga.js';
@@ -329,6 +333,30 @@ export interface OrchestratorServerOptions {
   /** Override / inject the GitHub connector. Test seam (bypasses disk read). */
   githubConnector?: IssueConnectorHandle;
   /**
+   * Phase 8C.3 — Jira integration activation. When `enabled: true` (set only by
+   * the real CLI boot paths, NEVER by tests) and no `jiraConnector` is injected,
+   * the server reads the stored Jira token (+ `jira.json` site URL + email) and
+   * constructs a `JiraConnector` when a token, site URL, AND email are present.
+   * The `sync_jira` tool + the terminal-status writeback hook (comment +
+   * transition to Done) are wired only when a connector exists. Test seam:
+   * inject `jiraConnector` directly.
+   */
+  jira?: { enabled?: boolean };
+  /** Override / inject the Jira connector. Test seam (bypasses disk read). */
+  jiraConnector?: IssueConnectorHandle;
+  /**
+   * Phase 8C.3 — GitLab integration activation. When `enabled: true` (set only
+   * by the real CLI boot paths, NEVER by tests) and no `gitlabConnector` is
+   * injected, the server reads the stored GitLab token (+ `gitlab.json`
+   * projects) and constructs a `GitLabConnector` when a token AND at least one
+   * project are present. The `sync_gitlab` tool + the terminal-status writeback
+   * hook (note + close) are wired only when a connector exists. Test seam:
+   * inject `gitlabConnector` directly.
+   */
+  gitlab?: { enabled?: boolean };
+  /** Override / inject the GitLab connector. Test seam (bypasses disk read). */
+  gitlabConnector?: IssueConnectorHandle;
+  /**
    * Phase 8A — override the task↔external-source link store. Defaults to
    * SQLite-backed when `database` is provided, else in-memory. Used for
    * sync dedup + the Notion / Obsidian / Linear / GitHub status writeback.
@@ -371,6 +399,10 @@ export interface OrchestratorServerHandle {
   linearConnector?: IssueConnectorHandle;
   /** Phase 8C.2 — present when GitHub is configured + activated. */
   githubConnector?: IssueConnectorHandle;
+  /** Phase 8C.3 — present when Jira is configured + activated. */
+  jiraConnector?: IssueConnectorHandle;
+  /** Phase 8C.3 — present when GitLab is configured + activated. */
+  gitlabConnector?: IssueConnectorHandle;
   /** Phase 5E — exposed for tests + tools that need to read saga membership. */
   sagaStore: SagaStore;
   questionStore: QuestionStore;
@@ -606,6 +638,10 @@ export async function startOrchestratorServer(
   const linearWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
   // Phase 8C.2 — GitHub issue writeback hook (comment + close; built by makeIssueWritebackRef).
   const githubWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
+  // Phase 8C.3 — Jira issue writeback hook (comment + transition to Done; built by makeIssueWritebackRef).
+  const jiraWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
+  // Phase 8C.3 — GitLab issue writeback hook (note + close; built by makeIssueWritebackRef).
+  const gitlabWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
   const fanOutTaskStatusChange = (snapshot: TaskSnapshot): void => {
     taskReadyOnTaskStatusChange(snapshot);
     sagaRollupListener(snapshot);
@@ -621,6 +657,8 @@ export async function startOrchestratorServer(
       obsidianWritebackRef.current?.(snapshot);
       linearWritebackRef.current?.(snapshot);
       githubWritebackRef.current?.(snapshot);
+      jiraWritebackRef.current?.(snapshot);
+      gitlabWritebackRef.current?.(snapshot);
     }
   };
   // Phase 7B.3 — fan task creation out to subscribed plugins (onTaskCreated).
@@ -790,6 +828,52 @@ export async function startOrchestratorServer(
       source: GITHUB_INTEGRATION,
       externalLinkStore,
       log: githubLog,
+    });
+  }
+  // Phase 8C.3 — Jira connector. Injected (test seam) or auto-constructed from
+  // the stored token + `jira.json` site URL + email when activated by the CLI
+  // boot path (`jira.enabled`). Undefined when no token OR no site URL/email —
+  // the `sync_jira` tool + writeback hook wire up only when a connector exists.
+  const jiraLog = (level: 'info' | 'warn' | 'error', message: string): void => {
+    const line = `[symphony] jira: ${message}`;
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    // info stays quiet — TUI owns stdout.
+  };
+  const jiraConnector: IssueConnectorHandle | undefined =
+    options.jiraConnector ??
+    (options.jira?.enabled === true
+      ? await createJiraConnectorFromDisk({ log: jiraLog })
+      : undefined);
+  if (jiraConnector !== undefined) {
+    jiraWritebackRef.current = makeIssueWritebackRef({
+      connector: jiraConnector,
+      source: JIRA_INTEGRATION,
+      externalLinkStore,
+      log: jiraLog,
+    });
+  }
+  // Phase 8C.3 — GitLab connector. Injected (test seam) or auto-constructed from
+  // the stored token + `gitlab.json` projects when activated by the CLI boot
+  // path (`gitlab.enabled`). Undefined when no token OR no projects — the
+  // `sync_gitlab` tool + writeback hook wire up only when a connector exists.
+  const gitlabLog = (level: 'info' | 'warn' | 'error', message: string): void => {
+    const line = `[symphony] gitlab: ${message}`;
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    // info stays quiet — TUI owns stdout.
+  };
+  const gitlabConnector: IssueConnectorHandle | undefined =
+    options.gitlabConnector ??
+    (options.gitlab?.enabled === true
+      ? await createGitLabConnectorFromDisk({ log: gitlabLog })
+      : undefined);
+  if (gitlabConnector !== undefined) {
+    gitlabWritebackRef.current = makeIssueWritebackRef({
+      connector: gitlabConnector,
+      source: GITLAB_INTEGRATION,
+      externalLinkStore,
+      log: gitlabLog,
     });
   }
   // Phase 3H.3 — instantiate the notifications dispatcher BEFORE the
@@ -1476,6 +1560,38 @@ export async function startOrchestratorServer(
       }),
     );
   }
+  // Phase 8C.3 — sync_jira is registered ONLY when a Jira connector is active
+  // (token + site URL + email). Same on-demand surface as sync_linear.
+  if (jiraConnector !== undefined) {
+    registry.register(
+      makeSyncIssuesTool({
+        connector: jiraConnector,
+        name: 'sync_jira',
+        description:
+          'Pull open issues from Jira into Symphony. Creates one pending task per new issue (idempotent — already-imported issues are skipped), skips issues already in a Done-category status, and routes by Jira project key. Uses a permission-aware JQL fallback (assigned/reported issues when a token cannot browse all projects). On task completion Symphony comments on and transitions the Jira issue to a Done state. Requires `symphony config jira`.',
+        taskStore,
+        projectStore,
+        externalLinkStore,
+        resolveProjectPath,
+      }),
+    );
+  }
+  // Phase 8C.3 — sync_gitlab is registered ONLY when a GitLab connector is active
+  // (token + at least one project). Same on-demand surface as sync_linear.
+  if (gitlabConnector !== undefined) {
+    registry.register(
+      makeSyncIssuesTool({
+        connector: gitlabConnector,
+        name: 'sync_gitlab',
+        description:
+          'Pull open issues from the configured GitLab projects into Symphony. Creates one pending task per new issue (idempotent — already-imported issues are skipped) and routes by `group/project`. On task completion Symphony adds a note and closes the GitLab issue. Requires `symphony config gitlab`.',
+        taskStore,
+        projectStore,
+        externalLinkStore,
+        resolveProjectPath,
+      }),
+    );
+  }
   // Phase 5E — cross-project sagas. `create_saga` writes both the saga
   // row AND the member tasks atomically; downstream `spawn_worker
   // (task_id=...)` claims members per the existing 3P pattern. The
@@ -1794,6 +1910,8 @@ export async function startOrchestratorServer(
     ...(obsidianConnector !== undefined ? { obsidianConnector } : {}),
     ...(linearConnector !== undefined ? { linearConnector } : {}),
     ...(githubConnector !== undefined ? { githubConnector } : {}),
+    ...(jiraConnector !== undefined ? { jiraConnector } : {}),
+    ...(gitlabConnector !== undefined ? { gitlabConnector } : {}),
     sagaStore,
     questionStore,
     waveStore,
