@@ -253,6 +253,111 @@ config
     },
   );
 
+config
+  .command('jira')
+  .description('Configure the Jira integration (token, site URL, email, projects, writeback). Phase 8C.')
+  .option(
+    '--token <api-token>',
+    'Jira API token (stored in the OS keychain, or ~/.symphony/integrations fallback).',
+  )
+  .option('--site-url <url>', 'Jira base URL, e.g. https://you.atlassian.net (https only).')
+  .option('--email <email>', 'Atlassian account email (the Basic-auth username).')
+  .option(
+    '--project <key>',
+    'A project key to lead the JQL fetch with (repeatable; accumulates across invocations).',
+    (value: string, prev: string[]) => [...prev, value],
+    [] as string[],
+  )
+  .option(
+    '--writeback-completed <text>',
+    'Comment posted on the issue when a task completes (default "Completed by Symphony."; the issue is then transitioned to Done).',
+  )
+  .option(
+    '--writeback-transition <name>',
+    'Transition name to use on completion (default: the first Done-category transition).',
+  )
+  .option(
+    '--writeback-failed <text>',
+    'Comment posted when a task fails (default: no failure writeback; the issue is never transitioned on failure).',
+  )
+  .option('--status', 'Run a connection check against Jira instead of writing config.')
+  .action(
+    async (opts: {
+      token?: string;
+      siteUrl?: string;
+      email?: string;
+      project?: string[];
+      writebackCompleted?: string;
+      writebackTransition?: string;
+      writebackFailed?: string;
+      status?: boolean;
+    }) => {
+      const { runJiraConfig } = await import('./cli/jira-config.js');
+      const result = await runJiraConfig({
+        ...(opts.token !== undefined ? { token: opts.token } : {}),
+        ...(opts.siteUrl !== undefined ? { siteUrl: opts.siteUrl } : {}),
+        ...(opts.email !== undefined ? { email: opts.email } : {}),
+        ...(opts.project !== undefined && opts.project.length > 0 ? { projectKeys: opts.project } : {}),
+        ...(opts.writebackCompleted !== undefined
+          ? { writebackCompleted: opts.writebackCompleted }
+          : {}),
+        ...(opts.writebackTransition !== undefined
+          ? { writebackTransition: opts.writebackTransition }
+          : {}),
+        ...(opts.writebackFailed !== undefined ? { writebackFailed: opts.writebackFailed } : {}),
+        ...(opts.status === true ? { check: true } : {}),
+      });
+      process.exit(result.exitCode);
+    },
+  );
+
+config
+  .command('gitlab')
+  .description('Configure the GitLab integration (token, projects, self-hosted URL, writeback). Phase 8C.')
+  .option(
+    '--token <pat>',
+    'GitLab personal access token (stored in the OS keychain, or ~/.symphony/integrations fallback).',
+  )
+  .option(
+    '--project <group/name>',
+    'A project to sync issues from (repeatable; accumulates across invocations).',
+    (value: string, prev: string[]) => [...prev, value],
+    [] as string[],
+  )
+  .option('--site-url <url>', 'GitLab instance base URL (default https://gitlab.com; https only).')
+  .option(
+    '--writeback-completed <text>',
+    'Note posted on the issue when a task completes (default "Completed by Symphony."; the issue is then closed).',
+  )
+  .option(
+    '--writeback-failed <text>',
+    'Note posted when a task fails (default: no failure writeback; the issue is never closed on failure).',
+  )
+  .option('--status', 'Run a connection check against GitLab instead of writing config.')
+  .action(
+    async (opts: {
+      token?: string;
+      project?: string[];
+      siteUrl?: string;
+      writebackCompleted?: string;
+      writebackFailed?: string;
+      status?: boolean;
+    }) => {
+      const { runGitLabConfig } = await import('./cli/gitlab-config.js');
+      const result = await runGitLabConfig({
+        ...(opts.token !== undefined ? { token: opts.token } : {}),
+        ...(opts.project !== undefined && opts.project.length > 0 ? { projects: opts.project } : {}),
+        ...(opts.siteUrl !== undefined ? { siteUrl: opts.siteUrl } : {}),
+        ...(opts.writebackCompleted !== undefined
+          ? { writebackCompleted: opts.writebackCompleted }
+          : {}),
+        ...(opts.writebackFailed !== undefined ? { writebackFailed: opts.writebackFailed } : {}),
+        ...(opts.status === true ? { check: true } : {}),
+      });
+      process.exit(result.exitCode);
+    },
+  );
+
 program
   .command('reset')
   .description(
@@ -739,6 +844,16 @@ program
           // comment+close writeback wire up only when configured. Same
           // double-construction-is-safe property as Notion/Obsidian/Linear.
           ...(database !== undefined ? { github: { enabled: true } } : {}),
+          // Phase 8C.3 — activate the Jira connector whenever a DB is open.
+          // Reads the stored token + jira.json site URL/email; undefined (zero
+          // overhead) when not fully configured. The sync_jira tool + the
+          // comment+transition writeback wire up only when configured.
+          ...(database !== undefined ? { jira: { enabled: true } } : {}),
+          // Phase 8C.3 — activate the GitLab connector whenever a DB is open.
+          // Reads the stored token + gitlab.json projects; undefined (zero
+          // overhead) when no token / no projects. The sync_gitlab tool + the
+          // note+close writeback wire up only when configured.
+          ...(database !== undefined ? { gitlab: { enabled: true } } : {}),
           rpc: rpcEnabled
             ? {
                 enabled: true,
