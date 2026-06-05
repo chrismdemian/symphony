@@ -64,6 +64,8 @@ export const TOOL_VERB: Readonly<Record<string, string>> = Object.freeze({
   sync_obsidian: 'Transcribing',
   // Phase 8C — issue trackers
   sync_linear: 'Transcribing',
+  // Phase 8C.2
+  sync_github: 'Transcribing',
 
   // Worktree
   create_worktree: 'Arranging',
