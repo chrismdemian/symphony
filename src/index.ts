@@ -206,6 +206,53 @@ config
     },
   );
 
+config
+  .command('github')
+  .description('Configure the GitHub Issues integration (token, repos, writeback). Phase 8C.')
+  .option(
+    '--token <pat>',
+    'GitHub personal access token (stored in the OS keychain, or ~/.symphony/integrations fallback).',
+  )
+  .option(
+    '--repo <owner/name>',
+    'A repo to sync issues from (repeatable; accumulates across invocations).',
+    (value: string, prev: string[]) => [...prev, value],
+    [] as string[],
+  )
+  .option('--api-base-url <url>', 'GitHub Enterprise Server API root (default https://api.github.com).')
+  .option(
+    '--writeback-completed <text>',
+    'Comment posted on the issue when a task completes (default "Completed by Symphony."; the issue is then closed).',
+  )
+  .option(
+    '--writeback-failed <text>',
+    'Comment posted when a task fails (default: no failure writeback; the issue is never closed on failure).',
+  )
+  .option('--status', 'Run a connection check against GitHub instead of writing config.')
+  .action(
+    async (opts: {
+      token?: string;
+      repo?: string[];
+      apiBaseUrl?: string;
+      writebackCompleted?: string;
+      writebackFailed?: string;
+      status?: boolean;
+    }) => {
+      const { runGitHubConfig } = await import('./cli/github-config.js');
+      const result = await runGitHubConfig({
+        ...(opts.token !== undefined ? { token: opts.token } : {}),
+        ...(opts.repo !== undefined && opts.repo.length > 0 ? { repos: opts.repo } : {}),
+        ...(opts.apiBaseUrl !== undefined ? { apiBaseUrl: opts.apiBaseUrl } : {}),
+        ...(opts.writebackCompleted !== undefined
+          ? { writebackCompleted: opts.writebackCompleted }
+          : {}),
+        ...(opts.writebackFailed !== undefined ? { writebackFailed: opts.writebackFailed } : {}),
+        ...(opts.status === true ? { check: true } : {}),
+      });
+      process.exit(result.exitCode);
+    },
+  );
+
 program
   .command('reset')
   .description(
@@ -686,6 +733,12 @@ program
           // tool + issue writeback wire up only when configured. Same
           // double-construction-is-safe property as Notion/Obsidian.
           ...(database !== undefined ? { linear: { enabled: true } } : {}),
+          // Phase 8C.2 — activate the GitHub connector whenever a DB is open.
+          // Reads the stored token + github.json repos; undefined (zero
+          // overhead) when no token / no repos. The sync_github tool + the
+          // comment+close writeback wire up only when configured. Same
+          // double-construction-is-safe property as Notion/Obsidian/Linear.
+          ...(database !== undefined ? { github: { enabled: true } } : {}),
           rpc: rpcEnabled
             ? {
                 enabled: true,

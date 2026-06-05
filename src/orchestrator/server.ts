@@ -65,6 +65,8 @@ import { makeIssueWritebackRef } from './issue-writeback.js';
 import type { IssueConnectorHandle } from '../integrations/issue-connector.js';
 import { createLinearConnectorFromDisk } from '../integrations/linear.js';
 import { LINEAR_INTEGRATION } from '../integrations/linear-config.js';
+import { createGitHubConnectorFromDisk } from '../integrations/github.js';
+import { GITHUB_INTEGRATION } from '../integrations/github-config.js';
 import { makeTaskNotesTool } from './tools/task-notes.js';
 import { makeSetActiveProjectTool } from './tools/set-active-project.js';
 import { makeCreateSagaTool } from './tools/create-saga.js';
@@ -315,9 +317,21 @@ export interface OrchestratorServerOptions {
   /** Override / inject the Linear connector. Test seam (bypasses disk read). */
   linearConnector?: IssueConnectorHandle;
   /**
+   * Phase 8C.2 — GitHub Issues integration activation. When `enabled: true` (set
+   * only by the real CLI boot paths, NEVER by tests) and no `githubConnector` is
+   * injected, the server reads the stored GitHub token (+ `github.json` repos)
+   * and constructs a `GitHubConnector` when a token AND at least one repo are
+   * present. The `sync_github` tool + the terminal-status writeback hook
+   * (comment + close) are wired only when a connector exists. Test seam: inject
+   * `githubConnector` directly.
+   */
+  github?: { enabled?: boolean };
+  /** Override / inject the GitHub connector. Test seam (bypasses disk read). */
+  githubConnector?: IssueConnectorHandle;
+  /**
    * Phase 8A — override the task↔external-source link store. Defaults to
    * SQLite-backed when `database` is provided, else in-memory. Used for
-   * sync dedup + the Notion / Obsidian / Linear status writeback.
+   * sync dedup + the Notion / Obsidian / Linear / GitHub status writeback.
    */
   externalLinkStore?: ExternalLinkStore;
 }
@@ -355,6 +369,8 @@ export interface OrchestratorServerHandle {
   obsidianConnector?: ObsidianConnectorHandle;
   /** Phase 8C — present when Linear is configured + activated. */
   linearConnector?: IssueConnectorHandle;
+  /** Phase 8C.2 — present when GitHub is configured + activated. */
+  githubConnector?: IssueConnectorHandle;
   /** Phase 5E — exposed for tests + tools that need to read saga membership. */
   sagaStore: SagaStore;
   questionStore: QuestionStore;
@@ -588,6 +604,8 @@ export async function startOrchestratorServer(
   const obsidianWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
   // Phase 8C — Linear issue writeback hook (same shape; built by makeIssueWritebackRef).
   const linearWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
+  // Phase 8C.2 — GitHub issue writeback hook (comment + close; built by makeIssueWritebackRef).
+  const githubWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
   const fanOutTaskStatusChange = (snapshot: TaskSnapshot): void => {
     taskReadyOnTaskStatusChange(snapshot);
     sagaRollupListener(snapshot);
@@ -602,6 +620,7 @@ export async function startOrchestratorServer(
       notionWritebackRef.current?.(snapshot);
       obsidianWritebackRef.current?.(snapshot);
       linearWritebackRef.current?.(snapshot);
+      githubWritebackRef.current?.(snapshot);
     }
   };
   // Phase 7B.3 — fan task creation out to subscribed plugins (onTaskCreated).
@@ -747,6 +766,30 @@ export async function startOrchestratorServer(
       source: LINEAR_INTEGRATION,
       externalLinkStore,
       log: linearLog,
+    });
+  }
+  // Phase 8C.2 — GitHub connector. Injected (test seam) or auto-constructed from
+  // the stored token + `github.json` repos when activated by the CLI boot path
+  // (`github.enabled`). Undefined when no token OR no repos — the `sync_github`
+  // tool + writeback hook wire up only when a connector exists. Same lazy /
+  // double-construction-is-safe property as Linear/Notion/Obsidian.
+  const githubLog = (level: 'info' | 'warn' | 'error', message: string): void => {
+    const line = `[symphony] github: ${message}`;
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    // info stays quiet — TUI owns stdout.
+  };
+  const githubConnector: IssueConnectorHandle | undefined =
+    options.githubConnector ??
+    (options.github?.enabled === true
+      ? await createGitHubConnectorFromDisk({ log: githubLog })
+      : undefined);
+  if (githubConnector !== undefined) {
+    githubWritebackRef.current = makeIssueWritebackRef({
+      connector: githubConnector,
+      source: GITHUB_INTEGRATION,
+      externalLinkStore,
+      log: githubLog,
     });
   }
   // Phase 3H.3 — instantiate the notifications dispatcher BEFORE the
@@ -1417,6 +1460,22 @@ export async function startOrchestratorServer(
       }),
     );
   }
+  // Phase 8C.2 — sync_github is registered ONLY when a GitHub connector is active
+  // (token + at least one repo). Same on-demand surface as sync_linear.
+  if (githubConnector !== undefined) {
+    registry.register(
+      makeSyncIssuesTool({
+        connector: githubConnector,
+        name: 'sync_github',
+        description:
+          'Pull open issues from the configured GitHub repos into Symphony. Creates one pending task per new issue (idempotent — already-imported issues are skipped), excludes pull requests, and routes by `owner/repo`. On task completion Symphony comments on and closes the GitHub issue. Requires `symphony config github`.',
+        taskStore,
+        projectStore,
+        externalLinkStore,
+        resolveProjectPath,
+      }),
+    );
+  }
   // Phase 5E — cross-project sagas. `create_saga` writes both the saga
   // row AND the member tasks atomically; downstream `spawn_worker
   // (task_id=...)` claims members per the existing 3P pattern. The
@@ -1734,6 +1793,7 @@ export async function startOrchestratorServer(
     ...(notionConnector !== undefined ? { notionConnector } : {}),
     ...(obsidianConnector !== undefined ? { obsidianConnector } : {}),
     ...(linearConnector !== undefined ? { linearConnector } : {}),
+    ...(githubConnector !== undefined ? { githubConnector } : {}),
     sagaStore,
     questionStore,
     waveStore,
