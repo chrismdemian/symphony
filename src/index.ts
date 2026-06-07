@@ -358,6 +358,99 @@ config
     },
   );
 
+config
+  .command('plain')
+  .description('Configure the Plain integration (token, API endpoint, statuses, writeback). Phase 8C.')
+  .option(
+    '--token <api-key>',
+    'Plain API key (stored in the OS keychain, or ~/.symphony/integrations fallback).',
+  )
+  .option('--api-url <url>', 'Plain Core API GraphQL endpoint (default UK region; https only).')
+  .option(
+    '--statuses <list>',
+    'Comma-separated thread statuses to import (TODO,SNOOZED,DONE; default TODO).',
+    (value: string) => value.split(',').map((s) => s.trim()).filter((s) => s.length > 0),
+  )
+  .option(
+    '--writeback-completed <text>',
+    'Internal note posted on the thread when a task completes (default "Completed by Symphony."; the thread is then marked Done).',
+  )
+  .option(
+    '--writeback-failed <text>',
+    'Internal note posted when a task fails (default: no failure writeback; the thread is never marked Done on failure).',
+  )
+  .option('--status', 'Run a connection check against Plain instead of writing config.')
+  .action(
+    async (opts: {
+      token?: string;
+      apiUrl?: string;
+      statuses?: string[];
+      writebackCompleted?: string;
+      writebackFailed?: string;
+      status?: boolean;
+    }) => {
+      const { runPlainConfig } = await import('./cli/plain-config.js');
+      const result = await runPlainConfig({
+        ...(opts.token !== undefined ? { token: opts.token } : {}),
+        ...(opts.apiUrl !== undefined ? { apiUrl: opts.apiUrl } : {}),
+        ...(opts.statuses !== undefined && opts.statuses.length > 0 ? { statuses: opts.statuses } : {}),
+        ...(opts.writebackCompleted !== undefined
+          ? { writebackCompleted: opts.writebackCompleted }
+          : {}),
+        ...(opts.writebackFailed !== undefined ? { writebackFailed: opts.writebackFailed } : {}),
+        ...(opts.status === true ? { check: true } : {}),
+      });
+      process.exit(result.exitCode);
+    },
+  );
+
+config
+  .command('forgejo')
+  .description('Configure the Forgejo integration (token, instance URL, repos, writeback). Phase 8C.')
+  .option(
+    '--token <pat>',
+    'Forgejo personal access token (stored in the OS keychain, or ~/.symphony/integrations fallback).',
+  )
+  .option('--site-url <url>', 'Forgejo instance base URL, e.g. https://code.example.com (https only; required).')
+  .option(
+    '--repo <owner/name>',
+    'A repo to sync issues from (repeatable; accumulates across invocations).',
+    (value: string, prev: string[]) => [...prev, value],
+    [] as string[],
+  )
+  .option(
+    '--writeback-completed <text>',
+    'Comment posted on the issue when a task completes (default "Completed by Symphony."; the issue is then closed).',
+  )
+  .option(
+    '--writeback-failed <text>',
+    'Comment posted when a task fails (default: no failure writeback; the issue is never closed on failure).',
+  )
+  .option('--status', 'Run a connection check against Forgejo instead of writing config.')
+  .action(
+    async (opts: {
+      token?: string;
+      siteUrl?: string;
+      repo?: string[];
+      writebackCompleted?: string;
+      writebackFailed?: string;
+      status?: boolean;
+    }) => {
+      const { runForgejoConfig } = await import('./cli/forgejo-config.js');
+      const result = await runForgejoConfig({
+        ...(opts.token !== undefined ? { token: opts.token } : {}),
+        ...(opts.siteUrl !== undefined ? { siteUrl: opts.siteUrl } : {}),
+        ...(opts.repo !== undefined && opts.repo.length > 0 ? { repos: opts.repo } : {}),
+        ...(opts.writebackCompleted !== undefined
+          ? { writebackCompleted: opts.writebackCompleted }
+          : {}),
+        ...(opts.writebackFailed !== undefined ? { writebackFailed: opts.writebackFailed } : {}),
+        ...(opts.status === true ? { check: true } : {}),
+      });
+      process.exit(result.exitCode);
+    },
+  );
+
 program
   .command('reset')
   .description(
@@ -854,6 +947,16 @@ program
           // overhead) when no token / no projects. The sync_gitlab tool + the
           // note+close writeback wire up only when configured.
           ...(database !== undefined ? { gitlab: { enabled: true } } : {}),
+          // Phase 8C.4 — activate the Plain connector whenever a DB is open.
+          // Token-only activation (like Linear); undefined (zero overhead) when
+          // no token. The sync_plain tool + the note+done writeback wire up only
+          // when configured.
+          ...(database !== undefined ? { plain: { enabled: true } } : {}),
+          // Phase 8C.4 — activate the Forgejo connector whenever a DB is open.
+          // Reads the stored token + forgejo.json site URL/repos; undefined
+          // (zero overhead) when not fully configured. The sync_forgejo tool +
+          // the comment+close writeback wire up only when configured.
+          ...(database !== undefined ? { forgejo: { enabled: true } } : {}),
           rpc: rpcEnabled
             ? {
                 enabled: true,

@@ -52,7 +52,14 @@ describe('verbMap', () => {
   // tools-dir literal walk above can't see them. Assert their verbs explicitly
   // so a new connector's verb isn't silently missing.
   test('issue-connector sync tools have verbs', () => {
-    for (const name of ['sync_linear', 'sync_github', 'sync_jira', 'sync_gitlab']) {
+    for (const name of [
+      'sync_linear',
+      'sync_github',
+      'sync_jira',
+      'sync_gitlab',
+      'sync_plain',
+      'sync_forgejo',
+    ]) {
       expect(TOOL_VERB[name], `missing verb for tool '${name}'`).toBeDefined();
     }
   });
