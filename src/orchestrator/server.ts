@@ -71,6 +71,10 @@ import { createJiraConnectorFromDisk } from '../integrations/jira.js';
 import { JIRA_INTEGRATION } from '../integrations/jira-config.js';
 import { createGitLabConnectorFromDisk } from '../integrations/gitlab.js';
 import { GITLAB_INTEGRATION } from '../integrations/gitlab-config.js';
+import { createPlainConnectorFromDisk } from '../integrations/plain.js';
+import { PLAIN_INTEGRATION } from '../integrations/plain-config.js';
+import { createForgejoConnectorFromDisk } from '../integrations/forgejo.js';
+import { FORGEJO_INTEGRATION } from '../integrations/forgejo-config.js';
 import { makeTaskNotesTool } from './tools/task-notes.js';
 import { makeSetActiveProjectTool } from './tools/set-active-project.js';
 import { makeCreateSagaTool } from './tools/create-saga.js';
@@ -357,6 +361,30 @@ export interface OrchestratorServerOptions {
   /** Override / inject the GitLab connector. Test seam (bypasses disk read). */
   gitlabConnector?: IssueConnectorHandle;
   /**
+   * Phase 8C.4 — Plain integration activation. When `enabled: true` (set only
+   * by the real CLI boot paths, NEVER by tests) and no `plainConnector` is
+   * injected, the server reads the stored Plain API key (+ optional `plain.json`)
+   * and constructs a `PlainConnector` (token-only activation, like Linear). The
+   * `sync_plain` tool + the terminal-status writeback hook (internal note + mark
+   * done) are wired only when a connector exists. Test seam: inject
+   * `plainConnector` directly.
+   */
+  plain?: { enabled?: boolean };
+  /** Override / inject the Plain connector. Test seam (bypasses disk read). */
+  plainConnector?: IssueConnectorHandle;
+  /**
+   * Phase 8C.4 — Forgejo integration activation. When `enabled: true` (set only
+   * by the real CLI boot paths, NEVER by tests) and no `forgejoConnector` is
+   * injected, the server reads the stored Forgejo token (+ `forgejo.json` site
+   * URL + repos) and constructs a `ForgejoConnector` when a token, site URL, AND
+   * at least one repo are present. The `sync_forgejo` tool + the terminal-status
+   * writeback hook (comment + close) are wired only when a connector exists. Test
+   * seam: inject `forgejoConnector` directly.
+   */
+  forgejo?: { enabled?: boolean };
+  /** Override / inject the Forgejo connector. Test seam (bypasses disk read). */
+  forgejoConnector?: IssueConnectorHandle;
+  /**
    * Phase 8A — override the task↔external-source link store. Defaults to
    * SQLite-backed when `database` is provided, else in-memory. Used for
    * sync dedup + the Notion / Obsidian / Linear / GitHub status writeback.
@@ -403,6 +431,10 @@ export interface OrchestratorServerHandle {
   jiraConnector?: IssueConnectorHandle;
   /** Phase 8C.3 — present when GitLab is configured + activated. */
   gitlabConnector?: IssueConnectorHandle;
+  /** Phase 8C.4 — present when Plain is configured + activated. */
+  plainConnector?: IssueConnectorHandle;
+  /** Phase 8C.4 — present when Forgejo is configured + activated. */
+  forgejoConnector?: IssueConnectorHandle;
   /** Phase 5E — exposed for tests + tools that need to read saga membership. */
   sagaStore: SagaStore;
   questionStore: QuestionStore;
@@ -642,6 +674,10 @@ export async function startOrchestratorServer(
   const jiraWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
   // Phase 8C.3 — GitLab issue writeback hook (note + close; built by makeIssueWritebackRef).
   const gitlabWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
+  // Phase 8C.4 — Plain issue writeback hook (internal note + mark done; built by makeIssueWritebackRef).
+  const plainWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
+  // Phase 8C.4 — Forgejo issue writeback hook (comment + close; built by makeIssueWritebackRef).
+  const forgejoWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
   const fanOutTaskStatusChange = (snapshot: TaskSnapshot): void => {
     taskReadyOnTaskStatusChange(snapshot);
     sagaRollupListener(snapshot);
@@ -659,6 +695,8 @@ export async function startOrchestratorServer(
       githubWritebackRef.current?.(snapshot);
       jiraWritebackRef.current?.(snapshot);
       gitlabWritebackRef.current?.(snapshot);
+      plainWritebackRef.current?.(snapshot);
+      forgejoWritebackRef.current?.(snapshot);
     }
   };
   // Phase 7B.3 — fan task creation out to subscribed plugins (onTaskCreated).
@@ -874,6 +912,54 @@ export async function startOrchestratorServer(
       source: GITLAB_INTEGRATION,
       externalLinkStore,
       log: gitlabLog,
+    });
+  }
+  // Phase 8C.4 — Plain connector. Injected (test seam) or auto-constructed from
+  // the stored API key (+ optional plain.json) when activated by the CLI boot
+  // path (`plain.enabled`). Token-only activation (like Linear) — undefined when
+  // no token. The `sync_plain` tool + the note+done writeback hook wire up only
+  // when a connector exists.
+  const plainLog = (level: 'info' | 'warn' | 'error', message: string): void => {
+    const line = `[symphony] plain: ${message}`;
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    // info stays quiet — TUI owns stdout.
+  };
+  const plainConnector: IssueConnectorHandle | undefined =
+    options.plainConnector ??
+    (options.plain?.enabled === true
+      ? await createPlainConnectorFromDisk({ log: plainLog })
+      : undefined);
+  if (plainConnector !== undefined) {
+    plainWritebackRef.current = makeIssueWritebackRef({
+      connector: plainConnector,
+      source: PLAIN_INTEGRATION,
+      externalLinkStore,
+      log: plainLog,
+    });
+  }
+  // Phase 8C.4 — Forgejo connector. Injected (test seam) or auto-constructed from
+  // the stored token + `forgejo.json` site URL + repos when activated by the CLI
+  // boot path (`forgejo.enabled`). Undefined when no token / no site URL / no
+  // repos — the `sync_forgejo` tool + writeback hook wire up only when a
+  // connector exists.
+  const forgejoLog = (level: 'info' | 'warn' | 'error', message: string): void => {
+    const line = `[symphony] forgejo: ${message}`;
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    // info stays quiet — TUI owns stdout.
+  };
+  const forgejoConnector: IssueConnectorHandle | undefined =
+    options.forgejoConnector ??
+    (options.forgejo?.enabled === true
+      ? await createForgejoConnectorFromDisk({ log: forgejoLog })
+      : undefined);
+  if (forgejoConnector !== undefined) {
+    forgejoWritebackRef.current = makeIssueWritebackRef({
+      connector: forgejoConnector,
+      source: FORGEJO_INTEGRATION,
+      externalLinkStore,
+      log: forgejoLog,
     });
   }
   // Phase 3H.3 — instantiate the notifications dispatcher BEFORE the
@@ -1592,6 +1678,39 @@ export async function startOrchestratorServer(
       }),
     );
   }
+  // Phase 8C.4 — sync_plain is registered ONLY when a Plain connector is active
+  // (token present). Same on-demand surface as sync_linear.
+  if (plainConnector !== undefined) {
+    registry.register(
+      makeSyncIssuesTool({
+        connector: plainConnector,
+        name: 'sync_plain',
+        description:
+          'Pull open support threads from Plain into Symphony. Creates one pending task per new thread (idempotent — already-imported threads are skipped) and skips threads already marked Done. Plain has no project concept, so pass `project:` (or rely on the active project) to route. On task completion Symphony posts an internal note and marks the Plain thread Done. Requires `symphony config plain`.',
+        taskStore,
+        projectStore,
+        externalLinkStore,
+        resolveProjectPath,
+      }),
+    );
+  }
+  // Phase 8C.4 — sync_forgejo is registered ONLY when a Forgejo connector is
+  // active (token + site URL + at least one repo). Same on-demand surface as
+  // sync_github.
+  if (forgejoConnector !== undefined) {
+    registry.register(
+      makeSyncIssuesTool({
+        connector: forgejoConnector,
+        name: 'sync_forgejo',
+        description:
+          'Pull open issues from the configured Forgejo repos into Symphony. Creates one pending task per new issue (idempotent — already-imported issues are skipped) and routes by `owner/repo`. On task completion Symphony comments on and closes the Forgejo issue. Requires `symphony config forgejo`.',
+        taskStore,
+        projectStore,
+        externalLinkStore,
+        resolveProjectPath,
+      }),
+    );
+  }
   // Phase 5E — cross-project sagas. `create_saga` writes both the saga
   // row AND the member tasks atomically; downstream `spawn_worker
   // (task_id=...)` claims members per the existing 3P pattern. The
@@ -1912,6 +2031,8 @@ export async function startOrchestratorServer(
     ...(githubConnector !== undefined ? { githubConnector } : {}),
     ...(jiraConnector !== undefined ? { jiraConnector } : {}),
     ...(gitlabConnector !== undefined ? { gitlabConnector } : {}),
+    ...(plainConnector !== undefined ? { plainConnector } : {}),
+    ...(forgejoConnector !== undefined ? { forgejoConnector } : {}),
     sagaStore,
     questionStore,
     waveStore,
