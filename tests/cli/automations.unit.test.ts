@@ -5,13 +5,13 @@ import path from 'node:path';
 import {
   assertNoAutomationHostBrowserTarget,
   AutomationTargetError,
-  buildScheduleFromFlags,
   runAutomationsAdd,
   runAutomationsList,
   runAutomationsRemove,
   runAutomationsRun,
   runAutomationsSetEnabled,
 } from '../../src/cli/automations.js';
+import { buildScheduleFromFlags } from '../../src/orchestrator/automation-schedule.js';
 import { SymphonyDatabase } from '../../src/state/db.js';
 import { SqliteAutomationStore } from '../../src/state/sqlite-automation-store.js';
 

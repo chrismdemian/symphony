@@ -63,6 +63,21 @@ describe('verbMap', () => {
       expect(TOOL_VERB[name], `missing verb for tool '${name}'`).toBeDefined();
     }
   });
+
+  // Phase 8D.1 — automation-tools.ts declares 5 tools in ONE file; the
+  // dir-walk's non-global `name:` regex only catches the first, so assert
+  // the rest explicitly (same blind-spot fix as the factory-tool block).
+  test('automation management tools have verbs', () => {
+    for (const name of [
+      'create_automation',
+      'list_automations',
+      'remove_automation',
+      'set_automation_enabled',
+      'run_automation',
+    ]) {
+      expect(TOOL_VERB[name], `missing verb for tool '${name}'`).toBeDefined();
+    }
+  });
 });
 
 describe('pickVerb', () => {

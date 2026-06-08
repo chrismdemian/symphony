@@ -50,6 +50,13 @@ import { makeCreateWorktreeTool } from './tools/create-worktree.js';
 import { makeListTasksTool } from './tools/list-tasks.js';
 import { makeCreateTaskTool } from './tools/create-task.js';
 import { makeUpdateTaskTool } from './tools/update-task.js';
+import {
+  makeCreateAutomationTool,
+  makeListAutomationsTool,
+  makeRemoveAutomationTool,
+  makeRunAutomationTool,
+  makeSetAutomationEnabledTool,
+} from './tools/automation-tools.js';
 import { makeSyncNotionTool } from './tools/sync-notion.js';
 import {
   createNotionConnectorFromDisk,
@@ -1604,6 +1611,18 @@ export async function startOrchestratorServer(
   );
   registry.register(makeUpdateTaskTool({ taskStore }));
   registry.register(makeTaskNotesTool({ taskStore, projectStore }));
+  // Phase 8D.1 — agent-native automation management (mirrors the
+  // `symphony automations` CLI). Always registered: `automationStore` is
+  // shared (SQLite/WAL), so a Maestro-created automation fires on the
+  // Process-B scheduler's next tick. create_automation routes an omitted
+  // `project:` through the active-project cursor (like create_task).
+  registry.register(
+    makeCreateAutomationTool({ automationStore, projectStore, resolveProjectPath }),
+  );
+  registry.register(makeListAutomationsTool({ automationStore }));
+  registry.register(makeRemoveAutomationTool({ automationStore }));
+  registry.register(makeSetAutomationEnabledTool({ automationStore }));
+  registry.register(makeRunAutomationTool({ automationStore }));
   // Phase 8A — sync_notion is registered ONLY when a Notion connector is
   // active (configured + token present). Maestro's prompt instructs it to
   // call this only on an explicit "sync notion" request; absent the

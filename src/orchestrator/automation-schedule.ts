@@ -188,6 +188,57 @@ export function parseSchedule(raw: string): AutomationSchedule {
   return schedule;
 }
 
+/** Parse `HH:MM` (24h) into {hour, minute}. Throws on a malformed value. */
+export function parseAtTime(at: string): { hour: number; minute: number } {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(at);
+  if (m === null) {
+    throw new InvalidScheduleError(`time must be HH:MM (got '${at}')`);
+  }
+  return { hour: Number(m[1]), minute: Number(m[2]) };
+}
+
+export interface ScheduleFlags {
+  /** Interval type: hourly | daily | weekly | monthly. */
+  readonly every: string;
+  /** Time of day, `HH:MM` (24h). Hourly uses only the minute. */
+  readonly at?: string;
+  /** Day of week for weekly (sun..sat). */
+  readonly on?: string;
+  /** Day of month for monthly (1-31), as a string. */
+  readonly day?: string;
+}
+
+/**
+ * Assemble + validate an {@link AutomationSchedule} from flat string flags.
+ * Shared by the `symphony automations add` CLI AND the `create_automation`
+ * MCP tool so the human and agent paths build schedules identically. Throws
+ * {@link InvalidScheduleError} on a malformed combination.
+ */
+export function buildScheduleFromFlags(input: ScheduleFlags): AutomationSchedule {
+  const type = input.every as ScheduleType;
+  if (!VALID_SCHEDULE_TYPES.includes(type)) {
+    throw new InvalidScheduleError(
+      `interval must be one of ${VALID_SCHEDULE_TYPES.join(' | ')} (got '${input.every}')`,
+    );
+  }
+  const time = input.at !== undefined ? parseAtTime(input.at) : undefined;
+  const schedule: AutomationSchedule = {
+    type,
+    // Hourly ignores the hour component; everything else honors the time.
+    ...(time !== undefined && type !== 'hourly' ? { hour: time.hour } : {}),
+    ...(time !== undefined ? { minute: time.minute } : {}),
+    ...(type === 'weekly' && input.on !== undefined
+      ? { dayOfWeek: input.on.toLowerCase() as DayOfWeek }
+      : {}),
+    ...(type === 'monthly' && input.day !== undefined ? { dayOfMonth: Number(input.day) } : {}),
+  };
+  if (type === 'weekly' && schedule.dayOfWeek !== undefined && !DAY_ORDER.includes(schedule.dayOfWeek)) {
+    throw new InvalidScheduleError(`day of week must be one of ${DAY_ORDER.join(' | ')} (got '${input.on}')`);
+  }
+  validateSchedule(schedule);
+  return schedule;
+}
+
 /** Human-readable one-line description for the `automations list` CLI. */
 export function describeSchedule(schedule: AutomationSchedule): string {
   const hh = String(schedule.hour ?? 0).padStart(2, '0');
