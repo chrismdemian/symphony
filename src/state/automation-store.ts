@@ -67,10 +67,45 @@ export interface AutomationRunLog {
 export interface CreateAutomationInput {
   readonly name: string;
   readonly prompt: string;
-  readonly schedule: AutomationSchedule;
+  /**
+   * Schedule spec for a SCHEDULE-mode automation. Mutually exclusive with
+   * {@link triggerType} — exactly one of the two must be provided.
+   */
+  readonly schedule?: AutomationSchedule;
+  /**
+   * Phase 8D.2 — trigger type for a TRIGGER-mode automation (e.g.
+   * `'github_issue'`, `'linear_issue'`). Mutually exclusive with
+   * {@link schedule}. A trigger automation has `nextRunAt = null` (the
+   * scheduler never claims it; the trigger engine does on a new event).
+   */
+  readonly triggerType?: string;
+  /**
+   * Phase 8D.2 — optional JSON trigger config (event filters). Stored as-is;
+   * filter ENFORCEMENT is 8D.4. Ignored unless {@link triggerType} is set.
+   */
+  readonly triggerConfig?: string | null;
   readonly projectId?: string | null;
   /** Defaults to true. A disabled automation is never claimed. */
   readonly enabled?: boolean;
+}
+
+/**
+ * Validate a {@link CreateAutomationInput}: exactly one of `schedule` /
+ * `triggerType` must be present. Shared by both store impls so the human
+ * (CLI), agent (MCP tool), and direct-store paths reject the same way.
+ */
+export function validateCreateAutomationInput(input: CreateAutomationInput): void {
+  const hasSchedule = input.schedule !== undefined;
+  const hasTrigger = input.triggerType !== undefined;
+  if (hasSchedule && hasTrigger) {
+    throw new Error('automation cannot have both a schedule and a triggerType');
+  }
+  if (!hasSchedule && !hasTrigger) {
+    throw new Error('automation requires either a schedule or a triggerType');
+  }
+  if (hasTrigger && (input.triggerType ?? '').trim().length === 0) {
+    throw new Error('triggerType must not be empty');
+  }
 }
 
 /** A claimed run awaiting delivery to Maestro (joined automation fields). */
@@ -80,12 +115,24 @@ export interface PendingRun {
   readonly automationName: string;
   readonly prompt: string;
   readonly projectId: string | null;
+  /**
+   * Phase 8D.2 — the JSON of the firing event for a TRIGGER-claimed run, or
+   * null for a scheduled run. The injector parses it to enrich the prompt
+   * (`[Automation … triggered by …]`). It rides the run log's reserved
+   * `trigger_event` column.
+   */
+  readonly triggerEvent: string | null;
 }
 
-/** Result of an atomic claim: the new run-log id + the advanced next-run. */
+/** Result of an atomic schedule claim: the new run-log id + the advanced next-run. */
 export interface ClaimResult {
   readonly runLogId: number;
   readonly nextRunAt: string;
+}
+
+/** Result of an atomic trigger claim: just the new run-log id (no schedule to advance). */
+export interface TriggerClaimResult {
+  readonly runLogId: number;
 }
 
 export interface AutomationStore {
@@ -109,6 +156,13 @@ export interface AutomationStore {
    */
   listDue(nowIso: string): readonly AutomationRecord[];
   /**
+   * Phase 8D.2 — enabled, not in-flight, TRIGGER-mode (`trigger_type IS NOT
+   * NULL`). The trigger engine's poll input. In-flight automations are
+   * excluded so a trigger fires at most one event per automation at a time
+   * (the rest fire in later cycles once the active run completes).
+   */
+  listActiveTriggers(): readonly AutomationRecord[];
+  /**
    * Atomically claim a due automation: `in_flight = 1`, `run_count + 1`,
    * `next_run_at = nextRunAt`, and INSERT a `'running'` run log
    * (`started_at = nowIso`). Returns the new run-log id, or undefined if the
@@ -116,6 +170,19 @@ export interface AutomationStore {
    * guard). Run-log retention is trimmed here.
    */
   claim(id: string, nextRunAt: string, nowIso: string): ClaimResult | undefined;
+  /**
+   * Phase 8D.2 — atomically claim a TRIGGER automation for a fired event:
+   * `in_flight = 1`, `run_count + 1`, and INSERT a `'running'` run log whose
+   * `trigger_event` carries `triggerEventJson`. Does NOT advance
+   * `next_run_at` (triggers have none). Returns the new run-log id, or
+   * undefined if the row was already claimed (WHERE in_flight = 0 guard).
+   * Run-log retention is trimmed here, same as {@link claim}.
+   */
+  claimTrigger(
+    id: string,
+    triggerEventJson: string,
+    nowIso: string,
+  ): TriggerClaimResult | undefined;
   /** Run logs still `'running'` (claimed, not yet completed) — delivery queue. */
   listPending(): readonly PendingRun[];
   /**
@@ -199,17 +266,22 @@ export class InMemoryAutomationStore implements AutomationStore {
   }
 
   create(input: CreateAutomationInput): AutomationRecord {
+    validateCreateAutomationInput(input);
     const nowIso = new Date(this.now()).toISOString();
-    const scheduleJson = serializeSchedule(input.schedule);
+    const scheduleJson =
+      input.schedule !== undefined ? serializeSchedule(input.schedule) : null;
     const row: MemAutomation = {
       id: generateAutomationId(),
       projectId: input.projectId ?? null,
       name: input.name,
       prompt: input.prompt,
       scheduleJson,
-      triggerType: null,
-      triggerConfig: null,
-      nextRunAt: computeNextRun(input.schedule, new Date(this.now())),
+      triggerType: input.triggerType ?? null,
+      triggerConfig: input.triggerType !== undefined ? input.triggerConfig ?? null : null,
+      nextRunAt:
+        input.schedule !== undefined
+          ? computeNextRun(input.schedule, new Date(this.now()))
+          : null,
       lastRunAt: null,
       lastRunResult: null,
       runCount: 0,
@@ -268,6 +340,12 @@ export class InMemoryAutomationStore implements AutomationStore {
       .map(toRecord);
   }
 
+  listActiveTriggers(): readonly AutomationRecord[] {
+    return Array.from(this.automations.values())
+      .filter((r) => r.enabled && !r.inFlight && r.triggerType !== null)
+      .map(toRecord);
+  }
+
   claim(id: string, nextRunAt: string, nowIso: string): ClaimResult | undefined {
     const row = this.automations.get(id);
     if (row === undefined || row.inFlight) return undefined;
@@ -290,6 +368,32 @@ export class InMemoryAutomationStore implements AutomationStore {
     return { runLogId, nextRunAt };
   }
 
+  claimTrigger(
+    id: string,
+    triggerEventJson: string,
+    nowIso: string,
+  ): TriggerClaimResult | undefined {
+    const row = this.automations.get(id);
+    if (row === undefined || row.inFlight) return undefined;
+    row.inFlight = true;
+    row.runCount += 1;
+    // No nextRunAt advance — a trigger automation has no schedule.
+    const runLogId = this.nextRunLogId;
+    this.nextRunLogId += 1;
+    this.runLogs.push({
+      id: runLogId,
+      automationId: id,
+      taskId: null,
+      startedAt: nowIso,
+      finishedAt: null,
+      status: 'running',
+      error: null,
+      triggerEvent: triggerEventJson,
+    });
+    this.trimRunLogs(id);
+    return { runLogId };
+  }
+
   listPending(): readonly PendingRun[] {
     const out: PendingRun[] = [];
     for (const log of this.runLogs) {
@@ -302,6 +406,7 @@ export class InMemoryAutomationStore implements AutomationStore {
         automationName: auto.name,
         prompt: auto.prompt,
         projectId: auto.projectId,
+        triggerEvent: log.triggerEvent,
       });
     }
     return out;
@@ -342,12 +447,16 @@ export class InMemoryAutomationStore implements AutomationStore {
       count += 1;
     }
     // Audit m2 — parity with the SQLite store's `clearOrphanFlags`, which
-    // clears EVERY in_flight=1 row. Normal claims always pair in_flight with
-    // a running log, so this only matters for a (theoretically impossible)
-    // in_flight row with no running log; clearing it keeps the two impls
-    // behavior-identical.
+    // clears EVERY in_flight=1 row AND stamps last_run_result='failure'. Normal
+    // claims always pair in_flight with a running log, so this only matters for
+    // a (theoretically impossible) in_flight row with no running log; clearing
+    // it keeps the two impls behavior-identical (8D.2 audit M-2 stamps the
+    // result field too).
     for (const auto of this.automations.values()) {
-      if (auto.inFlight) auto.inFlight = false;
+      if (auto.inFlight) {
+        auto.inFlight = false;
+        auto.lastRunResult = 'failure';
+      }
     }
     return count;
   }

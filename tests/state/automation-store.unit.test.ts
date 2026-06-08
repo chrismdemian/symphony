@@ -147,4 +147,65 @@ describe.each([
     }
     expect(h.store.listRunLogs(a.id).length).toBeLessThanOrEqual(MAX_RUNS_PER_AUTOMATION);
   });
+
+  // ── Phase 8D.2 — trigger-mode automations ─────────────────────────────────
+
+  it('create rejects neither/both of schedule + triggerType', () => {
+    expect(() => h.store.create({ name: 'x', prompt: 'p' })).toThrow(/either a schedule or a triggerType/);
+    expect(() =>
+      h.store.create({ name: 'x', prompt: 'p', schedule: DAILY, triggerType: 'github_issue' }),
+    ).toThrow(/both a schedule and a triggerType/);
+  });
+
+  it('create trigger automation: no schedule, null nextRunAt, trigger_type stored', () => {
+    const t = h.store.create({ name: 't', prompt: 'triage it', triggerType: 'github_issue' });
+    expect(t.schedule).toBeNull();
+    expect(t.nextRunAt).toBeNull();
+    expect(t.triggerType).toBe('github_issue');
+    expect(t.enabled).toBe(true);
+    // A trigger automation is NOT in the scheduler's due list (next_run_at null).
+    expect(h.store.listDue('2999-01-01T00:00:00.000Z')).toHaveLength(0);
+  });
+
+  it('listActiveTriggers returns enabled, not-in-flight, trigger-mode rows only', () => {
+    const t = h.store.create({ name: 't', prompt: 'p', triggerType: 'github_issue' });
+    h.store.create({ name: 'disabled', prompt: 'p', triggerType: 'linear_issue', enabled: false });
+    h.store.create({ name: 'sched', prompt: 'p', schedule: DAILY }); // schedule-mode excluded
+    const active = h.store.listActiveTriggers();
+    expect(active.map((r) => r.id)).toEqual([t.id]);
+  });
+
+  it('claimTrigger is atomic: in_flight + run_count, NO next_run advance, trigger_event carried', () => {
+    const t = h.store.create({ name: 't', prompt: 'triage', triggerType: 'github_issue' });
+    const eventJson = JSON.stringify({ id: 'github:o/r#1', title: 'Bug', type: 'GitHub issue' });
+    const result = h.store.claimTrigger(t.id, eventJson, '2026-06-08T06:00:01.000Z');
+    expect(result).toBeDefined();
+    const after = h.store.get(t.id)!;
+    expect(after.inFlight).toBe(true);
+    expect(after.runCount).toBe(1);
+    expect(after.nextRunAt).toBeNull(); // never advanced — triggers have no schedule
+    // A second claim while in-flight is refused.
+    expect(h.store.claimTrigger(t.id, eventJson, '2026-06-08T06:00:02.000Z')).toBeUndefined();
+    const pending = h.store.listPending();
+    expect(pending.map((p) => p.runLogId)).toEqual([result!.runLogId]);
+    expect(pending[0]!.triggerEvent).toBe(eventJson);
+    expect(pending[0]!.prompt).toBe('triage');
+  });
+
+  it('listActiveTriggers excludes an in-flight trigger automation; completeRun re-includes it', () => {
+    const t = h.store.create({ name: 't', prompt: 'p', triggerType: 'github_issue' });
+    const claim = h.store.claimTrigger(t.id, '{"id":"github:o/r#1"}', '2026-06-08T06:00:01.000Z')!;
+    expect(h.store.listActiveTriggers()).toHaveLength(0); // in-flight excluded
+    h.store.completeRun(claim.runLogId, 'success', '2026-06-08T06:05:00.000Z');
+    expect(h.store.listActiveTriggers().map((r) => r.id)).toEqual([t.id]);
+    expect(h.store.get(t.id)!.lastRunResult).toBe('success');
+  });
+
+  it('markOrphansFailed also reconciles an orphaned trigger run', () => {
+    const t = h.store.create({ name: 't', prompt: 'p', triggerType: 'github_issue' });
+    h.store.claimTrigger(t.id, '{"id":"github:o/r#1"}', '2026-06-08T06:00:01.000Z');
+    expect(h.store.markOrphansFailed('2026-06-08T07:00:00.000Z')).toBe(1);
+    expect(h.store.get(t.id)!.inFlight).toBe(false);
+    expect(h.store.listActiveTriggers().map((r) => r.id)).toEqual([t.id]);
+  });
 });

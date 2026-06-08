@@ -131,6 +131,11 @@ import { createTaskReadyBroker } from './task-ready-broker.js';
 import { createTaskReadyDispatcher } from './task-ready-dispatcher.js';
 import { createAutomationsBroker, type AutomationsBroker } from './automations-broker.js';
 import { AutomationScheduler } from './automation-scheduler.js';
+import { AutomationTriggerEngine } from './automation-trigger-engine.js';
+import {
+  makeIssueTriggerSource,
+  type TriggerSource,
+} from './automation-trigger-source.js';
 import * as gitOps from './git-ops.js';
 import type {
   AutoMergeBroker,
@@ -284,6 +289,25 @@ export interface OrchestratorServerOptions {
    * when `automationScheduler` is injected directly.
    */
   automationTickIntervalMs?: number;
+  /**
+   * Phase 8D.2 — Override / inject the automation trigger engine. Test seam
+   * (bypasses connector-built sources). Runs under the same gating as the
+   * scheduler (Process B only, automations enabled).
+   */
+  automationTriggerEngine?: AutomationTriggerEngine;
+  /**
+   * Phase 8D.2 test seam — inject the trigger-source map directly (real engine,
+   * fake sources). Ignored when `automationTriggerEngine` is injected. When
+   * omitted, the map is built from the active 8C connectors.
+   */
+  automationTriggerSources?: ReadonlyMap<string, TriggerSource>;
+  /**
+   * Phase 8D.2 test seam — override the trigger poll interval + warm-up delay
+   * (ms). Set huge so the auto-timer never fires and polls are driven manually
+   * via the handle. Ignored when `automationTriggerEngine` is injected.
+   */
+  automationTriggerPollIntervalMs?: number;
+  automationTriggerWarmupMs?: number;
   /**
    * Phase 3R — override the audit store. Test seam: pass an in-memory
    * fake to assert audit rows without touching SQLite. Defaults to a
@@ -492,6 +516,8 @@ export interface OrchestratorServerHandle {
   automationsBroker: AutomationsBroker;
   /** Phase 8D.1 — present when the scheduler was activated (Process B, enabled). */
   automationScheduler?: AutomationScheduler;
+  /** Phase 8D.2 — present when the trigger engine was activated (Process B, enabled). */
+  automationTriggerEngine?: AutomationTriggerEngine;
   /** Phase 3R — exposed for tests + the RPC layer's `audit.list`. */
   auditLogger: AuditLogger;
   /** Phase 3R — exposed for tests + the RPC layer's `audit.list`. */
@@ -869,6 +895,10 @@ export async function startOrchestratorServer(
   // Phase 8D.1 — automation scheduler. Started below (after the dispatch
   // context cursor exists); stopped first in `close()`.
   let automationScheduler: AutomationScheduler | undefined;
+  // Phase 8D.2 — automation trigger engine. Built from the active 8C
+  // connectors (below, after they're constructed), started + stopped
+  // alongside the scheduler.
+  let automationTriggerEngine: AutomationTriggerEngine | undefined;
   // Phase 8C — Linear connector. Injected (test seam) or auto-constructed from
   // the stored API key when activated by the CLI boot path (`linear.enabled`).
   // Undefined when no key is stored — the `sync_linear` tool + writeback hook
@@ -1720,6 +1750,58 @@ export async function startOrchestratorServer(
       .catch(() => {})
       .finally(() => scheduler.start());
   }
+  // Phase 8D.2 — automation trigger engine. Same EXACTLY-ONE gating as the
+  // scheduler (Process B only, automations enabled). Built from whichever 8C
+  // connectors are active; if none are configured the source map is empty and
+  // the engine simply polls nothing. Started right after the scheduler.
+  if (options.automationTriggerEngine !== undefined) {
+    automationTriggerEngine = options.automationTriggerEngine;
+  } else if (
+    options.automations?.enabled === true &&
+    options.plugins?.enabled !== true &&
+    bootAutomationsEnabled !== false
+  ) {
+    const triggerSources: ReadonlyMap<string, TriggerSource> =
+      options.automationTriggerSources ??
+      (() => {
+        const sources = new Map<string, TriggerSource>();
+        const add = (
+          connector: IssueConnectorHandle | undefined,
+          triggerType: string,
+          displayType: string,
+          log: (level: 'info' | 'warn' | 'error', message: string) => void,
+        ): void => {
+          if (connector !== undefined) {
+            sources.set(
+              triggerType,
+              makeIssueTriggerSource({ connector, triggerType, displayType, log }),
+            );
+          }
+        };
+        add(linearConnector, 'linear_issue', 'Linear issue', linearLog);
+        add(githubConnector, 'github_issue', 'GitHub issue', githubLog);
+        add(jiraConnector, 'jira_issue', 'Jira issue', jiraLog);
+        add(gitlabConnector, 'gitlab_issue', 'GitLab issue', gitlabLog);
+        add(plainConnector, 'plain_thread', 'Plain thread', plainLog);
+        add(forgejoConnector, 'forgejo_issue', 'Forgejo issue', forgejoLog);
+        return sources;
+      })();
+    automationTriggerEngine = new AutomationTriggerEngine({
+      store: automationStore,
+      sources: triggerSources,
+      broker: automationsBroker,
+      ...(options.automationTriggerPollIntervalMs !== undefined
+        ? { pollIntervalMs: options.automationTriggerPollIntervalMs }
+        : {}),
+      ...(options.automationTriggerWarmupMs !== undefined
+        ? { warmupMs: options.automationTriggerWarmupMs }
+        : {}),
+      log: automationLog,
+    });
+  }
+  if (automationTriggerEngine !== undefined) {
+    automationTriggerEngine.start();
+  }
   // Phase 8C — sync_linear is registered ONLY when a Linear connector is active
   // (API key present). Maestro's prompt calls it on an explicit "sync linear"
   // request; absent the connector the tool simply isn't on the surface.
@@ -2067,10 +2149,14 @@ export async function startOrchestratorServer(
 
   const close = async (): Promise<void> => {
     offModeChange();
-    // Phase 8D.1 — stop the scheduler FIRST (it's a task source — quiesce it
-    // before stores/broker tear down so no tick claims a run mid-shutdown).
+    // Phase 8D.1/8D.2 — stop the scheduler + trigger engine FIRST (both are
+    // task sources — quiesce them before stores/broker tear down so no tick or
+    // poll claims a run mid-shutdown).
     if (automationScheduler !== undefined) {
       await automationScheduler.stop().catch(() => {});
+    }
+    if (automationTriggerEngine !== undefined) {
+      await automationTriggerEngine.stop().catch(() => {});
     }
     // Phase 8B — stop the vault watcher next so no late fs event ingests a
     // task into stores that are about to tear down. Independent + best-effort.
@@ -2170,6 +2256,7 @@ export async function startOrchestratorServer(
     automationStore,
     automationsBroker,
     ...(automationScheduler !== undefined ? { automationScheduler } : {}),
+    ...(automationTriggerEngine !== undefined ? { automationTriggerEngine } : {}),
     auditLogger,
     auditStore,
     ...(pluginHost !== undefined ? { pluginHost } : {}),

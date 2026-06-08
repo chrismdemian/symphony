@@ -895,9 +895,13 @@ automations
 
 automations
   .command('add <name>')
-  .description('Add a scheduled automation (e.g. --every daily --at 09:00).')
+  .description('Add a schedule (--every daily --at 09:00) or trigger (--trigger github_issue) automation.')
   .requiredOption('--prompt <text>', 'The prompt fired into Maestro when the automation runs.')
-  .requiredOption('--every <interval>', 'Schedule interval: hourly | daily | weekly | monthly.')
+  .option('--every <interval>', 'SCHEDULE interval: hourly | daily | weekly | monthly. Mutually exclusive with --trigger.')
+  .option(
+    '--trigger <type>',
+    'TRIGGER event source: github_issue | linear_issue | jira_issue | gitlab_issue | plain_thread | forgejo_issue. Mutually exclusive with --every.',
+  )
   .option('--at <hh:mm>', 'Time of day (24h), e.g. 09:30. Hourly uses only the minute.')
   .option('--on <day>', 'Day of week for --every weekly: sun|mon|tue|wed|thu|fri|sat.')
   .option('--day <n>', 'Day of month (1-31) for --every monthly.')
@@ -908,7 +912,8 @@ automations
       name: string,
       opts: {
         prompt: string;
-        every: string;
+        every?: string;
+        trigger?: string;
         at?: string;
         on?: string;
         day?: string;
@@ -920,7 +925,8 @@ automations
       const result = runAutomationsAdd({
         name,
         prompt: opts.prompt,
-        every: opts.every,
+        ...(opts.every !== undefined ? { every: opts.every } : {}),
+        ...(opts.trigger !== undefined ? { trigger: opts.trigger } : {}),
         ...(opts.at !== undefined ? { at: opts.at } : {}),
         ...(opts.on !== undefined ? { on: opts.on } : {}),
         ...(opts.day !== undefined ? { day: opts.day } : {}),

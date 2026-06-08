@@ -6,6 +6,7 @@ import {
 } from '../orchestrator/automation-schedule.js';
 import {
   generateAutomationId,
+  validateCreateAutomationInput,
   MAX_RUNS_PER_AUTOMATION,
   MAX_TOTAL_RUNS,
   type AutomationRecord,
@@ -15,6 +16,7 @@ import {
   type CreateAutomationInput,
   type PendingRun,
   type RunStatus,
+  type TriggerClaimResult,
 } from './automation-store.js';
 
 interface AutomationRow {
@@ -51,6 +53,7 @@ interface PendingRow {
   name: string;
   prompt: string;
   project_id: string | null;
+  trigger_event: string | null;
 }
 
 export interface SqliteAutomationStoreOptions {
@@ -75,8 +78,11 @@ export class SqliteAutomationStore implements AutomationStore {
     setEnabled: Statement;
     forceDue: Statement;
     listDue: Statement;
+    listActiveTriggers: Statement;
     claimUpdate: Statement;
+    claimTriggerUpdate: Statement;
     insertRunLog: Statement;
+    insertTriggerRunLog: Statement;
     trimPerAutomation: Statement;
     trimGlobal: Statement;
     listPending: Statement;
@@ -89,6 +95,11 @@ export class SqliteAutomationStore implements AutomationStore {
     listRunLogsLimit: Statement;
   };
   private readonly claimTxn: (id: string, nextRunAt: string, nowIso: string) => ClaimResult | undefined;
+  private readonly claimTriggerTxn: (
+    id: string,
+    triggerEventJson: string,
+    nowIso: string,
+  ) => TriggerClaimResult | undefined;
   private readonly completeTxn: (
     runLogId: number,
     status: 'success' | 'failure',
@@ -126,14 +137,31 @@ export class SqliteAutomationStore implements AutomationStore {
             AND next_run_at IS NOT NULL AND next_run_at <= @now
           ORDER BY next_run_at ASC, id ASC`,
       ),
+      // Phase 8D.2 — trigger-mode poll input. rowid tiebreak matches the
+      // in-memory store's insertion order (same created_at ms).
+      listActiveTriggers: db.prepare(
+        `SELECT * FROM automations
+          WHERE enabled = 1 AND in_flight = 0 AND trigger_type IS NOT NULL
+          ORDER BY created_at ASC, rowid ASC`,
+      ),
       claimUpdate: db.prepare(
         `UPDATE automations
             SET in_flight = 1, run_count = run_count + 1, next_run_at = @next
           WHERE id = @id AND in_flight = 0`,
       ),
+      // Phase 8D.2 — trigger claim does NOT touch next_run_at (always null).
+      claimTriggerUpdate: db.prepare(
+        `UPDATE automations
+            SET in_flight = 1, run_count = run_count + 1
+          WHERE id = @id AND in_flight = 0`,
+      ),
       insertRunLog: db.prepare(
         `INSERT INTO automation_run_logs (automation_id, started_at, status)
          VALUES (@automation_id, @started_at, 'running')`,
+      ),
+      insertTriggerRunLog: db.prepare(
+        `INSERT INTO automation_run_logs (automation_id, started_at, status, trigger_event)
+         VALUES (@automation_id, @started_at, 'running', @trigger_event)`,
       ),
       trimPerAutomation: db.prepare(
         `DELETE FROM automation_run_logs
@@ -154,7 +182,8 @@ export class SqliteAutomationStore implements AutomationStore {
       ),
       listPending: db.prepare(
         `SELECT l.id AS run_log_id, l.automation_id AS automation_id,
-                a.name AS name, a.prompt AS prompt, a.project_id AS project_id
+                a.name AS name, a.prompt AS prompt, a.project_id AS project_id,
+                l.trigger_event AS trigger_event
            FROM automation_run_logs l
            JOIN automations a ON a.id = l.automation_id
           WHERE l.status = 'running'
@@ -201,6 +230,22 @@ export class SqliteAutomationStore implements AutomationStore {
       },
     );
 
+    this.claimTriggerTxn = db.transaction(
+      (id: string, triggerEventJson: string, nowIso: string): TriggerClaimResult | undefined => {
+        const updated = this.stmts.claimTriggerUpdate.run({ id });
+        if (updated.changes !== 1) return undefined;
+        const inserted = this.stmts.insertTriggerRunLog.run({
+          automation_id: id,
+          started_at: nowIso,
+          trigger_event: triggerEventJson,
+        });
+        const runLogId = Number(inserted.lastInsertRowid);
+        this.stmts.trimPerAutomation.run({ id, cap: MAX_RUNS_PER_AUTOMATION });
+        this.stmts.trimGlobal.run({ cap: MAX_TOTAL_RUNS });
+        return { runLogId };
+      },
+    );
+
     this.completeTxn = db.transaction(
       (runLogId: number, status: 'success' | 'failure', nowIso: string, error: string | null): boolean => {
         const res = this.stmts.completeLog.run({ id: runLogId, status, now: nowIso, error });
@@ -223,9 +268,11 @@ export class SqliteAutomationStore implements AutomationStore {
   }
 
   create(input: CreateAutomationInput): AutomationRecord {
+    validateCreateAutomationInput(input);
     const nowMs = this.now();
     const nowIso = new Date(nowMs).toISOString();
-    const scheduleJson = serializeSchedule(input.schedule);
+    const scheduleJson =
+      input.schedule !== undefined ? serializeSchedule(input.schedule) : null;
     const id = generateAutomationId();
     this.stmts.insert.run({
       id,
@@ -233,9 +280,10 @@ export class SqliteAutomationStore implements AutomationStore {
       name: input.name,
       prompt: input.prompt,
       schedule: scheduleJson,
-      trigger_type: null,
-      trigger_config: null,
-      next_run_at: computeNextRun(input.schedule, new Date(nowMs)),
+      trigger_type: input.triggerType ?? null,
+      trigger_config: input.triggerType !== undefined ? input.triggerConfig ?? null : null,
+      next_run_at:
+        input.schedule !== undefined ? computeNextRun(input.schedule, new Date(nowMs)) : null,
       last_run_at: null,
       last_run_result: null,
       run_count: 0,
@@ -275,8 +323,20 @@ export class SqliteAutomationStore implements AutomationStore {
     return (this.stmts.listDue.all({ now: nowIso }) as AutomationRow[]).map(rowToRecord);
   }
 
+  listActiveTriggers(): readonly AutomationRecord[] {
+    return (this.stmts.listActiveTriggers.all() as AutomationRow[]).map(rowToRecord);
+  }
+
   claim(id: string, nextRunAt: string, nowIso: string): ClaimResult | undefined {
     return this.claimTxn(id, nextRunAt, nowIso);
+  }
+
+  claimTrigger(
+    id: string,
+    triggerEventJson: string,
+    nowIso: string,
+  ): TriggerClaimResult | undefined {
+    return this.claimTriggerTxn(id, triggerEventJson, nowIso);
   }
 
   listPending(): readonly PendingRun[] {
@@ -287,6 +347,7 @@ export class SqliteAutomationStore implements AutomationStore {
       automationName: r.name,
       prompt: r.prompt,
       projectId: r.project_id,
+      triggerEvent: r.trigger_event,
     }));
   }
 

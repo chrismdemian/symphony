@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import type { ProjectStore } from '../../projects/types.js';
 import type { AutomationRecord, AutomationStore } from '../../state/automation-store.js';
-import { buildScheduleFromFlags, describeSchedule } from '../automation-schedule.js';
+import {
+  buildScheduleFromFlags,
+  describeAutomationMode,
+  describeSchedule,
+} from '../automation-schedule.js';
+import { KNOWN_TRIGGER_TYPES } from '../automation-trigger-source.js';
 import type { ToolRegistration } from '../registry.js';
 
 /**
@@ -31,6 +36,7 @@ function snapshot(r: AutomationRecord): Record<string, unknown> {
     projectId: r.projectId,
     schedule: r.schedule,
     scheduleText: r.schedule !== null ? describeSchedule(r.schedule) : null,
+    triggerType: r.triggerType,
     enabled: r.enabled,
     inFlight: r.inFlight,
     nextRunAt: r.nextRunAt,
@@ -41,6 +47,7 @@ function snapshot(r: AutomationRecord): Record<string, unknown> {
   };
 }
 
+
 // ── create_automation ──────────────────────────────────────────────────────
 
 const createShape = {
@@ -49,9 +56,20 @@ const createShape = {
     .string()
     .min(1)
     .describe(
-      'The prompt fired into you (Maestro) each time the automation runs. Write it as a complete, self-contained instruction — it arrives as a fresh user turn with no prior context.',
+      'The prompt fired into you (Maestro) each time the automation runs. Write it as a complete, self-contained instruction — it arrives as a fresh user turn with no prior context. For a trigger automation, event context (the issue title + URL) is prepended automatically.',
     ),
-  every: z.enum(EVERY).describe('Schedule interval.'),
+  every: z
+    .enum(EVERY)
+    .optional()
+    .describe(
+      'Schedule interval for a SCHEDULE automation (fires on a clock). Mutually exclusive with `triggerType`. Provide exactly one of `every` / `triggerType`.',
+    ),
+  triggerType: z
+    .enum(KNOWN_TRIGGER_TYPES)
+    .optional()
+    .describe(
+      'Event source for a TRIGGER automation (fires when a new issue/thread appears). One of github_issue | linear_issue | jira_issue | gitlab_issue | plain_thread | forgejo_issue. Requires the matching `symphony config <connector>`. Mutually exclusive with `every`.',
+    ),
   at: z
     .string()
     .optional()
@@ -90,26 +108,45 @@ export function makeCreateAutomationTool(
   return {
     name: 'create_automation',
     description:
-      'Schedule an automation that fires a prompt into you (Maestro) on a recurring schedule (hourly/daily/weekly/monthly). Use this for recurring user requests like "every morning, summarize new GitHub issues" or "every Friday at 5pm, run the test suite and report failures". The automation runs unattended whenever a Symphony session is open. Available in PLAN and ACT mode.',
+      'Create an automation that fires a prompt into you (Maestro) automatically. Two modes: SCHEDULE (`every: hourly|daily|weekly|monthly`) for recurring clock-based runs like "every morning, summarize new GitHub issues"; or TRIGGER (`triggerType: github_issue|linear_issue|…`) for event-driven runs like "whenever a new GitHub issue appears, triage it". Provide exactly one of `every` / `triggerType`. The automation runs unattended whenever a Symphony session is open. Available in PLAN and ACT mode.',
     scope: 'both',
     capabilities: [],
     inputSchema: createShape,
-    handler: ({ name, prompt, every, at, on, day, project, enabled }) => {
-      let schedule;
-      try {
-        schedule = buildScheduleFromFlags({
-          every,
-          ...(at !== undefined ? { at } : {}),
-          ...(on !== undefined ? { on } : {}),
-          ...(day !== undefined ? { day: String(day) } : {}),
-        });
-      } catch (err) {
+    handler: ({ name, prompt, every, triggerType, at, on, day, project, enabled }) => {
+      // Exactly one of schedule / trigger.
+      if (every !== undefined && triggerType !== undefined) {
         return {
           content: [
-            { type: 'text', text: `create_automation: ${err instanceof Error ? err.message : String(err)}` },
+            { type: 'text', text: 'create_automation: provide exactly one of `every` (schedule) or `triggerType` (trigger), not both.' },
           ],
           isError: true,
         };
+      }
+      if (every === undefined && triggerType === undefined) {
+        return {
+          content: [
+            { type: 'text', text: 'create_automation: provide either `every` (schedule) or `triggerType` (trigger).' },
+          ],
+          isError: true,
+        };
+      }
+      let schedule;
+      if (every !== undefined) {
+        try {
+          schedule = buildScheduleFromFlags({
+            every,
+            ...(at !== undefined ? { at } : {}),
+            ...(on !== undefined ? { on } : {}),
+            ...(day !== undefined ? { day: String(day) } : {}),
+          });
+        } catch (err) {
+          return {
+            content: [
+              { type: 'text', text: `create_automation: ${err instanceof Error ? err.message : String(err)}` },
+            ],
+            isError: true,
+          };
+        }
       }
       // Resolve the target project (cursor-aware, mirrors create_task).
       let projectId: string | null = null;
@@ -131,7 +168,8 @@ export function makeCreateAutomationTool(
       const record = deps.automationStore.create({
         name,
         prompt,
-        schedule,
+        ...(schedule !== undefined ? { schedule } : {}),
+        ...(triggerType !== undefined ? { triggerType } : {}),
         projectId,
         enabled: enabled !== false,
       });
@@ -140,8 +178,9 @@ export function makeCreateAutomationTool(
           {
             type: 'text',
             text:
-              `Automation ${record.id} '${record.name}' created — ${describeSchedule(schedule)}` +
-              `${record.enabled ? '' : ' [disabled]'}; next run ${record.nextRunAt ?? '(none)'}.`,
+              `Automation ${record.id} '${record.name}' created — ${describeAutomationMode(record.schedule, record.triggerType)}` +
+              `${record.enabled ? '' : ' [disabled]'}` +
+              `${record.nextRunAt !== null ? `; next run ${record.nextRunAt}` : ''}.`,
           },
         ],
         structuredContent: snapshot(record),
@@ -172,7 +211,7 @@ export function makeListAutomationsTool(deps: {
           : records
               .map(
                 (r) =>
-                  `${r.id}  ${r.name} — ${r.schedule !== null ? describeSchedule(r.schedule) : '(no schedule)'}` +
+                  `${r.id}  ${r.name} — ${describeAutomationMode(r.schedule, r.triggerType)}` +
                   `${r.enabled ? '' : ' [disabled]'}${r.inFlight ? ' [running]' : ''}` +
                   `  next ${r.nextRunAt ?? '(none)'}  runs ${r.runCount}`,
               )

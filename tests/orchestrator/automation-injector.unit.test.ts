@@ -60,7 +60,14 @@ function makeChannel() {
 }
 
 function run(id: number, name = `auto-${id}`): PendingRun {
-  return { runLogId: id, automationId: `a${id}`, automationName: name, prompt: `do ${id}`, projectId: null };
+  return {
+    runLogId: id,
+    automationId: `a${id}`,
+    automationName: name,
+    prompt: `do ${id}`,
+    projectId: null,
+    triggerEvent: null,
+  };
 }
 
 interface Rig {
@@ -214,5 +221,54 @@ describe('AutomationInjector', () => {
     await flush();
     expect(rig.sendUserMessage).toHaveBeenCalledTimes(1);
     await rig.injector.stop();
+  });
+});
+
+describe('formatAutomationPrompt', () => {
+  const base: PendingRun = {
+    runLogId: 1,
+    automationId: 'a1',
+    automationName: 'Issue triage',
+    prompt: 'Triage the issue.',
+    projectId: null,
+    triggerEvent: null,
+  };
+
+  it('scheduled run (no triggerEvent) uses the scheduled prefix', () => {
+    expect(formatAutomationPrompt(base)).toBe(
+      '[Scheduled automation: Issue triage]\n\nTriage the issue.',
+    );
+  });
+
+  it('triggered run prepends event context (type + title + URL + extra)', () => {
+    const triggerEvent = JSON.stringify({
+      id: 'github:o/r#42',
+      title: 'Login broken',
+      url: 'https://x/42',
+      type: 'GitHub issue',
+      extra: 'o/r#42',
+    });
+    expect(formatAutomationPrompt({ ...base, triggerEvent })).toBe(
+      '[Automation "Issue triage" triggered by GitHub issue: "Login broken"]\n' +
+        'URL: https://x/42\n' +
+        'o/r#42\n\n' +
+        'Triage the issue.',
+    );
+  });
+
+  it('triggered run omits the URL line when there is no url', () => {
+    const triggerEvent = JSON.stringify({ title: 'No url', type: 'Linear issue' });
+    expect(formatAutomationPrompt({ ...base, triggerEvent })).toBe(
+      '[Automation "Issue triage" triggered by Linear issue: "No url"]\n\nTriage the issue.',
+    );
+  });
+
+  it('malformed trigger-event JSON falls back to the scheduled prefix (never drops the turn)', () => {
+    expect(formatAutomationPrompt({ ...base, triggerEvent: 'not json' })).toBe(
+      '[Scheduled automation: Issue triage]\n\nTriage the issue.',
+    );
+    expect(formatAutomationPrompt({ ...base, triggerEvent: '[]' })).toBe(
+      '[Scheduled automation: Issue triage]\n\nTriage the issue.',
+    );
   });
 });
