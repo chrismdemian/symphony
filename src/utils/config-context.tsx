@@ -344,6 +344,10 @@ export function applyPatchInMemory(
   if (patch.pluginsEnabled !== undefined) {
     next.pluginsEnabled = patch.pluginsEnabled;
   }
+  // Phase 8D.1 — automation master switch. Mirror of disk-side mergePatch.
+  if (patch.automationsEnabled !== undefined) {
+    next.automationsEnabled = patch.automationsEnabled;
+  }
   if (patch.notifications !== undefined) {
     next.notifications = { ...current.notifications, ...patch.notifications };
   }

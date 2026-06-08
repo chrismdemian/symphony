@@ -14,6 +14,7 @@ import type { WorkerEventBroker } from './event-broker.js';
 import type { CompletionsBroker } from '../orchestrator/completion-summarizer-types.js';
 import type { AutoMergeBroker } from '../orchestrator/auto-merge-types.js';
 import type { TaskReadyBroker } from '../orchestrator/task-ready-types.js';
+import type { AutomationsBroker } from '../orchestrator/automations-broker.js';
 
 /**
  * Per-connection dispatcher — Phase 2B.2.
@@ -96,6 +97,15 @@ export interface DispatcherOptions {
    * subscribes to that topic resolve `not_found`.
    */
   readonly taskReadyBroker?: TaskReadyBroker;
+  /**
+   * Phase 8D.1 — optional automations broker. When supplied,
+   * `subscribe('automations.events')` is accepted; subscribers receive a
+   * wake hint each time the scheduler claims a due automation. When omitted,
+   * subscribes to that topic resolve `not_found`. The hint is best-effort
+   * (drop-on-backpressure) — the launcher's `automations.takePending` poll
+   * is the reliable delivery path.
+   */
+  readonly automationsBroker?: AutomationsBroker;
 }
 
 interface SubscriptionEntry {
@@ -107,6 +117,7 @@ const WORKERS_EVENTS_TOPIC = 'workers.events' as const;
 const COMPLETIONS_EVENTS_TOPIC = 'completions.events' as const;
 const AUTO_MERGE_EVENTS_TOPIC = 'auto-merge.events' as const;
 const TASK_READY_EVENTS_TOPIC = 'task-ready.events' as const;
+const AUTOMATIONS_EVENTS_TOPIC = 'automations.events' as const;
 
 export class Dispatcher {
   private readonly router: RouterMap;
@@ -114,6 +125,7 @@ export class Dispatcher {
   private readonly completionsBroker: CompletionsBroker | undefined;
   private readonly autoMergeBroker: AutoMergeBroker | undefined;
   private readonly taskReadyBroker: TaskReadyBroker | undefined;
+  private readonly automationsBroker: AutomationsBroker | undefined;
   private readonly send: DispatcherSend;
   private readonly signal: AbortSignal;
   private readonly closeOnProtocolError: DispatcherProtocolViolationCloser;
@@ -127,6 +139,7 @@ export class Dispatcher {
     this.completionsBroker = opts.completionsBroker;
     this.autoMergeBroker = opts.autoMergeBroker;
     this.taskReadyBroker = opts.taskReadyBroker;
+    this.automationsBroker = opts.automationsBroker;
     this.send = opts.send;
     this.signal = opts.signal;
     this.closeOnProtocolError = opts.closeOnProtocolError ?? (() => {});
@@ -235,6 +248,10 @@ export class Dispatcher {
     }
     if (frame.topic === TASK_READY_EVENTS_TOPIC) {
       this.handleTaskReadySubscribe(frame);
+      return;
+    }
+    if (frame.topic === AUTOMATIONS_EVENTS_TOPIC) {
+      this.handleAutomationsSubscribe(frame);
       return;
     }
     if (frame.topic !== WORKERS_EVENTS_TOPIC) {
@@ -370,6 +387,34 @@ export class Dispatcher {
     });
     this.subscriptions.set(frame.id, { topic: TASK_READY_EVENTS_TOPIC, unsubscribe });
     this.sendResult(frame.id, ok({ topic: TASK_READY_EVENTS_TOPIC }));
+  }
+
+  private handleAutomationsSubscribe(frame: SubscribeFrame): void {
+    // Phase 8D.1 — global automation wake-hint feed. Mirrors auto-merge
+    // subscribe shape: no args (channel is global), duplicate-id check
+    // mirrors parent handleSubscribe, drop-on-backpressure send policy.
+    // The hint is advisory; the launcher's takePending poll is authoritative.
+    if (this.subscriptions.has(frame.id)) {
+      this.sendResult(frame.id, err('bad_args', `subscription id '${frame.id}' already in use`));
+      return;
+    }
+    if (this.automationsBroker === undefined) {
+      this.sendResult(
+        frame.id,
+        err('not_found', `subscription topic '${AUTOMATIONS_EVENTS_TOPIC}' is not configured`),
+      );
+      return;
+    }
+    const unsubscribe = this.automationsBroker.subscribe((event) => {
+      const out: EventFrame = {
+        kind: 'event',
+        topic: AUTOMATIONS_EVENTS_TOPIC,
+        payload: event,
+      };
+      this.send(encodeFrame(out), { dropOnBackpressure: true });
+    });
+    this.subscriptions.set(frame.id, { topic: AUTOMATIONS_EVENTS_TOPIC, unsubscribe });
+    this.sendResult(frame.id, ok({ topic: AUTOMATIONS_EVENTS_TOPIC }));
   }
 
   private handleUnsubscribe(frame: UnsubscribeFrame): void {

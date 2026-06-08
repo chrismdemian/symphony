@@ -13,6 +13,9 @@ import { SqliteTaskStore } from '../state/sqlite-task-store.js';
 import type { ExternalLinkStore } from '../state/external-link-store.js';
 import { MemoryExternalLinkStore } from '../state/external-link-store.js';
 import { SqliteExternalLinkStore } from '../state/sqlite-external-link-store.js';
+import type { AutomationStore } from '../state/automation-store.js';
+import { InMemoryAutomationStore } from '../state/automation-store.js';
+import { SqliteAutomationStore } from '../state/sqlite-automation-store.js';
 import { SagaRegistry } from '../state/saga-registry.js';
 import { SqliteSagaStore } from '../state/sqlite-saga-store.js';
 import { createSagaRollupListener } from '../state/saga-rollup.js';
@@ -119,6 +122,8 @@ import { createAutoMergeBroker } from './auto-merge-broker.js';
 import { createAutoMergeDispatcher } from './auto-merge-dispatcher.js';
 import { createTaskReadyBroker } from './task-ready-broker.js';
 import { createTaskReadyDispatcher } from './task-ready-dispatcher.js';
+import { createAutomationsBroker, type AutomationsBroker } from './automations-broker.js';
+import { AutomationScheduler } from './automation-scheduler.js';
 import * as gitOps from './git-ops.js';
 import type {
   AutoMergeBroker,
@@ -251,6 +256,27 @@ export interface OrchestratorServerOptions {
    * Phase 3P — override the task-ready dispatcher. Test seam.
    */
   taskReadyDispatcher?: TaskReadyDispatcherHandle;
+  /**
+   * Phase 8D.1 — Automation scheduler activation. When `enabled: true` (set
+   * only by the real CLI boot path) AND `plugins?.enabled !== true` (the
+   * EXACTLY-ONE-SCHEDULER invariant — runs in the bootstrap Process B, never
+   * Maestro's MCP child Process C) AND a persistent `database` exists, the
+   * server starts an {@link AutomationScheduler} that ticks due automations
+   * into `'running'` run logs the launcher delivers to Maestro. Default off.
+   */
+  automations?: { enabled?: boolean };
+  /** Override / inject the automation store. Test seam (bypasses SQLite). */
+  automationStore?: AutomationStore;
+  /** Override / inject the automation scheduler. Test seam. */
+  automationScheduler?: AutomationScheduler;
+  /** Override / inject the automations broker. Test seam. */
+  automationsBroker?: AutomationsBroker;
+  /**
+   * Phase 8D.1 test seam — override the scheduler tick interval (ms). Lets a
+   * scenario drive ticks fast without the 30s production cadence. Ignored
+   * when `automationScheduler` is injected directly.
+   */
+  automationTickIntervalMs?: number;
   /**
    * Phase 3R — override the audit store. Test seam: pass an in-memory
    * fake to assert audit rows without touching SQLite. Defaults to a
@@ -453,6 +479,12 @@ export interface OrchestratorServerHandle {
   taskReadyBroker: TaskReadyBroker;
   /** Phase 3P — exposed for tests that need to wait on shutdown drain. */
   taskReadyDispatcher: TaskReadyDispatcherHandle;
+  /** Phase 8D.1 — exposed for tests + the RPC layer's `automations.*`. */
+  automationStore: AutomationStore;
+  /** Phase 8D.1 — exposed for tests that subscribe to scheduler wake hints. */
+  automationsBroker: AutomationsBroker;
+  /** Phase 8D.1 — present when the scheduler was activated (Process B, enabled). */
+  automationScheduler?: AutomationScheduler;
   /** Phase 3R — exposed for tests + the RPC layer's `audit.list`. */
   auditLogger: AuditLogger;
   /** Phase 3R — exposed for tests + the RPC layer's `audit.list`. */
@@ -732,6 +764,14 @@ export async function startOrchestratorServer(
     (options.database
       ? new SqliteExternalLinkStore(options.database.db)
       : new MemoryExternalLinkStore());
+  // Phase 8D.1 — automation store. SQLite-backed when a database is present,
+  // in-memory otherwise. Backs the scheduler (this process) AND the
+  // `automations.*` RPC the launcher's injector pulls from.
+  const automationStore: AutomationStore =
+    options.automationStore ??
+    (options.database
+      ? new SqliteAutomationStore(options.database.db)
+      : new InMemoryAutomationStore());
   // Phase 8A — Notion connector. Injected (test seam) or auto-constructed
   // from disk when activated by the CLI boot path (`notion.enabled`).
   // Gating off `enabled` keeps tests from reading the user's real Notion
@@ -819,6 +859,9 @@ export async function startOrchestratorServer(
   }
   // Started below (needs `resolveProjectPath`); stopped in `close()`.
   let obsidianWatcher: ObsidianVaultWatcher | undefined;
+  // Phase 8D.1 — automation scheduler. Started below (after the dispatch
+  // context cursor exists); stopped first in `close()`.
+  let automationScheduler: AutomationScheduler | undefined;
   // Phase 8C — Linear connector. Injected (test seam) or auto-constructed from
   // the stored API key when activated by the CLI boot path (`linear.enabled`).
   // Undefined when no key is stored — the `sync_linear` tool + writeback hook
@@ -1224,6 +1267,13 @@ export async function startOrchestratorServer(
     });
   taskReadyDispatcherRef.current = taskReadyDispatcher;
 
+  // Phase 8D.1 — automations broker (scheduler → launcher wake hint). The
+  // scheduler is constructed + started further below (after the dispatch
+  // context cursor exists, so its capability flag can be honored). Test
+  // override via `options.automationsBroker`.
+  const automationsBroker: AutomationsBroker =
+    options.automationsBroker ?? createAutomationsBroker();
+
   // Phase 2B.1 m6: prune `default-N` orphan rows that have no live
   // task / worker references BEFORE we synthesize a new default. Stale
   // rows accumulate when the cwd shifts across restarts (e.g. running
@@ -1259,6 +1309,8 @@ export async function startOrchestratorServer(
   let bootAutonomyTier: AutonomyTier;
   // Phase 7A — plugin master switch, read once at boot.
   let bootPluginsEnabled: boolean;
+  // Phase 8D.1 — automation master switch, read once at boot.
+  let bootAutomationsEnabled: boolean;
   // Phase 5D — boot-time active-project resolution. Reads
   // `config.activeProject` from disk; validates against the
   // (post-`ensureDefault`) projectStore so a project that was removed
@@ -1274,6 +1326,7 @@ export async function startOrchestratorServer(
     bootAutonomyTier = bootGlobalConfig.config.autonomyTier;
     bootActiveProjectName = bootGlobalConfig.config.activeProject;
     bootPluginsEnabled = bootGlobalConfig.config.pluginsEnabled;
+    bootAutomationsEnabled = bootGlobalConfig.config.automationsEnabled;
   } catch {
     const fallback = (await import('../utils/config-schema.js')).defaultConfig();
     globalMaxWorkers = fallback.maxConcurrentWorkers;
@@ -1282,6 +1335,7 @@ export async function startOrchestratorServer(
     bootAutonomyTier = fallback.autonomyTier;
     bootActiveProjectName = fallback.activeProject;
     bootPluginsEnabled = fallback.pluginsEnabled;
+    bootAutomationsEnabled = fallback.automationsEnabled;
   }
   // Phase 5D — initialize the active-project cursor. The cursor is the
   // CONFIG's `activeProject` when it names a known project; otherwise
@@ -1613,6 +1667,40 @@ export async function startOrchestratorServer(
       }
     }
   }
+  // Phase 8D.1 — automation scheduler. EXACTLY-ONE-SCHEDULER: like the
+  // Obsidian watcher, it runs in the bootstrap Process B only (never
+  // Maestro's `--plugins` child C) so a due automation is claimed once.
+  // Reconcile orphaned runs from a prior session BEFORE the first tick
+  // (emdash ordering — never tick before reconcile), then start.
+  const automationLog = (level: 'info' | 'warn' | 'error', message: string): void => {
+    const line = `[symphony] automations: ${message}`;
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    // info stays quiet — surfaced only on demand.
+  };
+  if (options.automationScheduler !== undefined) {
+    automationScheduler = options.automationScheduler;
+  } else if (
+    options.automations?.enabled === true &&
+    options.plugins?.enabled !== true &&
+    bootAutomationsEnabled !== false
+  ) {
+    automationScheduler = new AutomationScheduler({
+      store: automationStore,
+      broker: automationsBroker,
+      ...(options.automationTickIntervalMs !== undefined
+        ? { tickIntervalMs: options.automationTickIntervalMs }
+        : {}),
+      log: automationLog,
+    });
+  }
+  if (automationScheduler !== undefined) {
+    const scheduler = automationScheduler;
+    void scheduler
+      .reconcile('startup')
+      .catch(() => {})
+      .finally(() => scheduler.start());
+  }
   // Phase 8C — sync_linear is registered ONLY when a Linear connector is active
   // (API key present). Maestro's prompt calls it on an explicit "sync linear"
   // request; absent the connector the tool simply isn't on the surface.
@@ -1891,6 +1979,15 @@ export async function startOrchestratorServer(
       setInterruptPending: (value) => {
         context = { ...context, interruptPending: value };
       },
+      // Phase 8D.1 — the launcher flips this while delivering an
+      // automation-fired turn so the capability evaluator denies
+      // `requires-host-browser-control` tools (capabilities.ts:54).
+      // Same cross-process limitation as setInterruptPending: flips
+      // only on THIS server's cursor; Maestro's MCP child is separate.
+      automationStore,
+      setDispatchAutomationContext: (value) => {
+        context = { ...context, automationContext: value };
+      },
       // Phase 3N.2 — stamp orchestrator boot so the stats aggregator
       // can filter crash-recovered workers (their createdAt predates
       // this) out of the "this session" tally. Stamped once per
@@ -1923,6 +2020,8 @@ export async function startOrchestratorServer(
       autoMergeBroker,
       // Phase 3P — accept `subscribe('task-ready.events')` from the TUI.
       taskReadyBroker,
+      // Phase 8D.1 — accept `subscribe('automations.events')` (wake hints).
+      automationsBroker,
       ...(rpcConfig.host !== undefined ? { host: rpcConfig.host } : {}),
       ...(rpcConfig.port !== undefined ? { port: rpcConfig.port } : {}),
     });
@@ -1949,7 +2048,12 @@ export async function startOrchestratorServer(
 
   const close = async (): Promise<void> => {
     offModeChange();
-    // Phase 8B — stop the vault watcher first so no late fs event ingests a
+    // Phase 8D.1 — stop the scheduler FIRST (it's a task source — quiesce it
+    // before stores/broker tear down so no tick claims a run mid-shutdown).
+    if (automationScheduler !== undefined) {
+      await automationScheduler.stop().catch(() => {});
+    }
+    // Phase 8B — stop the vault watcher next so no late fs event ingests a
     // task into stores that are about to tear down. Independent + best-effort.
     if (obsidianWatcher !== undefined) {
       await obsidianWatcher.stop().catch(() => {});
@@ -1974,6 +2078,7 @@ export async function startOrchestratorServer(
       completionsBroker.clear();
       autoMergeBroker.clear();
       taskReadyBroker.clear();
+      automationsBroker.clear();
       if (rpcHandle.tokenFilePath !== undefined) {
         await deleteRpcDescriptor(rpcHandle.tokenFilePath).catch(() => {});
       }
@@ -2043,6 +2148,9 @@ export async function startOrchestratorServer(
     autoMergeDispatcher,
     taskReadyBroker,
     taskReadyDispatcher,
+    automationStore,
+    automationsBroker,
+    ...(automationScheduler !== undefined ? { automationScheduler } : {}),
     auditLogger,
     auditStore,
     ...(pluginHost !== undefined ? { pluginHost } : {}),

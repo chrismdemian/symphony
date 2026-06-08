@@ -9,6 +9,7 @@ import type {
   TaskListFilter,
 } from '../state/types.js';
 import type { QuestionStore, QuestionSnapshot } from '../state/question-registry.js';
+import type { AutomationStore, PendingRun } from '../state/automation-store.js';
 import type { WaveStore, WaveSnapshot } from '../orchestrator/research-wave-registry.js';
 import type { ModeController } from '../orchestrator/mode.js';
 import {
@@ -184,6 +185,26 @@ export interface RouterDeps {
    * no live hot-reload.
    */
   readonly pluginAdmin?: PluginAdmin;
+  /**
+   * Phase 8D.1 — optional. Backs the `automations.takePending` /
+   * `automations.completeRun` procedures the launcher's AutomationInjector
+   * calls to deliver scheduled runs to Maestro. When omitted, `takePending`
+   * returns `[]` and `completeRun` throws a typed `not_found`. The CLI
+   * server wires it whenever a persistent DB exists (shared with the
+   * scheduler in this same Process-B server).
+   */
+  readonly automationStore?: AutomationStore;
+  /**
+   * Phase 8D.1 — flips an `automationContext` flag on the dispatch context
+   * cursor while the launcher delivers an automation-fired turn to Maestro.
+   * Mirrors `setInterruptPending`'s best-effort shape AND its cross-process
+   * limitation: it flips only on the server that received the RPC. Maestro's
+   * MCP child is a separate process with its own cursor, so this is
+   * belt-and-suspenders for the `requires-host-browser-control` gate in
+   * `capabilities.ts` (matures with 8D.2's target model). Omit in test rigs
+   * without a dispatch cursor.
+   */
+  readonly setDispatchAutomationContext?: (active: boolean) => void;
 }
 
 // ── Argument shapes (validated at the boundary) ──────────────────────
@@ -331,6 +352,26 @@ export interface RuntimeSetAwayModeArgs {
 
 export interface RuntimeSetAwayModeResult {
   readonly awayMode: boolean;
+}
+
+// Phase 8D.1 — automation-context hot-apply + scheduled-run delivery.
+
+export interface RuntimeSetAutomationContextArgs {
+  readonly active: boolean;
+}
+
+export interface RuntimeSetAutomationContextResult {
+  readonly active: boolean;
+}
+
+export interface AutomationsCompleteRunArgs {
+  readonly runLogId: number;
+  readonly status: 'success' | 'failure';
+  readonly error?: string;
+}
+
+export interface AutomationsCompleteRunResult {
+  readonly completed: boolean;
 }
 
 // Phase 3S — autonomy tier hot-apply.
@@ -910,6 +951,20 @@ export function createSymphonyRouter(deps: RouterDeps) {
       deps.setDispatchAwayMode?.(args.awayMode);
       return { awayMode: args.awayMode };
     },
+    // Phase 8D.1 — the launcher flips this true while delivering an
+    // automation-fired turn to Maestro, false on turn-complete. The
+    // dispatch shim / capability evaluator reads `ctx.automationContext`
+    // (host-browser-control is denied while true). Best-effort + same
+    // cross-process limitation as `interrupt` — documented on the dep.
+    async setAutomationContext(
+      args: RuntimeSetAutomationContextArgs,
+    ): Promise<RuntimeSetAutomationContextResult> {
+      if (typeof args?.active !== 'boolean') {
+        throw badArgs('active must be a boolean');
+      }
+      deps.setDispatchAutomationContext?.(args.active);
+      return { active: args.active };
+    },
     // Phase 3S — push the autonomy tier from the TUI into the dispatch
     // context cursor. Validates literal 1|2|3 (numbers, not strings) and
     // rejects anything else with a typed bad-args error so a misbehaving
@@ -1308,6 +1363,44 @@ export function createSymphonyRouter(deps: RouterDeps) {
     },
   });
 
+  /**
+   * Phase 8D.1 — scheduled-run delivery surface. The launcher's
+   * AutomationInjector PULLS claimed-but-undelivered runs (`takePending`),
+   * injects each into Maestro, then reports the outcome (`completeRun`).
+   * Pull-based by design: the `automations.events` wake hint can be dropped
+   * on backpressure, so correctness rests on this poll, not the event.
+   *
+   * `takePending` returns `[]` and `completeRun` throws `not_found` when no
+   * store is wired (legacy/test rigs). The CLI server wires the store
+   * whenever a persistent DB exists.
+   */
+  const automations = createRPCController({
+    takePending(): readonly PendingRun[] {
+      return deps.automationStore?.listPending() ?? [];
+    },
+    completeRun(args: AutomationsCompleteRunArgs): AutomationsCompleteRunResult {
+      if (typeof args?.runLogId !== 'number' || !Number.isInteger(args.runLogId)) {
+        throw badArgs('runLogId must be an integer');
+      }
+      if (args?.status !== 'success' && args?.status !== 'failure') {
+        throw badArgs('status must be "success" or "failure"');
+      }
+      if (args?.error !== undefined && typeof args.error !== 'string') {
+        throw badArgs('error must be a string when present');
+      }
+      if (deps.automationStore === undefined) {
+        throw notFound('automation subsystem not configured');
+      }
+      const completed = deps.automationStore.completeRun(
+        args.runLogId,
+        args.status,
+        new Date().toISOString(),
+        args.error,
+      );
+      return { completed };
+    },
+  });
+
   return createRPCRouter({
     projects,
     tasks,
@@ -1322,6 +1415,7 @@ export function createSymphonyRouter(deps: RouterDeps) {
     recovery,
     audit,
     plugins,
+    automations,
   });
 }
 
