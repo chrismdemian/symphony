@@ -180,4 +180,100 @@ describe('AutomationTriggerEngine', () => {
       vi.useRealTimers();
     }
   });
+
+  // ── Phase 8D.4 — trigger filter matching ─────────────────────────────────
+  describe('trigger_config filters', () => {
+    /** An event carrying labels/assignee (overrides on the bare `ev`). */
+    function labeled(id: string, over: Partial<RawTriggerEvent>): RawTriggerEvent {
+      return { ...ev(id), ...over };
+    }
+
+    it('a fresh event that FAILS the label filter is marked known but never claimed', async () => {
+      const gh = fakeSource('github_issue');
+      gh.set([]); // seed empty
+      const { store, engine, published } = makeEngine(new Map([['github_issue', gh.source]]));
+      store.create({
+        name: 't',
+        prompt: 'p',
+        triggerType: 'github_issue',
+        triggerConfig: JSON.stringify({ labelFilter: ['bug'] }),
+      });
+      await engine.executeTriggerPoll(); // seed {}
+
+      // A new issue with the WRONG label appears.
+      gh.set([labeled('github:o/r#2', { labels: ['docs'] })]);
+      expect(await engine.executeTriggerPoll()).toEqual([]);
+      expect(published).toHaveLength(0);
+      expect(store.listPending()).toHaveLength(0);
+
+      // It's known now — re-polling the same event does nothing (no re-eval).
+      expect(await engine.executeTriggerPoll()).toEqual([]);
+    });
+
+    it('a fresh event that PASSES the label filter is claimed', async () => {
+      const gh = fakeSource('github_issue');
+      gh.set([]);
+      const { store, engine } = makeEngine(new Map([['github_issue', gh.source]]));
+      store.create({
+        name: 't',
+        prompt: 'triage',
+        triggerType: 'github_issue',
+        triggerConfig: JSON.stringify({ labelFilter: ['bug'] }),
+      });
+      await engine.executeTriggerPoll();
+
+      gh.set([labeled('github:o/r#2', { labels: ['Bug'] })]); // case-insensitive match
+      const claimed = await engine.executeTriggerPoll();
+      expect(claimed).toHaveLength(1);
+      expect(JSON.parse(store.listPending()[0]!.triggerEvent!).id).toBe('github:o/r#2');
+    });
+
+    it('skips non-matching fresh events and claims the first MATCHING one this cycle', async () => {
+      const gh = fakeSource('github_issue');
+      gh.set([]);
+      const { store, engine } = makeEngine(new Map([['github_issue', gh.source]]));
+      store.create({
+        name: 't',
+        prompt: 'p',
+        triggerType: 'github_issue',
+        triggerConfig: JSON.stringify({ assigneeFilter: 'chris' }),
+      });
+      await engine.executeTriggerPoll();
+
+      // Newest-first: #4 (bob, skip), #3 (none, skip), #2 (chris, FIRE).
+      gh.set([
+        labeled('github:o/r#4', { assignee: 'bob' }),
+        labeled('github:o/r#3', { assignee: null }),
+        labeled('github:o/r#2', { assignee: 'Chris' }),
+      ]);
+      const claimed = await engine.executeTriggerPoll();
+      expect(claimed).toHaveLength(1);
+      expect(JSON.parse(store.listPending()[0]!.triggerEvent!).id).toBe('github:o/r#2');
+
+      // #4 and #3 were marked known (filtered out) — they never fire later even
+      // after the run completes.
+      store.completeRun(claimed[0]!, 'success', '2026-06-08T06:05:00.000Z');
+      gh.set([
+        labeled('github:o/r#4', { assignee: 'bob' }),
+        labeled('github:o/r#3', { assignee: null }),
+      ]);
+      expect(await engine.executeTriggerPoll()).toEqual([]);
+    });
+
+    it('malformed trigger_config fires UNFILTERED (fail-open)', async () => {
+      const gh = fakeSource('github_issue');
+      gh.set([]);
+      const { store, engine } = makeEngine(new Map([['github_issue', gh.source]]));
+      store.create({
+        name: 't',
+        prompt: 'p',
+        triggerType: 'github_issue',
+        triggerConfig: '{ broken json',
+      });
+      await engine.executeTriggerPoll();
+
+      gh.set([labeled('github:o/r#2', { labels: ['anything'] })]);
+      expect(await engine.executeTriggerPoll()).toHaveLength(1);
+    });
+  });
 });

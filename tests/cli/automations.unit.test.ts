@@ -158,6 +158,63 @@ describe('automations CLI', () => {
     expect(r.exitCode).toBe(1);
     expect(err.text()).toContain('--trigger must be one of');
   });
+
+  // ── Phase 8D.4 — trigger filters ───────────────────────────────────────────
+
+  it('add --trigger with --label/--assignee persists a trigger_config', () => {
+    const add = runAutomationsAdd({
+      ...base(),
+      name: 'gh-bugs',
+      prompt: 'triage',
+      trigger: 'github_issue',
+      labels: ['bug', 'urgent'],
+      assignee: 'chris',
+    });
+    expect(add.exitCode).toBe(0);
+    expect(err.text()).toContain('label:bug,urgent assignee:chris');
+
+    out.lines = [];
+    runAutomationsList({ ...base(), json: true });
+    const parsed = JSON.parse(out.text());
+    expect(parsed[0].triggerConfig).toEqual({
+      labelFilter: ['bug', 'urgent'],
+      assigneeFilter: 'chris',
+    });
+  });
+
+  it('the list table view shows the filter summary', () => {
+    runAutomationsAdd({
+      ...base(),
+      name: 'gh-bugs',
+      prompt: 'triage',
+      trigger: 'github_issue',
+      labels: ['bug'],
+    });
+    err.lines = [];
+    runAutomationsList(base());
+    expect(err.text()).toContain('(label:bug)');
+  });
+
+  it('rejects filter flags on a SCHEDULE automation', () => {
+    const r = runAutomationsAdd({
+      ...base(),
+      name: 'x',
+      prompt: 'p',
+      every: 'daily',
+      at: '09:00',
+      labels: ['bug'],
+    });
+    expect(r.exitCode).toBe(1);
+    expect(err.text()).toContain('only valid with --trigger');
+  });
+
+  it('a --trigger with no filters stores a null trigger_config', () => {
+    runAutomationsAdd({ ...base(), name: 't', prompt: 'p', trigger: 'github_issue' });
+    out.lines = [];
+    runAutomationsList({ ...base(), json: true });
+    const parsed = JSON.parse(out.text());
+    expect(parsed[0].triggerConfig).toBeNull();
+  });
 });
 
 describe('buildScheduleFromFlags', () => {

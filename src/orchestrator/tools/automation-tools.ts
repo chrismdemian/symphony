@@ -7,6 +7,11 @@ import {
   describeSchedule,
 } from '../automation-schedule.js';
 import { KNOWN_TRIGGER_TYPES } from '../automation-trigger-source.js';
+import {
+  buildTriggerConfigJson,
+  describeTriggerFilters,
+  parseTriggerConfig,
+} from '../trigger-filter.js';
 import type { ToolRegistration } from '../registry.js';
 
 /**
@@ -37,6 +42,7 @@ function snapshot(r: AutomationRecord): Record<string, unknown> {
     schedule: r.schedule,
     scheduleText: r.schedule !== null ? describeSchedule(r.schedule) : null,
     triggerType: r.triggerType,
+    triggerConfig: parseTriggerConfig(r.triggerConfig),
     enabled: r.enabled,
     inFlight: r.inFlight,
     nextRunAt: r.nextRunAt,
@@ -89,6 +95,24 @@ const createShape = {
     .describe(
       'Target project name or id (context for the fired turn). Omit to use the active project (set via `set_active_project`).',
     ),
+  labelFilter: z
+    .array(z.string().min(1))
+    .optional()
+    .describe(
+      'TRIGGER filter (ignored for a schedule): only fire for events carrying at least one of these labels (case-insensitive OR). E.g. ["bug","urgent"].',
+    ),
+  assigneeFilter: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('TRIGGER filter: only fire for events assigned to this user (case-insensitive exact).'),
+  branchFilter: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'TRIGGER filter: only fire for events on a matching branch (glob `*`, e.g. "feature/*"). Applies to PR sources only; issue triggers ignore it.',
+    ),
   enabled: z
     .boolean()
     .optional()
@@ -112,7 +136,20 @@ export function makeCreateAutomationTool(
     scope: 'both',
     capabilities: [],
     inputSchema: createShape,
-    handler: ({ name, prompt, every, triggerType, at, on, day, project, enabled }) => {
+    handler: ({
+      name,
+      prompt,
+      every,
+      triggerType,
+      at,
+      on,
+      day,
+      project,
+      labelFilter,
+      assigneeFilter,
+      branchFilter,
+      enabled,
+    }) => {
       // Exactly one of schedule / trigger.
       if (every !== undefined && triggerType !== undefined) {
         return {
@@ -126,6 +163,19 @@ export function makeCreateAutomationTool(
         return {
           content: [
             { type: 'text', text: 'create_automation: provide either `every` (schedule) or `triggerType` (trigger).' },
+          ],
+          isError: true,
+        };
+      }
+      // Phase 8D.4 — filters are trigger-only (a schedule has no event to filter).
+      const hasFilter =
+        (labelFilter !== undefined && labelFilter.length > 0) ||
+        assigneeFilter !== undefined ||
+        branchFilter !== undefined;
+      if (hasFilter && triggerType === undefined) {
+        return {
+          content: [
+            { type: 'text', text: 'create_automation: `labelFilter` / `assigneeFilter` / `branchFilter` are only valid with `triggerType`.' },
           ],
           isError: true,
         };
@@ -165,20 +215,31 @@ export function makeCreateAutomationTool(
           }
         }
       }
+      const triggerConfig =
+        triggerType !== undefined
+          ? buildTriggerConfigJson({
+              ...(labelFilter !== undefined ? { labels: labelFilter } : {}),
+              ...(assigneeFilter !== undefined ? { assignee: assigneeFilter } : {}),
+              ...(branchFilter !== undefined ? { branch: branchFilter } : {}),
+            })
+          : null;
       const record = deps.automationStore.create({
         name,
         prompt,
         ...(schedule !== undefined ? { schedule } : {}),
         ...(triggerType !== undefined ? { triggerType } : {}),
+        ...(triggerConfig !== null ? { triggerConfig } : {}),
         projectId,
         enabled: enabled !== false,
       });
+      const filterText = describeTriggerFilters(parseTriggerConfig(record.triggerConfig));
       return {
         content: [
           {
             type: 'text',
             text:
               `Automation ${record.id} '${record.name}' created — ${describeAutomationMode(record.schedule, record.triggerType)}` +
+              `${filterText.length > 0 ? ` (${filterText})` : ''}` +
               `${record.enabled ? '' : ' [disabled]'}` +
               `${record.nextRunAt !== null ? `; next run ${record.nextRunAt}` : ''}.`,
           },

@@ -5,6 +5,7 @@ import { SqliteAutomationStore } from '../../src/state/sqlite-automation-store.j
 import {
   InMemoryAutomationStore,
   MAX_RUNS_PER_AUTOMATION,
+  MAX_TOTAL_RUNS,
   type AutomationStore,
 } from '../../src/state/automation-store.js';
 import type { AutomationSchedule } from '../../src/orchestrator/automation-schedule.js';
@@ -146,6 +147,45 @@ describe.each([
       h.store.completeRun(claim.runLogId, 'success', ts);
     }
     expect(h.store.listRunLogs(a.id).length).toBeLessThanOrEqual(MAX_RUNS_PER_AUTOMATION);
+  });
+
+  // ── Phase 8D.4 — run-log retention dual limits + trigger_config round-trip ──
+
+  it('run-log retention also trims to MAX_TOTAL_RUNS globally', () => {
+    // Spread logs across enough automations that NONE hits the per-automation
+    // cap (85 < 100), but the total exceeds the global cap (25 * 85 = 2125 > 2000).
+    const perAuto = 85;
+    const autoCount = 25;
+    const ids: string[] = [];
+    let tick = Date.parse('2026-06-08T06:00:00.000Z');
+    for (let a = 0; a < autoCount; a += 1) {
+      const auto = h.store.create({ name: `a${a}`, prompt: 'x', schedule: DAILY });
+      ids.push(auto.id);
+      for (let i = 0; i < perAuto; i += 1) {
+        tick += 1000;
+        const ts = new Date(tick).toISOString();
+        const claim = h.store.claim(auto.id, '2026-06-09T09:00:00.000Z', ts)!;
+        h.store.completeRun(claim.runLogId, 'success', ts);
+      }
+    }
+    const total = ids.reduce((sum, id) => sum + h.store.listRunLogs(id).length, 0);
+    expect(total).toBeLessThanOrEqual(MAX_TOTAL_RUNS);
+    expect(total).toBeGreaterThan(MAX_TOTAL_RUNS - perAuto); // trimmed close to the cap, not nuked
+  });
+
+  it('create round-trips a trigger_config (JSON persisted + returned verbatim)', () => {
+    const cfg = JSON.stringify({ labelFilter: ['bug', 'urgent'], assigneeFilter: 'chris' });
+    const t = h.store.create({
+      name: 't',
+      prompt: 'p',
+      triggerType: 'github_issue',
+      triggerConfig: cfg,
+    });
+    expect(t.triggerConfig).toBe(cfg);
+    expect(h.store.get(t.id)!.triggerConfig).toBe(cfg);
+    // triggerConfig is dropped for a schedule automation (no trigger to filter).
+    const s = h.store.create({ name: 's', prompt: 'p', schedule: DAILY });
+    expect(s.triggerConfig).toBeNull();
   });
 
   // ── Phase 8D.2 — trigger-mode automations ─────────────────────────────────

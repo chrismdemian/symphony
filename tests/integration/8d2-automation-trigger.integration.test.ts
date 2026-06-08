@@ -155,4 +155,43 @@ describe('Phase 8D.2 — automation trigger engine (integration)', () => {
     expect(pending[0]!.prompt).toBe('handle it');
     expect(JSON.parse(pending[0]!.triggerEvent!)).toMatchObject({ id: 'github:o/r#11' });
   });
+
+  // ── Phase 8D.4 — filter matching end-to-end ─────────────────────────────────
+  it('create_automation with a label filter fires only on matching events', async () => {
+    const labeled = (id: string, labels: string[]): RawTriggerEvent => ({
+      ...ev(id, id),
+      labels,
+    });
+
+    // Maestro creates a label-scoped trigger via the agent-native tool.
+    const created = await mcpClient.callTool({
+      name: 'create_automation',
+      arguments: {
+        name: 'gh-bugs',
+        prompt: 'fix the bug',
+        triggerType: 'github_issue',
+        labelFilter: ['bug'],
+      },
+    });
+    expect((created as { isError?: boolean }).isError).toBeFalsy();
+    // The filter persisted on the record.
+    expect(server.automationStore.list()[0]!.triggerConfig).toBe(
+      JSON.stringify({ labelFilter: ['bug'] }),
+    );
+
+    fake.set([labeled('github:o/r#20', ['docs'])]);
+    await server.automationTriggerEngine!.executeTriggerPoll(); // seed
+
+    // A non-matching issue (wrong label) appears → no claim.
+    fake.set([labeled('github:o/r#21', ['enhancement']), labeled('github:o/r#20', ['docs'])]);
+    expect(await server.automationTriggerEngine!.executeTriggerPoll()).toEqual([]);
+    expect(await rpc.call.automations.takePending()).toHaveLength(0);
+
+    // A matching issue (has 'bug') appears → claimed.
+    fake.set([labeled('github:o/r#22', ['bug', 'p1']), labeled('github:o/r#21', ['enhancement'])]);
+    const claimed = await server.automationTriggerEngine!.executeTriggerPoll();
+    expect(claimed).toHaveLength(1);
+    const pending = await rpc.call.automations.takePending();
+    expect(JSON.parse(pending[0]!.triggerEvent!)).toMatchObject({ id: 'github:o/r#22' });
+  });
 });

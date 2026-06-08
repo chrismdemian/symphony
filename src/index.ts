@@ -907,6 +907,14 @@ automations
   .option('--day <n>', 'Day of month (1-31) for --every monthly.')
   .option('--project <name>', 'Target project (context for Maestro). Optional.')
   .option('--disabled', 'Create the automation disabled (does not fire until enabled).')
+  .option(
+    '--label <name>',
+    'TRIGGER filter: only fire for events carrying this label (repeatable; OR; case-insensitive).',
+    (value: string, prev: string[]) => prev.concat(value),
+    [] as string[],
+  )
+  .option('--assignee <name>', 'TRIGGER filter: only fire for events assigned to this user (case-insensitive).')
+  .option('--branch <glob>', 'TRIGGER filter: only fire for events on a matching branch (glob, e.g. "feature/*"). PR sources only.')
   .action(
     async (
       name: string,
@@ -919,6 +927,9 @@ automations
         day?: string;
         project?: string;
         disabled?: boolean;
+        label?: string[];
+        assignee?: string;
+        branch?: string;
       },
     ) => {
       const { runAutomationsAdd } = await import('./cli/automations.js');
@@ -932,6 +943,9 @@ automations
         ...(opts.day !== undefined ? { day: opts.day } : {}),
         ...(opts.project !== undefined ? { project: opts.project } : {}),
         ...(opts.disabled === true ? { disabled: true } : {}),
+        ...(opts.label !== undefined && opts.label.length > 0 ? { labels: opts.label } : {}),
+        ...(opts.assignee !== undefined ? { assignee: opts.assignee } : {}),
+        ...(opts.branch !== undefined ? { branch: opts.branch } : {}),
       });
       process.exit(result.exitCode);
     },
