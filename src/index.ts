@@ -879,6 +879,94 @@ voice
     },
   );
 
+const automations = program
+  .command('automations')
+  .description('Manage scheduled automations that fire a prompt into Maestro. Phase 8D.');
+
+automations
+  .command('list')
+  .description('List defined automations + their schedules and next-run times.')
+  .option('--json', 'Print as JSON to stdout.')
+  .action(async (opts: { json?: boolean }) => {
+    const { runAutomationsList } = await import('./cli/automations.js');
+    const result = runAutomationsList(opts.json === true ? { json: true } : {});
+    process.exit(result.exitCode);
+  });
+
+automations
+  .command('add <name>')
+  .description('Add a scheduled automation (e.g. --every daily --at 09:00).')
+  .requiredOption('--prompt <text>', 'The prompt fired into Maestro when the automation runs.')
+  .requiredOption('--every <interval>', 'Schedule interval: hourly | daily | weekly | monthly.')
+  .option('--at <hh:mm>', 'Time of day (24h), e.g. 09:30. Hourly uses only the minute.')
+  .option('--on <day>', 'Day of week for --every weekly: sun|mon|tue|wed|thu|fri|sat.')
+  .option('--day <n>', 'Day of month (1-31) for --every monthly.')
+  .option('--project <name>', 'Target project (context for Maestro). Optional.')
+  .option('--disabled', 'Create the automation disabled (does not fire until enabled).')
+  .action(
+    async (
+      name: string,
+      opts: {
+        prompt: string;
+        every: string;
+        at?: string;
+        on?: string;
+        day?: string;
+        project?: string;
+        disabled?: boolean;
+      },
+    ) => {
+      const { runAutomationsAdd } = await import('./cli/automations.js');
+      const result = runAutomationsAdd({
+        name,
+        prompt: opts.prompt,
+        every: opts.every,
+        ...(opts.at !== undefined ? { at: opts.at } : {}),
+        ...(opts.on !== undefined ? { on: opts.on } : {}),
+        ...(opts.day !== undefined ? { day: opts.day } : {}),
+        ...(opts.project !== undefined ? { project: opts.project } : {}),
+        ...(opts.disabled === true ? { disabled: true } : {}),
+      });
+      process.exit(result.exitCode);
+    },
+  );
+
+automations
+  .command('remove <id>')
+  .description('Delete an automation (and its run logs).')
+  .action(async (id: string) => {
+    const { runAutomationsRemove } = await import('./cli/automations.js');
+    const result = runAutomationsRemove({ id });
+    process.exit(result.exitCode);
+  });
+
+automations
+  .command('disable <id>')
+  .description('Disable an automation without deleting it.')
+  .action(async (id: string) => {
+    const { runAutomationsSetEnabled } = await import('./cli/automations.js');
+    const result = runAutomationsSetEnabled({ id, enabled: false });
+    process.exit(result.exitCode);
+  });
+
+automations
+  .command('enable <id>')
+  .description('Re-enable a disabled automation.')
+  .action(async (id: string) => {
+    const { runAutomationsSetEnabled } = await import('./cli/automations.js');
+    const result = runAutomationsSetEnabled({ id, enabled: true });
+    process.exit(result.exitCode);
+  });
+
+automations
+  .command('run <id>')
+  .description('Force an automation due now — it fires on a running session\'s next tick.')
+  .action(async (id: string) => {
+    const { runAutomationsRun } = await import('./cli/automations.js');
+    const result = runAutomationsRun({ id });
+    process.exit(result.exitCode);
+  });
+
 program
   .command('mcp-server')
   .description('Run the Symphony orchestrator MCP server over stdio. Spawned as a child of claude -p.')
@@ -957,6 +1045,11 @@ program
           // (zero overhead) when not fully configured. The sync_forgejo tool +
           // the comment+close writeback wire up only when configured.
           ...(database !== undefined ? { forgejo: { enabled: true } } : {}),
+          // Phase 8D.1 — activate the automation scheduler whenever a DB is
+          // open. server.ts enforces EXACTLY-ONE-SCHEDULER (runs only in the
+          // non-`--plugins` Process B) AND the `automationsEnabled` config
+          // master switch. Zero overhead when no automations are defined.
+          ...(database !== undefined ? { automations: { enabled: true } } : {}),
           rpc: rpcEnabled
             ? {
                 enabled: true,

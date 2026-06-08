@@ -188,6 +188,16 @@ export const SymphonyConfigSchema = z.object({
    */
   pluginsEnabled: z.boolean().default(false),
   /**
+   * Phase 8D.1 — automation scheduler master switch. When true (default),
+   * `symphony start` runs the scheduler (Process B) AND the launcher's
+   * delivery loop (Process A). Defining an automation is the real opt-in;
+   * this flag globally pauses ALL automations without deleting them. Read
+   * once at boot (no live hot-reload). 5-site cascade (the dispatch cursor
+   * doesn't read it; `automationContext` is flipped per-turn by the
+   * injector, not from config).
+   */
+  automationsEnabled: z.boolean().default(true),
+  /**
    * Phase 6A/6B — voice input subsystem.
    *
    * `enabled: false` is the default (opt-in feature). When false, the

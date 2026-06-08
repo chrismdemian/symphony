@@ -214,6 +214,9 @@ export function applyConfigEdits(existing: string, next: SymphonyConfig): string
     // Phase 7A — plugin master switch. 5-site cascade (read once at
     // orchestrator-server boot; no dispatch-context propagation).
     ['pluginsEnabled', next.pluginsEnabled],
+    // Phase 8D.1 — automation master switch. 5-site cascade (read once at
+    // boot; the dispatch cursor doesn't read it).
+    ['automationsEnabled', next.automationsEnabled],
     // Phase 6A — voice config. 5-site cascade (no runtime propagation
     // seam — voice config is client-side, dispatch doesn't read it).
     // Skipping this site silently drops the field on rewrites — the
@@ -361,6 +364,11 @@ export interface SymphonyConfigPatch {
    * at orchestrator-server boot; no runtime dispatch-context propagation).
    */
   readonly pluginsEnabled?: SymphonyConfig['pluginsEnabled'];
+  /**
+   * Phase 8D.1 — automation scheduler master switch. 5-site cascade (read
+   * once at boot; no runtime dispatch-context propagation).
+   */
+  readonly automationsEnabled?: SymphonyConfig['automationsEnabled'];
   readonly theme?: Partial<SymphonyConfig['theme']>;
   readonly defaultProjectPath?: SymphonyConfig['defaultProjectPath'] | null;
   /**
@@ -456,6 +464,8 @@ function mergePatch(current: SymphonyConfig, patch: SymphonyConfigPatch): Sympho
   if (patch.tuiProjectFilter !== undefined) next.tuiProjectFilter = patch.tuiProjectFilter;
   // Phase 7A — plugin master switch.
   if (patch.pluginsEnabled !== undefined) next.pluginsEnabled = patch.pluginsEnabled;
+  // Phase 8D.1 — automation master switch.
+  if (patch.automationsEnabled !== undefined) next.automationsEnabled = patch.automationsEnabled;
   if (patch.notifications !== undefined) {
     next.notifications = { ...current.notifications, ...patch.notifications };
   }

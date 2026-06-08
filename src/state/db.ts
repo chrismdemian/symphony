@@ -240,8 +240,42 @@ export function validateSchemaContract(db: BetterSqlite3Database, dbPath: string
   requireTable('conversations');
   requireTable('messages');
   requireTable('sessions');
-  requireTable('automations');
-  requireTable('automation_run_logs');
+  // Phase 8D.1 — automation scheduler (migration 0002, columns now exercised
+  // by SqliteAutomationStore). Future migrations that swap-rebuild either
+  // table MUST carry these columns forward (4G.1 / 4G.2 / 5A / 6D.1 / 7A
+  // hazard pattern).
+  if (requireTable('automations')) {
+    for (const col of [
+      'id',
+      'project_id',
+      'name',
+      'prompt',
+      'schedule',
+      'trigger_type',
+      'trigger_config',
+      'next_run_at',
+      'last_run_at',
+      'last_run_result',
+      'run_count',
+      'in_flight',
+      'enabled',
+      'created_at',
+    ])
+      requireColumn('automations', col);
+  }
+  if (requireTable('automation_run_logs')) {
+    for (const col of [
+      'id',
+      'automation_id',
+      'task_id',
+      'started_at',
+      'finished_at',
+      'status',
+      'error',
+      'trigger_event',
+    ])
+      requireColumn('automation_run_logs', col);
+  }
 
   if (missing.length > 0) {
     throw new DatabaseSchemaMismatchError(dbPath, missing);

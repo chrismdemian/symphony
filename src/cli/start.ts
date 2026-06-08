@@ -22,6 +22,7 @@ import {
   type HookPayload,
 } from '../orchestrator/maestro/index.js';
 import { runTui } from '../ui/runtime/runTui.js';
+import { AutomationInjector } from '../orchestrator/maestro/automation-injector.js';
 import type { TuiRpc } from '../ui/runtime/rpc.js';
 import { loadConfig } from '../utils/config.js';
 import { VoiceController } from '../voice/voice-controller.js';
@@ -649,6 +650,29 @@ export async function runStart(options: RunStartOptions = {}): Promise<RunStartH
     cleanup.push({
       label: 'stop voice',
       run: () => controller.shutdown(),
+    });
+  }
+
+  // ── 4c. Automation injector (Phase 8D.1) ───────────────────────────────
+  // The scheduler runs in the bootstrap mcp-server (Process B); this
+  // launcher (Process A) owns the live Maestro. The injector pulls
+  // scheduler-claimed runs (`automations.takePending`) and delivers each to
+  // Maestro on idle, then reports completion. Gated on the master switch.
+  // Pushed AFTER the maestro-kill cleanup but BEFORE the rpc-close cleanup
+  // pops — LIFO ordering means the injector unsubscribes before the RPC
+  // client closes.
+  if (bootConfig?.config.automationsEnabled !== false) {
+    const injector = new AutomationInjector({
+      maestro,
+      rpc,
+      log: (level, message) => {
+        if (level !== 'info') stderr.write(`[automations] ${message}\n`);
+      },
+    });
+    injector.start();
+    cleanup.push({
+      label: 'stop automation injector',
+      run: () => injector.stop(),
     });
   }
 
