@@ -104,4 +104,154 @@ describe('AutomationScheduler', () => {
     expect(await scheduler.executeTick()).toHaveLength(0); // disposed
     await scheduler.stop(); // idempotent
   });
+
+  // ---- Phase 8D.3 — catch-up reconciliation -----------------------------
+
+  it('reconcile("startup") fails a prior-session orphan AND catches it up once', async () => {
+    // Fresh-session clock well past the orphan's advanced next_run_at.
+    now = Date.parse('2026-06-08T09:00:00.000Z');
+    store = new InMemoryAutomationStore({ now: () => now });
+    broker = new AutomationsBrokerImpl();
+    events = [];
+    broker.subscribe((e) => events.push(e));
+    scheduler = new AutomationScheduler({ store, broker, now: () => now });
+
+    const a = store.create({ name: 'nightly', prompt: 'x', schedule: HOURLY });
+    // Simulate the prior session: claimed at 05:00, advanced next_run_at to
+    // 06:00, then the launcher died before completeRun — an orphaned 'running'
+    // log with a PAST next_run_at (06:00 << 09:00).
+    store.claim(a.id, '2026-06-08T06:00:00.000Z', '2026-06-08T05:00:00.000Z');
+    expect(store.listPending()).toHaveLength(1);
+    expect(store.get(a.id)!.inFlight).toBe(true);
+
+    const cleaned = await scheduler.reconcile('startup');
+
+    expect(cleaned).toBe(1); // the orphan was failed
+    const after = store.get(a.id)!;
+    expect(after.inFlight).toBe(true); // re-claimed by catch-up
+    // The orphan log is now 'failure'; catch-up inserted ONE fresh 'running'.
+    const pending = store.listPending();
+    expect(pending).toHaveLength(1);
+    // Exactly-once: prior claim (1) + catch-up claim (1) = 2.
+    expect(after.runCount).toBe(2);
+    // Resync to a future boundary (10:00), not a per-missed-period replay.
+    expect(Date.parse(after.nextRunAt!)).toBeGreaterThan(now);
+    // A wake hint was published for the caught-up run.
+    expect(events).toHaveLength(1);
+    expect(events[0]!.runLogId).toBe(pending[0]!.runLogId);
+  });
+
+  it('reconcile("resume") catches up a genuinely-due automation (no orphan, returns 0)', async () => {
+    const a = store.create({ name: 'a', prompt: 'x', schedule: HOURLY });
+    store.forceDue(a.id, new Date(now).toISOString()); // due now, not in flight
+    now += 1000;
+
+    const cleaned = await scheduler.reconcile('resume');
+
+    expect(cleaned).toBe(0); // resume NEVER fails/cleans
+    const after = store.get(a.id)!;
+    expect(after.inFlight).toBe(true); // claimed by catch-up
+    expect(after.runCount).toBe(1);
+    expect(Date.parse(after.nextRunAt!)).toBeGreaterThan(now);
+    expect(store.listPending()).toHaveLength(1);
+    expect(events).toHaveLength(1);
+  });
+
+  it('reconcile("resume") leaves a LIVE in-flight run untouched (suspended ≠ crashed)', async () => {
+    const a = store.create({ name: 'a', prompt: 'x', schedule: HOURLY });
+    store.forceDue(a.id, new Date(now).toISOString());
+    now += 1000;
+    await scheduler.executeTick(); // claims it: in_flight=1, next_run_at future
+    const nextBefore = store.get(a.id)!.nextRunAt;
+    events.length = 0;
+
+    const cleaned = await scheduler.reconcile('resume');
+
+    expect(cleaned).toBe(0);
+    expect(store.listPending()).toHaveLength(1); // the live run is untouched
+    const after = store.get(a.id)!;
+    expect(after.inFlight).toBe(true);
+    expect(after.nextRunAt).toBe(nextBefore); // NOT advanced — never re-claimed
+    expect(after.runCount).toBe(1);
+    expect(events).toHaveLength(0); // no new hint
+  });
+
+  it('collapses many missed periods into exactly ONE catch-up run', async () => {
+    now = Date.parse('2026-06-08T06:00:00.000Z');
+    store = new InMemoryAutomationStore({ now: () => now });
+    scheduler = new AutomationScheduler({ store, broker, now: () => now });
+    const a = store.create({ name: 'a', prompt: 'x', schedule: HOURLY });
+    // next_run_at = 07:00. Jump 5 hours — periods 07..11 all elapsed.
+    now = Date.parse('2026-06-08T12:00:00.000Z');
+
+    const claimed = await scheduler.executeTick();
+
+    expect(claimed).toHaveLength(1); // ONE run, not five
+    const after = store.get(a.id)!;
+    expect(after.runCount).toBe(1);
+    expect(Date.parse(after.nextRunAt!)).toBeGreaterThan(now); // 13:00
+    expect(store.listPending()).toHaveLength(1);
+  });
+
+  it('wake heuristic: no false resume on the first tick, then fires after a clock gap', async () => {
+    const logs: string[] = [];
+    const sched = new AutomationScheduler({
+      store,
+      broker,
+      now: () => now,
+      resumeGapMs: 5000,
+      log: (_level, message) => logs.push(message),
+    });
+    const a = store.create({ name: 'a', prompt: 'x', schedule: HOURLY });
+    store.forceDue(a.id, new Date(now).toISOString());
+    now += 1000;
+
+    // First observed tick — no prior tick → MUST NOT log a resume.
+    await sched.executeTick();
+    expect(logs.some((l) => l.startsWith('resume detected'))).toBe(false);
+    // Complete the run so the next tick has something due to catch up.
+    const firstPending = store.listPending();
+    store.completeRun(firstPending[0]!.runLogId, 'success', new Date(now).toISOString());
+
+    // Simulate the host sleeping: a large wall-clock gap before the next tick.
+    now += 200_000; // 200s >> 5000ms threshold
+    store.forceDue(a.id, new Date(now).toISOString());
+    now += 1;
+
+    const claimed = await sched.executeTick();
+
+    expect(claimed).toHaveLength(1);
+    const resumeLog = logs.find((l) => l.startsWith('resume detected'));
+    expect(resumeLog).toBeDefined();
+    expect(resumeLog).toContain('caught up 1 missed schedule');
+  });
+
+  it('reconcile is disposed-guarded — no claim against a torn-down store', async () => {
+    await scheduler.stop(); // disposed = true
+    const a = store.create({ name: 'a', prompt: 'x', schedule: HOURLY });
+    store.forceDue(a.id, new Date(now).toISOString());
+    now += 1000;
+
+    expect(await scheduler.reconcile('startup')).toBe(0);
+    expect(await scheduler.reconcile('resume')).toBe(0);
+    expect(store.listPending()).toHaveLength(0); // nothing claimed
+    expect(store.get(a.id)!.inFlight).toBe(false);
+  });
+
+  it('production cold-start sequence (reconcile then immediate tick) does NOT double-fire', async () => {
+    const a = store.create({ name: 'a', prompt: 'x', schedule: HOURLY });
+    store.forceDue(a.id, new Date(now).toISOString());
+    now += 1000;
+
+    const cleaned = await scheduler.reconcile('startup'); // catches up once
+    expect(cleaned).toBe(0);
+    expect(store.listPending()).toHaveLength(1);
+
+    // server.ts fires an immediate tick right after reconcile; next_run_at was
+    // advanced, so it finds nothing due — no second run for the same window.
+    const claimed = await scheduler.executeTick();
+    expect(claimed).toHaveLength(0);
+    expect(store.listPending()).toHaveLength(1);
+    expect(store.get(a.id)!.runCount).toBe(1);
+  });
 });
