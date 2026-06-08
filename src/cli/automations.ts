@@ -4,12 +4,9 @@ import { SqliteAutomationStore } from '../state/sqlite-automation-store.js';
 import { SqliteProjectStore } from '../state/sqlite-project-store.js';
 import type { AutomationStore, AutomationRecord } from '../state/automation-store.js';
 import {
+  buildScheduleFromFlags,
   describeSchedule,
-  InvalidScheduleError,
-  validateSchedule,
   type AutomationSchedule,
-  type DayOfWeek,
-  type ScheduleType,
 } from '../orchestrator/automation-schedule.js';
 
 /**
@@ -32,9 +29,6 @@ interface BaseOpts {
   readonly stdout?: NodeJS.WritableStream;
   readonly stderr?: NodeJS.WritableStream;
 }
-
-const SCHEDULE_TYPES: readonly ScheduleType[] = ['hourly', 'daily', 'weekly', 'monthly'];
-const DAYS: readonly DayOfWeek[] = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
 /** Thrown when an automation target is rejected at registration. */
 export class AutomationTargetError extends Error {
@@ -81,47 +75,6 @@ function withDb<T>(dbFilePath: string | undefined, fn: (db: SymphonyDatabase) =>
   }
 }
 
-/** Parse `--at HH:MM` into {hour, minute}. Throws on a malformed value. */
-function parseAt(at: string): { hour: number; minute: number } {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(at);
-  if (m === null) {
-    throw new InvalidScheduleError(`--at must be HH:MM (got '${at}')`);
-  }
-  return { hour: Number(m[1]), minute: Number(m[2]) };
-}
-
-export interface BuildScheduleInput {
-  readonly every: string;
-  readonly at?: string;
-  readonly on?: string;
-  readonly day?: string;
-}
-
-/** Assemble + validate an {@link AutomationSchedule} from CLI flags. */
-export function buildScheduleFromFlags(input: BuildScheduleInput): AutomationSchedule {
-  const type = input.every as ScheduleType;
-  if (!SCHEDULE_TYPES.includes(type)) {
-    throw new InvalidScheduleError(
-      `--every must be one of ${SCHEDULE_TYPES.join(' | ')} (got '${input.every}')`,
-    );
-  }
-  const time = input.at !== undefined ? parseAt(input.at) : undefined;
-  const schedule: AutomationSchedule = {
-    type,
-    // Hourly ignores the hour component; everything else honors --at.
-    ...(time !== undefined && type !== 'hourly' ? { hour: time.hour } : {}),
-    ...(time !== undefined ? { minute: time.minute } : {}),
-    ...(type === 'weekly' && input.on !== undefined
-      ? { dayOfWeek: input.on.toLowerCase() as DayOfWeek }
-      : {}),
-    ...(type === 'monthly' && input.day !== undefined ? { dayOfMonth: Number(input.day) } : {}),
-  };
-  if (type === 'weekly' && schedule.dayOfWeek !== undefined && !DAYS.includes(schedule.dayOfWeek)) {
-    throw new InvalidScheduleError(`--on must be one of ${DAYS.join(' | ')} (got '${input.on}')`);
-  }
-  validateSchedule(schedule);
-  return schedule;
-}
 
 export interface RunAutomationsAddOptions extends BaseOpts {
   readonly name: string;
