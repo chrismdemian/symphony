@@ -127,6 +127,45 @@ describe('automation MCP tools', () => {
       expect(res.isError).toBe(true);
       expect(store.list()).toHaveLength(0);
     });
+
+    // ── Phase 8D.4 — trigger filters ─────────────────────────────────────────
+
+    it('creates a trigger automation with filters and reports them', async () => {
+      const res = await tool().handler(
+        {
+          name: 'gh-bugs',
+          prompt: 'triage',
+          triggerType: 'github_issue',
+          labelFilter: ['bug', 'urgent'],
+          assigneeFilter: 'chris',
+        } as never,
+        ctx(),
+      );
+      expect(res.isError).toBeFalsy();
+      expect(res.structuredContent?.['triggerConfig']).toEqual({
+        labelFilter: ['bug', 'urgent'],
+        assigneeFilter: 'chris',
+      });
+      expect((res.content[0] as { text: string }).text).toContain('label:bug,urgent assignee:chris');
+    });
+
+    it('rejects filters on a SCHEDULE automation', async () => {
+      const res = await tool().handler(
+        { name: 'x', prompt: 'p', every: 'daily', at: '09:00', labelFilter: ['bug'] } as never,
+        ctx(),
+      );
+      expect(res.isError).toBe(true);
+      expect((res.content[0] as { text: string }).text).toContain('only valid with `triggerType`');
+      expect(store.list()).toHaveLength(0);
+    });
+
+    it('a trigger with no filters has a null triggerConfig', async () => {
+      const res = await tool().handler(
+        { name: 'gh', prompt: 'p', triggerType: 'github_issue' } as never,
+        ctx(),
+      );
+      expect(res.structuredContent?.['triggerConfig']).toBeNull();
+    });
   });
 
   it('list_automations renders rows + a structured array', async () => {

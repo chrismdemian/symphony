@@ -32,6 +32,7 @@
 import type { AutomationStore } from '../state/automation-store.js';
 import type { AutomationsBroker } from './automations-broker.js';
 import type { RawTriggerEvent, TriggerSource } from './automation-trigger-source.js';
+import { matchesTriggerFilters, parseTriggerConfig } from './trigger-filter.js';
 
 /** Default trigger poll interval — emdash uses 10s (GitHub's recommended X-Poll-Interval). */
 export const DEFAULT_TRIGGER_POLL_INTERVAL_MS = 10_000;
@@ -187,12 +188,23 @@ export class AutomationTriggerEngine {
       const fresh = events.filter((e) => !existing.has(e.id));
       if (fresh.length === 0) continue;
 
-      // Claim the first fresh event. The claim flips in_flight=1, so a second
-      // claim this cycle would fail the WHERE in_flight=0 guard — fire one,
-      // leave the rest un-known to fire in later cycles. Mark known ONLY on a
-      // successful claim so a raced/failed claim retries next cycle.
+      // Phase 8D.4 — scope by the automation's trigger_config filters. Parsed
+      // once per automation per cycle (null = no filtering).
+      const filterConfig = parseTriggerConfig(auto.triggerConfig, this.log);
+
+      // Claim the first fresh event that PASSES the filters. The claim flips
+      // in_flight=1, so a second claim this cycle would fail the WHERE
+      // in_flight=0 guard — fire one, leave the rest un-known to fire in later
+      // cycles. Mark known ONLY on a successful claim (so a raced/failed claim
+      // retries next cycle) OR when the event is FILTERED OUT (it will never
+      // fire — no point re-evaluating it every cycle).
       for (const event of fresh) {
         if (this.disposed) break;
+        if (!matchesTriggerFilters(event, filterConfig)) {
+          existing.add(event.id);
+          this.trimKnown(existing);
+          continue; // filtered out — known now, never fires
+        }
         const result = this.store.claimTrigger(auto.id, JSON.stringify(event), nowIso);
         if (result === undefined) break; // raced — another claimer won; retry next cycle
         existing.add(event.id);

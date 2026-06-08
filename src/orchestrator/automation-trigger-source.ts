@@ -38,6 +38,12 @@ export interface RawTriggerEvent {
   readonly labels: readonly string[];
   /** Assignee display name / login (for 8D.4 assignee filtering). */
   readonly assignee: string | null;
+  /**
+   * Source branch (8D.4 branch filtering). Every Symphony trigger source today
+   * is issue-based and leaves this undefined; reserved for branch-bearing (PR)
+   * sources. {@link matchesTriggerFilters} skips the branch filter when absent.
+   */
+  readonly branch?: string | null;
 }
 
 /**

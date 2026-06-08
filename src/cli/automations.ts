@@ -9,6 +9,11 @@ import {
   type AutomationSchedule,
 } from '../orchestrator/automation-schedule.js';
 import { KNOWN_TRIGGER_TYPES } from '../orchestrator/automation-trigger-source.js';
+import {
+  buildTriggerConfigJson,
+  describeTriggerFilters,
+  parseTriggerConfig,
+} from '../orchestrator/trigger-filter.js';
 
 /**
  * Phase 8D.1 — `symphony automations …` CLI runners.
@@ -89,6 +94,10 @@ export interface RunAutomationsAddOptions extends BaseOpts {
   readonly day?: string;
   readonly project?: string;
   readonly disabled?: boolean;
+  /** Phase 8D.4 — trigger filters (only valid with {@link trigger}). */
+  readonly labels?: readonly string[];
+  readonly assignee?: string;
+  readonly branch?: string;
 }
 
 export function runAutomationsAdd(opts: RunAutomationsAddOptions): AutomationsCliResult {
@@ -110,14 +119,29 @@ export function runAutomationsAdd(opts: RunAutomationsAddOptions): AutomationsCl
     out('error: provide either --every (schedule) or --trigger (event)');
     return { exitCode: 1 };
   }
+  // Phase 8D.4 — filter flags are trigger-only (a schedule has no event to filter).
+  const hasFilter =
+    (opts.labels !== undefined && opts.labels.length > 0) ||
+    opts.assignee !== undefined ||
+    opts.branch !== undefined;
+  if (hasFilter && opts.trigger === undefined) {
+    out('error: --label / --assignee / --branch are only valid with --trigger');
+    return { exitCode: 1 };
+  }
   let schedule: AutomationSchedule | undefined;
   let triggerType: string | undefined;
+  let triggerConfig: string | null = null;
   if (opts.trigger !== undefined) {
     if (!(KNOWN_TRIGGER_TYPES as readonly string[]).includes(opts.trigger)) {
       out(`error: --trigger must be one of ${KNOWN_TRIGGER_TYPES.join(' | ')} (got '${opts.trigger}')`);
       return { exitCode: 1 };
     }
     triggerType = opts.trigger;
+    triggerConfig = buildTriggerConfigJson({
+      ...(opts.labels !== undefined ? { labels: opts.labels } : {}),
+      ...(opts.assignee !== undefined ? { assignee: opts.assignee } : {}),
+      ...(opts.branch !== undefined ? { branch: opts.branch } : {}),
+    });
   } else {
     try {
       schedule = buildScheduleFromFlags({
@@ -154,11 +178,14 @@ export function runAutomationsAdd(opts: RunAutomationsAddOptions): AutomationsCl
       prompt: opts.prompt,
       ...(schedule !== undefined ? { schedule } : {}),
       ...(triggerType !== undefined ? { triggerType } : {}),
+      ...(triggerConfig !== null ? { triggerConfig } : {}),
       projectId,
       enabled: opts.disabled !== true,
     });
+    const filterText = describeTriggerFilters(parseTriggerConfig(record.triggerConfig));
     out(
       `added automation '${record.name}' (${record.id}) — ${describeAutomationMode(record.schedule, record.triggerType)}` +
+        `${filterText.length > 0 ? ` (${filterText})` : ''}` +
         `${record.enabled ? '' : ' [disabled]'}` +
         `${record.nextRunAt !== null ? `; next run ${record.nextRunAt}` : ''}`,
     );
@@ -187,8 +214,10 @@ export function runAutomationsList(opts: RunAutomationsListOptions): Automations
       const flags = [r.enabled ? null : 'disabled', r.inFlight ? 'running' : null]
         .filter((x): x is string => x !== null)
         .join(', ');
+      const filterText = describeTriggerFilters(parseTriggerConfig(r.triggerConfig));
       out(
         `${r.id}  ${r.name}  —  ${describeAutomationMode(r.schedule, r.triggerType)}` +
+          `${filterText.length > 0 ? ` (${filterText})` : ''}` +
           `${flags.length > 0 ? ` [${flags}]` : ''}` +
           `  next ${r.nextRunAt ?? '(none)'}  runs ${r.runCount}`,
       );
@@ -265,6 +294,7 @@ function toJson(r: AutomationRecord): Record<string, unknown> {
     projectId: r.projectId,
     schedule: r.schedule,
     triggerType: r.triggerType,
+    triggerConfig: parseTriggerConfig(r.triggerConfig),
     enabled: r.enabled,
     inFlight: r.inFlight,
     nextRunAt: r.nextRunAt,
