@@ -239,6 +239,21 @@ export function buildScheduleFromFlags(input: ScheduleFlags): AutomationSchedule
   return schedule;
 }
 
+/**
+ * One-line description of an automation's firing mode — a schedule or a Phase
+ * 8D.2 trigger. Takes the two raw fields (not an AutomationRecord) so this
+ * low-layer module stays free of a store import cycle. Shared by the CLI list
+ * + add output and the agent-native MCP tools.
+ */
+export function describeAutomationMode(
+  schedule: AutomationSchedule | null,
+  triggerType: string | null,
+): string {
+  if (schedule !== null) return describeSchedule(schedule);
+  if (triggerType !== null) return `on new ${triggerType}`;
+  return '(no schedule)';
+}
+
 /** Human-readable one-line description for the `automations list` CLI. */
 export function describeSchedule(schedule: AutomationSchedule): string {
   const hh = String(schedule.hour ?? 0).padStart(2, '0');

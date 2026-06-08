@@ -113,6 +113,51 @@ describe('automations CLI', () => {
     expect(r.exitCode).toBe(0);
     expect(err.text()).toContain('No automations defined');
   });
+
+  // ── Phase 8D.2 — trigger automations ───────────────────────────────────────
+
+  it('add --trigger creates a trigger automation (no schedule, null nextRun)', () => {
+    const add = runAutomationsAdd({
+      ...base(),
+      name: 'gh-triage',
+      prompt: 'triage the new issue',
+      trigger: 'github_issue',
+    });
+    expect(add.exitCode).toBe(0);
+    expect(err.text()).toContain("added automation 'gh-triage'");
+    expect(err.text()).toContain('on new github_issue');
+
+    out.lines = [];
+    runAutomationsList({ ...base(), json: true });
+    const parsed = JSON.parse(out.text());
+    expect(parsed[0].triggerType).toBe('github_issue');
+    expect(parsed[0].schedule).toBeNull();
+    expect(parsed[0].nextRunAt).toBeNull();
+  });
+
+  it('rejects both --every and --trigger together', () => {
+    const r = runAutomationsAdd({
+      ...base(),
+      name: 'x',
+      prompt: 'p',
+      every: 'daily',
+      trigger: 'github_issue',
+    });
+    expect(r.exitCode).toBe(1);
+    expect(err.text()).toContain('exactly one of --every');
+  });
+
+  it('rejects neither --every nor --trigger', () => {
+    const r = runAutomationsAdd({ ...base(), name: 'x', prompt: 'p' });
+    expect(r.exitCode).toBe(1);
+    expect(err.text()).toContain('either --every');
+  });
+
+  it('rejects an unknown --trigger type', () => {
+    const r = runAutomationsAdd({ ...base(), name: 'x', prompt: 'p', trigger: 'slack_message' });
+    expect(r.exitCode).toBe(1);
+    expect(err.text()).toContain('--trigger must be one of');
+  });
 });
 
 describe('buildScheduleFromFlags', () => {

@@ -100,6 +100,33 @@ describe('automation MCP tools', () => {
       );
       expect(res.structuredContent?.['enabled']).toBe(false);
     });
+
+    it('creates a trigger automation from triggerType (no schedule)', async () => {
+      const res = await tool().handler(
+        { name: 'gh', prompt: 'triage', triggerType: 'github_issue' } as never,
+        ctx(),
+      );
+      expect(res.isError).toBeFalsy();
+      expect(res.structuredContent?.['triggerType']).toBe('github_issue');
+      expect(res.structuredContent?.['schedule']).toBeNull();
+      expect(res.structuredContent?.['nextRunAt']).toBeNull();
+      expect((res.content[0] as { text: string }).text).toContain('on new github_issue');
+    });
+
+    it('rejects both every and triggerType', async () => {
+      const res = await tool().handler(
+        { name: 'x', prompt: 'p', every: 'daily', triggerType: 'github_issue' } as never,
+        ctx(),
+      );
+      expect(res.isError).toBe(true);
+      expect(store.list()).toHaveLength(0);
+    });
+
+    it('rejects neither every nor triggerType', async () => {
+      const res = await tool().handler({ name: 'x', prompt: 'p' } as never, ctx());
+      expect(res.isError).toBe(true);
+      expect(store.list()).toHaveLength(0);
+    });
   });
 
   it('list_automations renders rows + a structured array', async () => {

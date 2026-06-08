@@ -5,9 +5,10 @@ import { SqliteProjectStore } from '../state/sqlite-project-store.js';
 import type { AutomationStore, AutomationRecord } from '../state/automation-store.js';
 import {
   buildScheduleFromFlags,
-  describeSchedule,
+  describeAutomationMode,
   type AutomationSchedule,
 } from '../orchestrator/automation-schedule.js';
+import { KNOWN_TRIGGER_TYPES } from '../orchestrator/automation-trigger-source.js';
 
 /**
  * Phase 8D.1 — `symphony automations …` CLI runners.
@@ -79,7 +80,10 @@ function withDb<T>(dbFilePath: string | undefined, fn: (db: SymphonyDatabase) =>
 export interface RunAutomationsAddOptions extends BaseOpts {
   readonly name: string;
   readonly prompt: string;
-  readonly every: string;
+  /** Schedule interval (mutually exclusive with {@link trigger}). */
+  readonly every?: string;
+  /** Phase 8D.2 — trigger event type (mutually exclusive with {@link every}). */
+  readonly trigger?: string;
   readonly at?: string;
   readonly on?: string;
   readonly day?: string;
@@ -97,12 +101,35 @@ export function runAutomationsAdd(opts: RunAutomationsAddOptions): AutomationsCl
     out('error: --prompt must not be empty');
     return { exitCode: 1 };
   }
-  let schedule: AutomationSchedule;
-  try {
-    schedule = buildScheduleFromFlags(opts);
-  } catch (err) {
-    out(`error: ${err instanceof Error ? err.message : String(err)}`);
+  // Exactly one of --every (schedule) / --trigger (event).
+  if (opts.every !== undefined && opts.trigger !== undefined) {
+    out('error: provide exactly one of --every (schedule) or --trigger (event), not both');
     return { exitCode: 1 };
+  }
+  if (opts.every === undefined && opts.trigger === undefined) {
+    out('error: provide either --every (schedule) or --trigger (event)');
+    return { exitCode: 1 };
+  }
+  let schedule: AutomationSchedule | undefined;
+  let triggerType: string | undefined;
+  if (opts.trigger !== undefined) {
+    if (!(KNOWN_TRIGGER_TYPES as readonly string[]).includes(opts.trigger)) {
+      out(`error: --trigger must be one of ${KNOWN_TRIGGER_TYPES.join(' | ')} (got '${opts.trigger}')`);
+      return { exitCode: 1 };
+    }
+    triggerType = opts.trigger;
+  } else {
+    try {
+      schedule = buildScheduleFromFlags({
+        every: opts.every as string,
+        ...(opts.at !== undefined ? { at: opts.at } : {}),
+        ...(opts.on !== undefined ? { on: opts.on } : {}),
+        ...(opts.day !== undefined ? { day: opts.day } : {}),
+      });
+    } catch (err) {
+      out(`error: ${err instanceof Error ? err.message : String(err)}`);
+      return { exitCode: 1 };
+    }
   }
   // Phase 8D.1 — no plugin-target field yet; the guard is a no-op scaffold.
   try {
@@ -125,13 +152,15 @@ export function runAutomationsAdd(opts: RunAutomationsAddOptions): AutomationsCl
     const record = store.create({
       name: opts.name,
       prompt: opts.prompt,
-      schedule,
+      ...(schedule !== undefined ? { schedule } : {}),
+      ...(triggerType !== undefined ? { triggerType } : {}),
       projectId,
       enabled: opts.disabled !== true,
     });
     out(
-      `added automation '${record.name}' (${record.id}) — ${describeSchedule(schedule)}` +
-        `${record.enabled ? '' : ' [disabled]'}; next run ${record.nextRunAt ?? '(none)'}`,
+      `added automation '${record.name}' (${record.id}) — ${describeAutomationMode(record.schedule, record.triggerType)}` +
+        `${record.enabled ? '' : ' [disabled]'}` +
+        `${record.nextRunAt !== null ? `; next run ${record.nextRunAt}` : ''}`,
     );
     return { exitCode: 0 };
   });
@@ -155,12 +184,11 @@ export function runAutomationsList(opts: RunAutomationsListOptions): Automations
       return { exitCode: 0 };
     }
     for (const r of records) {
-      const sched = r.schedule !== null ? describeSchedule(r.schedule) : '(no schedule)';
       const flags = [r.enabled ? null : 'disabled', r.inFlight ? 'running' : null]
         .filter((x): x is string => x !== null)
         .join(', ');
       out(
-        `${r.id}  ${r.name}  —  ${sched}` +
+        `${r.id}  ${r.name}  —  ${describeAutomationMode(r.schedule, r.triggerType)}` +
           `${flags.length > 0 ? ` [${flags}]` : ''}` +
           `  next ${r.nextRunAt ?? '(none)'}  runs ${r.runCount}`,
       );
@@ -236,6 +264,7 @@ function toJson(r: AutomationRecord): Record<string, unknown> {
     prompt: r.prompt,
     projectId: r.projectId,
     schedule: r.schedule,
+    triggerType: r.triggerType,
     enabled: r.enabled,
     inFlight: r.inFlight,
     nextRunAt: r.nextRunAt,

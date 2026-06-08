@@ -61,9 +61,52 @@ export interface AutomationInjectorDeps {
 const DEFAULT_SAFETY_POLL_MS = 60_000;
 const AUTOMATIONS_EVENTS_TOPIC = 'automations.events';
 
-/** One-line firing marker so Maestro knows the turn is automation-driven. */
+/**
+ * Format the firing marker so Maestro knows the turn is automation-driven.
+ * A TRIGGER run (8D.2) carries the firing event's JSON on `run.triggerEvent`,
+ * so the prompt is prepended with event context (`[Automation … triggered by
+ * <type>: "<title>"]` + URL). A SCHEDULE run gets the plain scheduled prefix.
+ * A malformed trigger-event JSON falls back to the scheduled prefix rather
+ * than dropping the turn.
+ */
 export function formatAutomationPrompt(run: PendingRun): string {
+  if (run.triggerEvent !== null) {
+    const enriched = enrichTriggeredPrompt(run.triggerEvent, run.automationName, run.prompt);
+    if (enriched !== undefined) return enriched;
+  }
   return `[Scheduled automation: ${run.automationName}]\n\n${run.prompt}`;
+}
+
+interface TriggerEventShape {
+  readonly title?: unknown;
+  readonly url?: unknown;
+  readonly type?: unknown;
+  readonly extra?: unknown;
+}
+
+/** Prepend event context to a triggered run's base prompt. `undefined` on malformed JSON. */
+function enrichTriggeredPrompt(
+  eventJson: string,
+  automationName: string,
+  basePrompt: string,
+): string | undefined {
+  let parsed: TriggerEventShape;
+  try {
+    const obj: unknown = JSON.parse(eventJson);
+    if (typeof obj !== 'object' || obj === null || Array.isArray(obj)) return undefined;
+    parsed = obj as TriggerEventShape;
+  } catch {
+    return undefined;
+  }
+  const type =
+    typeof parsed.type === 'string' && parsed.type.length > 0 ? parsed.type : 'event';
+  const title = typeof parsed.title === 'string' ? parsed.title : '(untitled)';
+  const lines: string[] = [
+    `[Automation "${automationName}" triggered by ${type}: "${title}"]`,
+  ];
+  if (typeof parsed.url === 'string' && parsed.url.length > 0) lines.push(`URL: ${parsed.url}`);
+  if (typeof parsed.extra === 'string' && parsed.extra.length > 0) lines.push(parsed.extra);
+  return `${lines.join('\n')}\n\n${basePrompt}`;
 }
 
 export class AutomationInjector {
