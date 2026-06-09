@@ -74,7 +74,7 @@ const createShape = {
     .enum(KNOWN_TRIGGER_TYPES)
     .optional()
     .describe(
-      'Event source for a TRIGGER automation (fires when a new issue/thread appears). One of github_issue | linear_issue | jira_issue | gitlab_issue | plain_thread | forgejo_issue. Requires the matching `symphony config <connector>`. Mutually exclusive with `every`.',
+      'Event source for a TRIGGER automation (fires when a new issue/thread/error appears). One of github_issue | linear_issue | jira_issue | gitlab_issue | plain_thread | forgejo_issue | sentry_error. Requires the matching `symphony config <connector>`. Mutually exclusive with `every`.',
     ),
   at: z
     .string()

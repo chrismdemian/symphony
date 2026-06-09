@@ -451,6 +451,62 @@ config
     },
   );
 
+config
+  .command('sentry')
+  .description('Configure the Sentry integration (auth token, org, projects, writeback). Phase 8D.')
+  .option(
+    '--token <auth-token>',
+    'Sentry auth token — scope event:read, + event:write for --writeback-resolve (stored in the OS keychain, or ~/.symphony/integrations fallback). NOT a DSN.',
+  )
+  .option('--org <slug>', 'Sentry organization slug (required to enable syncing).')
+  .option(
+    '--project <slug>',
+    'A Sentry project to pull unresolved issues from (repeatable; accumulates across invocations).',
+    (value: string, prev: string[]) => [...prev, value],
+    [] as string[],
+  )
+  .option('--url <url>', 'Sentry instance base URL (default https://sentry.io; https only). Use a region or self-hosted host.')
+  .option(
+    '--writeback-completed <text>',
+    'Internal note posted on the Sentry issue when a task completes (default "Investigated by Symphony."). A note never changes status.',
+  )
+  .option(
+    '--writeback-failed <text>',
+    'Internal note posted when a task fails (default: no failure writeback).',
+  )
+  .option(
+    '--writeback-resolve',
+    'Also mark the Sentry issue resolved on task completion (default off — investigating an error is not the same as fixing it).',
+  )
+  .option('--status', 'Run a connection check against Sentry instead of writing config.')
+  .action(
+    async (opts: {
+      token?: string;
+      org?: string;
+      project?: string[];
+      url?: string;
+      writebackCompleted?: string;
+      writebackFailed?: string;
+      writebackResolve?: boolean;
+      status?: boolean;
+    }) => {
+      const { runSentryConfig } = await import('./cli/sentry-config.js');
+      const result = await runSentryConfig({
+        ...(opts.token !== undefined ? { token: opts.token } : {}),
+        ...(opts.org !== undefined ? { org: opts.org } : {}),
+        ...(opts.project !== undefined && opts.project.length > 0 ? { projects: opts.project } : {}),
+        ...(opts.url !== undefined ? { baseUrl: opts.url } : {}),
+        ...(opts.writebackCompleted !== undefined
+          ? { writebackCompleted: opts.writebackCompleted }
+          : {}),
+        ...(opts.writebackFailed !== undefined ? { writebackFailed: opts.writebackFailed } : {}),
+        ...(opts.writebackResolve === true ? { writebackResolve: true } : {}),
+        ...(opts.status === true ? { check: true } : {}),
+      });
+      process.exit(result.exitCode);
+    },
+  );
+
 program
   .command('reset')
   .description(
@@ -900,7 +956,7 @@ automations
   .option('--every <interval>', 'SCHEDULE interval: hourly | daily | weekly | monthly. Mutually exclusive with --trigger.')
   .option(
     '--trigger <type>',
-    'TRIGGER event source: github_issue | linear_issue | jira_issue | gitlab_issue | plain_thread | forgejo_issue. Mutually exclusive with --every.',
+    'TRIGGER event source: github_issue | linear_issue | jira_issue | gitlab_issue | plain_thread | forgejo_issue | sentry_error. Mutually exclusive with --every.',
   )
   .option('--at <hh:mm>', 'Time of day (24h), e.g. 09:30. Hourly uses only the minute.')
   .option('--on <day>', 'Day of week for --every weekly: sun|mon|tue|wed|thu|fri|sat.')
@@ -1065,6 +1121,12 @@ program
           // (zero overhead) when not fully configured. The sync_forgejo tool +
           // the comment+close writeback wire up only when configured.
           ...(database !== undefined ? { forgejo: { enabled: true } } : {}),
+          // Phase 8D.5 — activate the Sentry connector whenever a DB is open.
+          // Reads the stored token + sentry.json org/projects; undefined (zero
+          // overhead) when not fully configured. The sync_sentry tool, the
+          // sentry_error trigger source, and the note (opt-in resolve) writeback
+          // wire up only when configured.
+          ...(database !== undefined ? { sentry: { enabled: true } } : {}),
           // Phase 8D.1 — activate the automation scheduler whenever a DB is
           // open. server.ts enforces EXACTLY-ONE-SCHEDULER (runs only in the
           // non-`--plugins` Process B) AND the `automationsEnabled` config
