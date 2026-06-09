@@ -72,6 +72,8 @@ export const TOOL_VERB: Readonly<Record<string, string>> = Object.freeze({
   // Phase 8C.4
   sync_plain: 'Transcribing',
   sync_forgejo: 'Transcribing',
+  // Phase 8D.5
+  sync_sentry: 'Transcribing',
 
   // Phase 8D.1 — automation management (musical "program"/setlist metaphor)
   create_automation: 'Programming',

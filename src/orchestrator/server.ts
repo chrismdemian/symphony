@@ -85,6 +85,8 @@ import { createPlainConnectorFromDisk } from '../integrations/plain.js';
 import { PLAIN_INTEGRATION } from '../integrations/plain-config.js';
 import { createForgejoConnectorFromDisk } from '../integrations/forgejo.js';
 import { FORGEJO_INTEGRATION } from '../integrations/forgejo-config.js';
+import { createSentryConnectorFromDisk } from '../integrations/sentry.js';
+import { SENTRY_INTEGRATION } from '../integrations/sentry-config.js';
 import { makeTaskNotesTool } from './tools/task-notes.js';
 import { makeSetActiveProjectTool } from './tools/set-active-project.js';
 import { makeCreateSagaTool } from './tools/create-saga.js';
@@ -442,6 +444,18 @@ export interface OrchestratorServerOptions {
   /** Override / inject the Forgejo connector. Test seam (bypasses disk read). */
   forgejoConnector?: IssueConnectorHandle;
   /**
+   * Phase 8D.5 — Sentry integration activation. When `enabled: true` (set only by
+   * the real CLI boot paths, NEVER by tests) and no `sentryConnector` is injected,
+   * the server reads the stored Sentry auth token (+ `sentry.json` org + projects)
+   * and constructs a `SentryConnector` when a token, org, AND at least one project
+   * are present. The `sync_sentry` tool, the `sentry_error` automation trigger
+   * source, and the terminal-status writeback hook (note; opt-in resolve) are wired
+   * only when a connector exists. Test seam: inject `sentryConnector` directly.
+   */
+  sentry?: { enabled?: boolean };
+  /** Override / inject the Sentry connector. Test seam (bypasses disk read). */
+  sentryConnector?: IssueConnectorHandle;
+  /**
    * Phase 8A — override the task↔external-source link store. Defaults to
    * SQLite-backed when `database` is provided, else in-memory. Used for
    * sync dedup + the Notion / Obsidian / Linear / GitHub status writeback.
@@ -492,6 +506,8 @@ export interface OrchestratorServerHandle {
   plainConnector?: IssueConnectorHandle;
   /** Phase 8C.4 — present when Forgejo is configured + activated. */
   forgejoConnector?: IssueConnectorHandle;
+  /** Phase 8D.5 — present when Sentry is configured + activated. */
+  sentryConnector?: IssueConnectorHandle;
   /** Phase 5E — exposed for tests + tools that need to read saga membership. */
   sagaStore: SagaStore;
   questionStore: QuestionStore;
@@ -743,6 +759,8 @@ export async function startOrchestratorServer(
   const plainWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
   // Phase 8C.4 — Forgejo issue writeback hook (comment + close; built by makeIssueWritebackRef).
   const forgejoWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
+  // Phase 8D.5 — Sentry issue writeback hook (note; opt-in resolve; built by makeIssueWritebackRef).
+  const sentryWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
   const fanOutTaskStatusChange = (snapshot: TaskSnapshot): void => {
     taskReadyOnTaskStatusChange(snapshot);
     sagaRollupListener(snapshot);
@@ -762,6 +780,7 @@ export async function startOrchestratorServer(
       gitlabWritebackRef.current?.(snapshot);
       plainWritebackRef.current?.(snapshot);
       forgejoWritebackRef.current?.(snapshot);
+      sentryWritebackRef.current?.(snapshot);
     }
   };
   // Phase 7B.3 — fan task creation out to subscribed plugins (onTaskCreated).
@@ -1040,6 +1059,30 @@ export async function startOrchestratorServer(
       source: FORGEJO_INTEGRATION,
       externalLinkStore,
       log: forgejoLog,
+    });
+  }
+  // Phase 8D.5 — Sentry connector. Injected (test seam) or auto-constructed from
+  // the stored token + `sentry.json` org + projects when activated by the CLI
+  // boot path (`sentry.enabled`). Undefined when no token / no org / no projects
+  // — the `sync_sentry` tool, the `sentry_error` trigger source, and the
+  // writeback hook wire up only when a connector exists.
+  const sentryLog = (level: 'info' | 'warn' | 'error', message: string): void => {
+    const line = `[symphony] sentry: ${message}`;
+    if (level === 'error') console.error(line);
+    else if (level === 'warn') console.warn(line);
+    // info stays quiet — TUI owns stdout.
+  };
+  const sentryConnector: IssueConnectorHandle | undefined =
+    options.sentryConnector ??
+    (options.sentry?.enabled === true
+      ? await createSentryConnectorFromDisk({ log: sentryLog })
+      : undefined);
+  if (sentryConnector !== undefined) {
+    sentryWritebackRef.current = makeIssueWritebackRef({
+      connector: sentryConnector,
+      source: SENTRY_INTEGRATION,
+      externalLinkStore,
+      log: sentryLog,
     });
   }
   // Phase 3H.3 — instantiate the notifications dispatcher BEFORE the
@@ -1784,6 +1827,7 @@ export async function startOrchestratorServer(
         add(gitlabConnector, 'gitlab_issue', 'GitLab issue', gitlabLog);
         add(plainConnector, 'plain_thread', 'Plain thread', plainLog);
         add(forgejoConnector, 'forgejo_issue', 'Forgejo issue', forgejoLog);
+        add(sentryConnector, 'sentry_error', 'Sentry issue', sentryLog);
         return sources;
       })();
     automationTriggerEngine = new AutomationTriggerEngine({
@@ -1893,6 +1937,22 @@ export async function startOrchestratorServer(
         name: 'sync_forgejo',
         description:
           'Pull open issues from the configured Forgejo repos into Symphony. Creates one pending task per new issue (idempotent — already-imported issues are skipped) and routes by `owner/repo`. On task completion Symphony comments on and closes the Forgejo issue. Requires `symphony config forgejo`.',
+        taskStore,
+        projectStore,
+        externalLinkStore,
+        resolveProjectPath,
+      }),
+    );
+  }
+  // Phase 8D.5 — sync_sentry is registered ONLY when a Sentry connector is active
+  // (token + org + at least one project). Same on-demand surface as sync_github.
+  if (sentryConnector !== undefined) {
+    registry.register(
+      makeSyncIssuesTool({
+        connector: sentryConnector,
+        name: 'sync_sentry',
+        description:
+          'Pull unresolved error issues from the configured Sentry projects into Symphony. Creates one pending task per new error group (idempotent — already-imported issues are skipped), skips resolved/ignored issues, and routes by Sentry project slug. On task completion Symphony posts an internal note on the Sentry issue (and resolves it only when `resolveOnCompleted` is configured). Requires `symphony config sentry`.',
         taskStore,
         projectStore,
         externalLinkStore,
@@ -2243,6 +2303,7 @@ export async function startOrchestratorServer(
     ...(gitlabConnector !== undefined ? { gitlabConnector } : {}),
     ...(plainConnector !== undefined ? { plainConnector } : {}),
     ...(forgejoConnector !== undefined ? { forgejoConnector } : {}),
+    ...(sentryConnector !== undefined ? { sentryConnector } : {}),
     sagaStore,
     questionStore,
     waveStore,

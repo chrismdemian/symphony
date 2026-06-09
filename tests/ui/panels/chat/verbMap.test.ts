@@ -59,6 +59,7 @@ describe('verbMap', () => {
       'sync_gitlab',
       'sync_plain',
       'sync_forgejo',
+      'sync_sentry',
     ]) {
       expect(TOOL_VERB[name], `missing verb for tool '${name}'`).toBeDefined();
     }

@@ -47,10 +47,11 @@ export interface RawTriggerEvent {
 }
 
 /**
- * The trigger types Symphony supports — one per Phase-8C issue connector. A
- * trigger automation may name one of these regardless of whether its connector
- * is currently configured; an unconfigured type simply never fires (the engine
- * has no source for it) until `symphony config <connector>` activates it.
+ * The trigger types Symphony supports — one per Phase-8C issue connector plus the
+ * Phase-8D.5 `sentry_error` source. A trigger automation may name one of these
+ * regardless of whether its connector is currently configured; an unconfigured
+ * type simply never fires (the engine has no source for it) until
+ * `symphony config <connector>` activates it.
  */
 export const KNOWN_TRIGGER_TYPES = [
   'github_issue',
@@ -59,6 +60,7 @@ export const KNOWN_TRIGGER_TYPES = [
   'gitlab_issue',
   'plain_thread',
   'forgejo_issue',
+  'sentry_error',
 ] as const;
 
 export type KnownTriggerType = (typeof KNOWN_TRIGGER_TYPES)[number];
