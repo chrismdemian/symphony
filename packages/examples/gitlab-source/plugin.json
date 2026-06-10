@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "gitlab-source-example",
+  "name": "GitLab source (example)",
+  "version": "0.1.0",
+  "author": "Symphony",
+  "description": "Issue-source plugin for GitLab: pulls open issues across the configured projects as Symphony tasks, and pushes terminal task status back by adding a note and closing the issue. Reads its token + projects from <install-dir>/config.json. Repackages the in-tree GitLab connector via the @symphony/plugin-sdk provides.issueSource contract — fetch_open_issues + write_back_status, wrapped host-side into the same ingest + writeback pipeline (sync_gitlab).",
+  "entrypoint": {
+    "command": "node",
+    "args": ["dist/index.js"]
+  },
+  "permissions": ["secrets:read", "net:*.gitlab.com"],
+  "capabilityFlags": ["requires:secrets-read", "requires:network-egress", "external-visible"],
+  "events": [],
+  "requiresPluginApi": "^1.0.0",
+  "toolScope": "both",
+  "provides": {
+    "issueSource": { "source": "gitlab" }
+  }
+}

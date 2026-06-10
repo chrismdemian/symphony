@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "forgejo-source",
+  "name": "Forgejo source fixture",
+  "version": "1.0.0",
+  "author": "symphony-tests",
+  "description": "Phase 9C.2 fixture: a canned Forgejo issue-source plugin (fetch_open_issues + write_back_status, incl. one terminal + one malformed issue) plus get_writeback_log to observe writeback deliveries from a real subprocess.",
+  "entrypoint": { "command": "node", "args": ["server.mjs"] },
+  "events": [],
+  "toolScope": "both",
+  "permissions": ["secrets:read"],
+  "capabilityFlags": ["requires:secrets-read", "requires:network-egress", "external-visible"],
+  "provides": { "issueSource": { "source": "forgejo" } }
+}

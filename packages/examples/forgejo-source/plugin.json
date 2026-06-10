@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "forgejo-source-example",
+  "name": "Forgejo source (example)",
+  "version": "0.1.0",
+  "author": "Symphony",
+  "description": "Issue-source plugin for Forgejo (Gitea-compatible): pulls open issues across the configured repos as Symphony tasks (pull requests excluded), and pushes terminal task status back by adding a comment and closing the issue. Reads its token + siteUrl + repos from <install-dir>/config.json. Repackages the in-tree Forgejo connector via the @symphony/plugin-sdk provides.issueSource contract — fetch_open_issues + write_back_status, wrapped host-side into the same ingest + writeback pipeline (sync_forgejo).",
+  "entrypoint": {
+    "command": "node",
+    "args": ["dist/index.js"]
+  },
+  "permissions": ["secrets:read"],
+  "capabilityFlags": ["requires:secrets-read", "requires:network-egress", "external-visible"],
+  "events": [],
+  "requiresPluginApi": "^1.0.0",
+  "toolScope": "both",
+  "provides": {
+    "issueSource": { "source": "forgejo" }
+  }
+}

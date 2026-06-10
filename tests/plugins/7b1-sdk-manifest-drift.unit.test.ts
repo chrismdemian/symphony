@@ -57,6 +57,9 @@ const VALID: ReadonlyArray<Record<string, unknown>> = [
   // Phase 9C.1 — remaining connectors repackaged as plugins (pull-only).
   { ...base, provides: { issueSource: { source: 'linear' } } },
   { ...base, provides: { issueSource: { source: 'jira' } } },
+  // Phase 9C.2 — the Git-forge siblings.
+  { ...base, provides: { issueSource: { source: 'gitlab' } } },
+  { ...base, provides: { issueSource: { source: 'forgejo' } } },
 ];
 
 const INVALID: ReadonlyArray<{ label: string; input: Record<string, unknown> }> = [
