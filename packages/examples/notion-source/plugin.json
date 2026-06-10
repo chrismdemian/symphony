@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "notion-source-example",
+  "name": "Notion source (example)",
+  "version": "0.1.0",
+  "author": "Symphony",
+  "description": "Issue-source plugin for Notion: pulls pages from the configured database as Symphony tasks, and pushes terminal task status back to the page's status property (completed/failed). Reads its token + database id from <install-dir>/config.json. Repackages the in-tree Notion connector via the @symphony/plugin-sdk provides.issueSource contract — fetch_open_issues + write_back_status, wrapped host-side into the same ingest + writeback pipeline (sync_notion).",
+  "entrypoint": {
+    "command": "node",
+    "args": ["dist/index.js"]
+  },
+  "permissions": ["secrets:read", "net:api.notion.com"],
+  "capabilityFlags": ["requires:secrets-read", "requires:network-egress", "external-visible"],
+  "events": [],
+  "requiresPluginApi": "^1.0.0",
+  "toolScope": "both",
+  "provides": {
+    "issueSource": { "source": "notion" }
+  }
+}

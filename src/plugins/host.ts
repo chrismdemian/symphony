@@ -5,6 +5,7 @@ import type { z } from 'zod';
 import type { ToolRegistration } from '../orchestrator/registry.js';
 import { makeSyncIssuesTool } from '../orchestrator/tools/make-sync-issues.js';
 import { makeIssueWritebackRef } from '../orchestrator/issue-writeback.js';
+import { ingestIssueCandidates } from '../integrations/issue-ingest.js';
 import type { ProjectStore } from '../projects/types.js';
 import type { ExternalLinkStore } from '../state/external-link-store.js';
 import type { TaskSnapshot, TaskStore } from '../state/types.js';
@@ -95,6 +96,13 @@ export interface PluginHostOptions {
    * of the toolbelt regardless).
    */
   readonly issueSource?: PluginIssueSourceDeps;
+  /**
+   * Phase 9B — test seam: when set, OVERRIDES every issue-source plugin's
+   * manifest `pollIntervalMs` (so an integration test can poll fast without
+   * a 5s manifest floor). Unset in production — the host honors each
+   * plugin's declared interval.
+   */
+  readonly issueSourcePollIntervalMs?: number;
 }
 
 export interface LoadedPlugin {
@@ -161,6 +169,10 @@ export class PluginHost {
   private readonly log: (line: string) => void;
   private started = false;
   private shuttingDown = false;
+  /** Phase 9B — `setInterval` handles for issue-source poll loops. */
+  private readonly pollTimers: NodeJS.Timeout[] = [];
+  /** Phase 9B — sources with an in-flight poll (no overlapping fetches). */
+  private readonly pollInFlight = new Set<string>();
 
   constructor(private readonly opts: PluginHostOptions) {
     this.log =
@@ -313,10 +325,15 @@ export class PluginHost {
             `issue-source support wired — sync tool not registered`,
         );
       } else {
+        // Phase 9B — the host-side poll cadence: the test seam wins, else the
+        // manifest's declared interval, else undefined (pull-only source).
+        const pollIntervalMs =
+          this.opts.issueSourcePollIntervalMs ?? issueSource.pollIntervalMs;
         const adapter = new PluginIssueConnectorAdapter({
           source: issueSource.source,
           client,
           log: (_level, message) => this.log(`[${id}] ${message}`),
+          ...(pollIntervalMs !== undefined ? { pollIntervalMs } : {}),
         });
         const syncTool = makeSyncIssuesTool({
           connector: adapter,
@@ -344,6 +361,23 @@ export class PluginHost {
               log: (_level, message) => this.log(`[${id}] writeback: ${message}`),
             }),
           );
+          // Phase 9B — when the plugin declares a poll cadence (a source that
+          // can't push from inside the sandbox, e.g. Obsidian's file-watcher),
+          // the host periodically pulls `fetch_open_issues` and ingests the
+          // result through the SAME pipeline `sync_<source>` uses. Idempotent
+          // (dedup via `task_external_links`), so repeated full scans are safe.
+          if (pollIntervalMs !== undefined && pollIntervalMs > 0) {
+            const timer = setInterval(() => {
+              void this.runIssueSourcePoll(adapter, issueSource.source, deps);
+            }, pollIntervalMs);
+            // Don't let the poll loop keep the process alive on its own.
+            timer.unref?.();
+            this.pollTimers.push(timer);
+            this.log(
+              `plugin '${id}' issue-source '${issueSource.source}' polling every ` +
+                `${pollIntervalMs}ms`,
+            );
+          }
           this.log(
             `plugin '${id}' registered issue-source '${issueSource.source}' ` +
               `(sync_${issueSource.source} + writeback)`,
@@ -363,6 +397,44 @@ export class PluginHost {
 
     this.loaded.set(id, { manifest, client, proxyToolNames, rawToolNames });
     return proxyToolNames.length;
+  }
+
+  /**
+   * Phase 9B — one poll tick for an issue-source plugin: pull its open issues
+   * and ingest them through the shared pipeline. Fire-and-forget: a fetch or
+   * ingest failure is logged, never thrown (the timer keeps ticking). Overlap
+   * is guarded per-source so a slow fetch can't stack ticks. Quiesces while
+   * shutting down.
+   */
+  private async runIssueSourcePoll(
+    adapter: PluginIssueConnectorAdapter,
+    source: string,
+    deps: PluginIssueSourceDeps,
+  ): Promise<void> {
+    if (this.shuttingDown) return;
+    if (this.pollInFlight.has(source)) return;
+    this.pollInFlight.add(source);
+    try {
+      const candidates = await adapter.fetchOpenIssues();
+      if (this.shuttingDown) return;
+      ingestIssueCandidates(
+        candidates,
+        {
+          taskStore: deps.taskStore,
+          projectStore: deps.projectStore,
+          externalLinkStore: deps.externalLinkStore,
+          ...(deps.resolveProjectPath !== undefined
+            ? { resolveProjectPath: deps.resolveProjectPath }
+            : {}),
+        },
+        source,
+      );
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.log(`issue-source '${source}' poll failed: ${reason}`);
+    } finally {
+      this.pollInFlight.delete(source);
+    }
   }
 
   /**
@@ -398,6 +470,10 @@ export class PluginHost {
 
   async shutdown(): Promise<void> {
     this.shuttingDown = true;
+    // Phase 9B — stop the issue-source poll loops BEFORE closing clients, so a
+    // tick can't fire `fetch_open_issues` at a client mid-teardown.
+    for (const timer of this.pollTimers) clearInterval(timer);
+    this.pollTimers.length = 0;
     await Promise.all(
       [...this.loaded.values()].map((p) =>
         p.client.close().catch(() => {
@@ -419,10 +495,14 @@ export class PluginHost {
  * host's own `loadOne` will skip it too).
  *
  * In-tree stays the DEFAULT: when no plugin provides a source, the set omits
- * it and the in-tree connector constructs as before. Plugins only load in
- * Maestro's MCP child (Process C), so the server gates this on the same
- * `--plugins` condition as the host — in the bootstrap RPC server (Process B)
- * the set is always empty.
+ * it and the in-tree connector constructs as before.
+ *
+ * Phase 9B — the server computes this in BOTH processes (gated on the
+ * `pluginsEnabled` master switch + a DB), not just Maestro's `--plugins` child.
+ * The plugin host (+ its poll loop) runs in Process C, but the in-tree Obsidian
+ * connector starts a background WATCHER in the bootstrap server (Process B);
+ * for an enabled obsidian plugin to FULLY yield, Process B must see this set
+ * too and skip the in-tree connector (which also skips the watcher).
  */
 export async function collectEnabledPluginIssueSources(opts: {
   readonly store: PluginStore;

@@ -50,6 +50,10 @@ const VALID: ReadonlyArray<Record<string, unknown>> = [
   { ...base, provides: { issueSource: { source: 'github' } } },
   { ...base, provides: { issueSource: { source: 'my_tracker' } } },
   { ...base, provides: {} },
+  // Phase 9B — optional host-side poll cadence on the issue source.
+  { ...base, provides: { issueSource: { source: 'obsidian', pollIntervalMs: 30000 } } },
+  { ...base, provides: { issueSource: { source: 'obsidian', pollIntervalMs: 5000 } } },
+  { ...base, provides: { issueSource: { source: 'obsidian', pollIntervalMs: 86400000 } } },
 ];
 
 const INVALID: ReadonlyArray<{ label: string; input: Record<string, unknown> }> = [
@@ -74,6 +78,11 @@ const INVALID: ReadonlyArray<{ label: string; input: Record<string, unknown> }> 
   { label: 'issueSource missing source', input: { ...base, provides: { issueSource: {} } } },
   { label: 'provides unknown key', input: { ...base, provides: { bogusSource: { source: 'x' } } } },
   { label: 'issueSource unknown key', input: { ...base, provides: { issueSource: { source: 'github', extra: 1 } } } },
+  // Phase 9B — pollIntervalMs bounds + type.
+  { label: 'pollIntervalMs below floor', input: { ...base, provides: { issueSource: { source: 'obsidian', pollIntervalMs: 4999 } } } },
+  { label: 'pollIntervalMs above ceiling', input: { ...base, provides: { issueSource: { source: 'obsidian', pollIntervalMs: 86400001 } } } },
+  { label: 'pollIntervalMs non-integer', input: { ...base, provides: { issueSource: { source: 'obsidian', pollIntervalMs: 30000.5 } } } },
+  { label: 'pollIntervalMs not a number', input: { ...base, provides: { issueSource: { source: 'obsidian', pollIntervalMs: '30000' } } } },
 ];
 
 describe('7B.1 SDK ↔ host manifest drift lock', () => {

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "obsidian-source-example",
+  "name": "Obsidian source (example)",
+  "version": "0.1.0",
+  "author": "Symphony",
+  "description": "Issue-source plugin for an Obsidian vault: scans markdown checkbox tasks as Symphony tasks and flips the source checkbox ([ ] → [x]) on terminal status. Reads its vault path from <install-dir>/config.json. Repackages the in-tree Obsidian connector via the @symphony/plugin-sdk provides.issueSource contract — fetch_open_issues + write_back_status, wrapped host-side into the same ingest + writeback pipeline (sync_obsidian). The in-tree chokidar watcher (a push source a sandboxed plugin can't replicate) becomes host-side polling via provides.issueSource.pollIntervalMs.",
+  "entrypoint": {
+    "command": "node",
+    "args": ["dist/index.js"]
+  },
+  "permissions": [],
+  "capabilityFlags": ["requires:filesystem-write", "external-visible"],
+  "events": [],
+  "requiresPluginApi": "^1.0.0",
+  "toolScope": "both",
+  "provides": {
+    "issueSource": { "source": "obsidian", "pollIntervalMs": 30000 }
+  }
+}

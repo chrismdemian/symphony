@@ -1,0 +1,30 @@
+{
+  "name": "@symphony/plugin-obsidian-source-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Symphony issue-source plugin for an Obsidian vault — scans markdown checkbox tasks and flips the source checkbox on terminal status. Repackages the in-tree Obsidian connector (Phase 8B) as an opt-in plugin; its watcher becomes host-side polling via provides.issueSource.pollIntervalMs.",
+  "type": "module",
+  "files": [
+    "dist",
+    "plugin.json"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@symphony/plugin-sdk": "workspace:*",
+    "gray-matter": "^4.0.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3"
+  },
+  "license": "MIT"
+}

@@ -59,6 +59,16 @@ export type PluginEvent = (typeof PLUGIN_EVENTS)[number];
  */
 export const ISSUE_SOURCE_RE = /^[a-z][a-z0-9_]{0,31}$/;
 
+/**
+ * Phase 9B — bounds for an issue-source plugin's optional `pollIntervalMs`.
+ * When a plugin declares it, the host polls `fetch_open_issues` on that
+ * interval to replace a push-source watcher it can't run inside the sandbox
+ * (e.g. Obsidian's chokidar file-watcher). Byte-identical to
+ * `src/plugins/manifest.ts`.
+ */
+export const MIN_ISSUE_SOURCE_POLL_MS = 5_000;
+export const MAX_ISSUE_SOURCE_POLL_MS = 86_400_000; // 24h
+
 /** Canonical fixed permissions, `<resource>:<action>`. */
 export const FIXED_PERMISSIONS = [
   'worker:spawn',
@@ -157,7 +167,21 @@ const EntrypointSchema = z
 const ProvidesSchema = z
   .object({
     issueSource: z
-      .object({ source: z.string().regex(ISSUE_SOURCE_RE) })
+      .object({
+        source: z.string().regex(ISSUE_SOURCE_RE),
+        /**
+         * Phase 9B — optional host-side poll cadence. When set, the host
+         * periodically calls the plugin's `fetch_open_issues` and ingests
+         * the result (replacing a push-source watcher a sandboxed plugin
+         * can't run). Omitted → pull-only (Maestro drives `sync_<source>`).
+         */
+        pollIntervalMs: z
+          .number()
+          .int()
+          .min(MIN_ISSUE_SOURCE_POLL_MS)
+          .max(MAX_ISSUE_SOURCE_POLL_MS)
+          .optional(),
+      })
       .strict()
       .optional(),
   })
@@ -198,7 +222,9 @@ export interface PluginManifest {
   readonly requiresPluginApi?: string;
   readonly configSchema?: Readonly<Record<string, unknown>>;
   readonly toolScope: 'act' | 'both';
-  readonly provides?: { readonly issueSource?: { readonly source: string } };
+  readonly provides?: {
+    readonly issueSource?: { readonly source: string; readonly pollIntervalMs?: number };
+  };
 }
 
 /**

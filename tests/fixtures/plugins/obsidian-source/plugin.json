@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "obsidian-source",
+  "name": "Obsidian source fixture",
+  "version": "1.0.0",
+  "author": "symphony-tests",
+  "description": "Phase 9B fixture: a canned Obsidian issue-source plugin (fetch_open_issues + write_back_status, incl. one terminal + one malformed task) plus get_writeback_log. Declares pollIntervalMs so the host's poll loop is exercised (tests override the interval to run fast).",
+  "entrypoint": { "command": "node", "args": ["server.mjs"] },
+  "events": [],
+  "toolScope": "both",
+  "permissions": [],
+  "capabilityFlags": ["requires:filesystem-write", "external-visible"],
+  "provides": { "issueSource": { "source": "obsidian", "pollIntervalMs": 30000 } }
+}

@@ -108,6 +108,17 @@ export const DELIVERED_PLUGIN_EVENTS: readonly PluginEvent[] = [
  */
 export const ISSUE_SOURCE_RE = /^[a-z][a-z0-9_]{0,31}$/;
 
+/**
+ * Phase 9B — bounds for an issue-source plugin's optional `pollIntervalMs`.
+ * When a plugin declares it, the host polls `fetch_open_issues` on that
+ * interval to replace a push-source watcher it can't run inside the sandbox
+ * (e.g. Obsidian's chokidar file-watcher). The floor stops a plugin from
+ * hammering the host; the ceiling keeps the field a sane "background sync"
+ * cadence rather than a once-a-week timer. Byte-identical to the SDK schema.
+ */
+export const MIN_ISSUE_SOURCE_POLL_MS = 5_000;
+export const MAX_ISSUE_SOURCE_POLL_MS = 86_400_000; // 24h
+
 const EntrypointSchema = z
   .object({
     /** Executable to spawn (PATH name like `node`, or absolute path). */
@@ -129,7 +140,22 @@ const EntrypointSchema = z
 const ProvidesSchema = z
   .object({
     issueSource: z
-      .object({ source: z.string().regex(ISSUE_SOURCE_RE) })
+      .object({
+        source: z.string().regex(ISSUE_SOURCE_RE),
+        /**
+         * Phase 9B — optional host-side poll cadence. When set, the host
+         * periodically calls the plugin's `fetch_open_issues` and ingests
+         * the result (replacing a push-source watcher a sandboxed plugin
+         * can't run). Omitted → the source is pull-only (Maestro drives it
+         * via `sync_<source>`).
+         */
+        pollIntervalMs: z
+          .number()
+          .int()
+          .min(MIN_ISSUE_SOURCE_POLL_MS)
+          .max(MAX_ISSUE_SOURCE_POLL_MS)
+          .optional(),
+      })
       .strict()
       .optional(),
   })
@@ -190,7 +216,9 @@ export interface PluginManifest {
   readonly requiresPluginApi?: string;
   readonly configSchema?: Readonly<Record<string, unknown>>;
   readonly toolScope: 'act' | 'both';
-  readonly provides?: { readonly issueSource?: { readonly source: string } };
+  readonly provides?: {
+    readonly issueSource?: { readonly source: string; readonly pollIntervalMs?: number };
+  };
 }
 
 export class PluginManifestError extends Error {

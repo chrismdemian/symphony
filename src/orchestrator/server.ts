@@ -837,14 +837,22 @@ export async function startOrchestratorServer(
   // plugin provide? The in-tree connector for such a source YIELDS (skip
   // construction → no double `sync_<source>` registration, no double
   // writeback; the plugin "takes over"). In-tree is the DEFAULT — the set is
-  // non-empty only in Maestro's MCP child (`--plugins`) under the
-  // `pluginsEnabled` master switch; in the bootstrap RPC server (Process B,
-  // no `--plugins`) it stays empty so in-tree connectors construct as before.
-  // Gates EVERY in-tree connector (the discovery set is generic) so a future
-  // issue-source plugin for any source coexists cleanly. (`SYMPHONY_PLUGINS_DIR`
-  // env override keeps discovery + the host in sync under test isolation.)
+  // non-empty only when the `pluginsEnabled` master switch is on AND a plugin
+  // declares `provides.issueSource`.
+  //
+  // Phase 9B — computed in BOTH processes (gated on the config switch + a DB),
+  // not just Maestro's `--plugins` child. The plugin host (and its poll loop)
+  // runs in Process C, but the in-tree OBSIDIAN connector starts a background
+  // WATCHER in the bootstrap server (Process B). For an enabled obsidian
+  // plugin to FULLY yield, Process B must see the discovery set too and skip
+  // the in-tree connector — which also skips the watcher (it's nested under
+  // `if (obsidianConnector !== undefined)`). The `pluginsEnabled` default-off
+  // switch keeps the set empty (and behavior unchanged) for every existing
+  // caller. Gates EVERY in-tree connector (the set is generic) so any source's
+  // plugin coexists cleanly. (`SYMPHONY_PLUGINS_DIR` env override keeps
+  // discovery + the host in sync under test isolation.)
   let pluginIssueSources: ReadonlySet<string> = new Set();
-  if (options.plugins?.enabled === true && options.database !== undefined) {
+  if (options.database !== undefined) {
     try {
       const cfg = await loadConfig();
       if (cfg.config.pluginsEnabled === true) {

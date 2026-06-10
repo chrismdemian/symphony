@@ -72,7 +72,7 @@ const NormalizedIssueSchema = z.object({
   assignee: z.string().nullable().catch(null).default(null),
   labels: z.array(z.string()).catch([]).default([]),
   projectValue: z.string().nullable().catch(null).default(null),
-  priority: z.number().catch(0).default(0),
+  priority: z.number().int().catch(0).default(0),
   updatedAt: z.string().nullable().catch(null).default(null),
 });
 
