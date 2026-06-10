@@ -51,6 +51,14 @@ export const PLUGIN_EVENTS = [
 ] as const;
 export type PluginEvent = (typeof PLUGIN_EVENTS)[number];
 
+/**
+ * Phase 9A — a `source` id a plugin can declare it PROVIDES as an
+ * issue/task source (the `task_external_links.source` value AND the
+ * `sync_<source>` tool-name suffix). Lowercase alnum + underscore, leading
+ * letter. Byte-identical to `src/plugins/manifest.ts`.
+ */
+export const ISSUE_SOURCE_RE = /^[a-z][a-z0-9_]{0,31}$/;
+
 /** Canonical fixed permissions, `<resource>:<action>`. */
 export const FIXED_PERMISSIONS = [
   'worker:spawn',
@@ -142,6 +150,19 @@ const EntrypointSchema = z
   })
   .strict();
 
+/**
+ * Phase 9A — provider declarations. Today only `issueSource`. Strict +
+ * optional. Byte-identical to `src/plugins/manifest.ts`.
+ */
+const ProvidesSchema = z
+  .object({
+    issueSource: z
+      .object({ source: z.string().regex(ISSUE_SOURCE_RE) })
+      .strict()
+      .optional(),
+  })
+  .strict();
+
 const ManifestObjectSchema = z
   .object({
     schemaVersion: z.literal(MANIFEST_SCHEMA_VERSION),
@@ -158,6 +179,7 @@ const ManifestObjectSchema = z
     requiresPluginApi: z.string().min(1).max(64).optional(),
     configSchema: z.record(z.string(), z.unknown()).optional(),
     toolScope: z.enum(['act', 'both']).default('act'),
+    provides: ProvidesSchema.optional(),
   })
   .strict();
 
@@ -176,6 +198,7 @@ export interface PluginManifest {
   readonly requiresPluginApi?: string;
   readonly configSchema?: Readonly<Record<string, unknown>>;
   readonly toolScope: 'act' | 'both';
+  readonly provides?: { readonly issueSource?: { readonly source: string } };
 }
 
 /**
@@ -211,6 +234,7 @@ export function validateManifest(input: unknown): PluginManifest {
       : {}),
     ...(data.configSchema !== undefined ? { configSchema: data.configSchema } : {}),
     toolScope: data.toolScope,
+    ...(data.provides !== undefined ? { provides: data.provides } : {}),
   };
 }
 
@@ -234,6 +258,7 @@ export interface DefineManifestInput {
   readonly requiresPluginApi?: string;
   readonly configSchema?: Readonly<Record<string, unknown>>;
   readonly toolScope?: 'act' | 'both';
+  readonly provides?: { readonly issueSource?: { readonly source: string } };
 }
 
 export function defineManifest(input: DefineManifestInput): PluginManifest {
@@ -254,5 +279,6 @@ export function defineManifest(input: DefineManifestInput): PluginManifest {
       : {}),
     ...(input.configSchema !== undefined ? { configSchema: input.configSchema } : {}),
     toolScope: input.toolScope ?? 'act',
+    ...(input.provides !== undefined ? { provides: input.provides } : {}),
   });
 }

@@ -46,6 +46,10 @@ const VALID: ReadonlyArray<Record<string, unknown>> = [
   // host regex is case-insensitive (`/i`) on both sides — accepted.
   { ...base, permissions: ['net:API.example.com'] },
   { ...base, homepage: 'https://example.com', configSchema: { type: 'object' } },
+  // Phase 9A — issue-source provider declaration.
+  { ...base, provides: { issueSource: { source: 'github' } } },
+  { ...base, provides: { issueSource: { source: 'my_tracker' } } },
+  { ...base, provides: {} },
 ];
 
 const INVALID: ReadonlyArray<{ label: string; input: Record<string, unknown> }> = [
@@ -64,6 +68,12 @@ const INVALID: ReadonlyArray<{ label: string; input: Record<string, unknown> }> 
   { label: 'configSchema not an object', input: { ...base, configSchema: 'nope' } },
   { label: 'empty requiresPluginApi', input: { ...base, requiresPluginApi: '' } },
   { label: 'missing name', input: { schemaVersion: 1, id: 'x', version: '1', author: 'a', description: 'd', entrypoint: { command: 'node' } } },
+  // Phase 9A — issue-source provider validation.
+  { label: 'issueSource bad source (uppercase)', input: { ...base, provides: { issueSource: { source: 'GitHub' } } } },
+  { label: 'issueSource bad source (leading digit)', input: { ...base, provides: { issueSource: { source: '1tracker' } } } },
+  { label: 'issueSource missing source', input: { ...base, provides: { issueSource: {} } } },
+  { label: 'provides unknown key', input: { ...base, provides: { bogusSource: { source: 'x' } } } },
+  { label: 'issueSource unknown key', input: { ...base, provides: { issueSource: { source: 'github', extra: 1 } } } },
 ];
 
 describe('7B.1 SDK ↔ host manifest drift lock', () => {

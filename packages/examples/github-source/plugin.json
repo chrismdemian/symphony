@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "github-source-example",
+  "name": "GitHub Issues source (example)",
+  "version": "0.1.0",
+  "author": "Symphony",
+  "description": "Reference issue-source plugin: pulls open GitHub issues from the configured repos as Symphony tasks, and pushes terminal task status back to the issue (comment + close on completion). Reads its PAT + repos from <install-dir>/config.json. Demonstrates the @symphony/plugin-sdk provides.issueSource contract — fetch_open_issues + write_back_status, wrapped host-side into the same ingest + writeback pipeline the in-tree connectors use.",
+  "entrypoint": {
+    "command": "node",
+    "args": ["dist/index.js"]
+  },
+  "permissions": ["secrets:read", "net:api.github.com"],
+  "capabilityFlags": ["requires:secrets-read", "requires:network-egress", "external-visible"],
+  "events": [],
+  "requiresPluginApi": "^1.0.0",
+  "toolScope": "both",
+  "provides": {
+    "issueSource": { "source": "github" }
+  }
+}

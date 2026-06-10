@@ -1,0 +1,29 @@
+{
+  "name": "@symphony/plugin-github-source-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Reference Symphony issue-source plugin — pulls open GitHub issues as tasks and writes terminal status back (comment + close). Dogfoods @symphony/plugin-sdk's provides.issueSource contract.",
+  "type": "module",
+  "files": [
+    "dist",
+    "plugin.json"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@symphony/plugin-sdk": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3"
+  },
+  "license": "MIT"
+}

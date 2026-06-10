@@ -3,6 +3,11 @@ import { promises as fsp } from 'node:fs';
 import type { z } from 'zod';
 
 import type { ToolRegistration } from '../orchestrator/registry.js';
+import { makeSyncIssuesTool } from '../orchestrator/tools/make-sync-issues.js';
+import { makeIssueWritebackRef } from '../orchestrator/issue-writeback.js';
+import type { ProjectStore } from '../projects/types.js';
+import type { ExternalLinkStore } from '../state/external-link-store.js';
+import type { TaskSnapshot, TaskStore } from '../state/types.js';
 import {
   assertPluginApiCompatible,
   DELIVERED_PLUGIN_EVENTS,
@@ -14,6 +19,10 @@ import {
 import { pluginDir, PLUGIN_MANIFEST } from './paths.js';
 import { PluginClient, type PluginClientFactory, type PluginToolDescriptor } from './client.js';
 import { buildProxyToolRegistration, proxyToolName } from './proxy-tool.js';
+import {
+  ISSUE_SOURCE_INTERNAL_TOOLS,
+  PluginIssueConnectorAdapter,
+} from './issue-connector-adapter.js';
 import { SYMPHONY_META_EVENT_HANDLER, SYMPHONY_META_PERMISSIONS } from './meta-keys.js';
 import type { PluginStore } from './store.js';
 
@@ -53,6 +62,24 @@ export interface PluginToolRegistrar {
   register<TShape extends z.ZodRawShape>(reg: ToolRegistration<TShape>): unknown;
 }
 
+/**
+ * Phase 9A — the host-owned state an issue-source plugin's adapter needs.
+ * When present, a plugin declaring `provides.issueSource` is wrapped in a
+ * `PluginIssueConnectorAdapter` and wired through the SAME ingest +
+ * writeback pipeline the in-tree 8C connectors use: the host registers a
+ * `sync_<source>` tool and a terminal-status writeback ref. The host never
+ * touches TaskStore/the link table directly — it hands these to the shared
+ * `makeSyncIssuesTool` / `makeIssueWritebackRef` factories (single-writer).
+ */
+export interface PluginIssueSourceDeps {
+  readonly taskStore: TaskStore;
+  readonly projectStore: ProjectStore;
+  readonly externalLinkStore: ExternalLinkStore;
+  readonly resolveProjectPath?: (project?: string) => string;
+  /** Register a writeback ref into the server's `fanOutTaskStatusChange` list. */
+  readonly registerWritebackRef: (ref: (snapshot: TaskSnapshot) => void) => void;
+}
+
 export interface PluginHostOptions {
   readonly store: PluginStore;
   readonly registry: PluginToolRegistrar;
@@ -61,6 +88,13 @@ export interface PluginHostOptions {
   readonly clientFactory?: PluginClientFactory;
   /** Diagnostic sink; defaults to a `[symphony:plugins]`-prefixed stderr line. */
   readonly logger?: (line: string) => void;
+  /**
+   * Phase 9A — wiring for issue-source plugins. Absent in tests / contexts
+   * that don't support task sources; an issue-source plugin then loads but
+   * its `sync_<source>` tool is not registered (its internal tools stay out
+   * of the toolbelt regardless).
+   */
+  readonly issueSource?: PluginIssueSourceDeps;
 }
 
 export interface LoadedPlugin {
@@ -201,6 +235,11 @@ export class PluginHost {
     // ceiling. Any per-tool permission (via `_meta`) must be a subset.
     const grantedPermissions = new Set<string>(manifest.permissions);
 
+    // Phase 9A — an issue-source plugin's `fetch_open_issues` /
+    // `write_back_status` (etc.) tools are consumed by the adapter, never
+    // exposed to Maestro. Detect it once so the loop can skip those names.
+    const issueSource = manifest.provides?.issueSource;
+
     const proxyToolNames: string[] = [];
     const rawToolNames = new Set<string>();
     for (const descriptor of descriptors) {
@@ -215,6 +254,18 @@ export class PluginHost {
       if (descriptor.meta?.[SYMPHONY_META_EVENT_HANDLER] === true) {
         this.log(
           `plugin '${id}' tool '${descriptor.name}' is an event handler — kept out of the toolbelt`,
+        );
+        continue;
+      }
+
+      // Phase 9A — issue-source internal tools (`fetch_open_issues`,
+      // `write_back_status`, …) are called by the `PluginIssueConnectorAdapter`,
+      // never by Maestro. Keep them out of the toolbelt (like event handlers);
+      // they stay in `rawToolNames` so the adapter's `callTool` reaches them.
+      // Maestro sees only the single `sync_<source>` tool wired below.
+      if (issueSource !== undefined && ISSUE_SOURCE_INTERNAL_TOOLS.has(descriptor.name)) {
+        this.log(
+          `plugin '${id}' tool '${descriptor.name}' is an issue-source internal tool — kept out of the toolbelt`,
         );
         continue;
       }
@@ -243,6 +294,70 @@ export class PluginHost {
         // whole plugin — log and skip just that tool.
         const reason = err instanceof Error ? err.message : String(err);
         this.log(`plugin '${id}' tool '${descriptor.name}' not registered: ${reason}`);
+      }
+    }
+
+    // Phase 9A — wire an issue-source plugin into the shared connector
+    // pipeline: wrap its tools in a `PluginIssueConnectorAdapter`, register
+    // the `sync_<source>` MCP tool, and push a terminal-status writeback ref
+    // into the server's fan-out. The host never touches TaskStore / the link
+    // table directly — `makeSyncIssuesTool` + `makeIssueWritebackRef` own that
+    // (single-writer). When `issueSource` deps aren't wired (tests / older
+    // contexts), the internal tools were still hidden above; the sync tool is
+    // just not registered.
+    if (issueSource !== undefined) {
+      const deps = this.opts.issueSource;
+      if (deps === undefined) {
+        this.log(
+          `plugin '${id}' declares issue-source '${issueSource.source}' but the host has no ` +
+            `issue-source support wired — sync tool not registered`,
+        );
+      } else {
+        const adapter = new PluginIssueConnectorAdapter({
+          source: issueSource.source,
+          client,
+          log: (_level, message) => this.log(`[${id}] ${message}`),
+        });
+        const syncTool = makeSyncIssuesTool({
+          connector: adapter,
+          name: `sync_${issueSource.source}`,
+          description:
+            `Pull open issues from the '${issueSource.source}' plugin source and create one ` +
+            `Symphony task per NEW issue (idempotent; issues already terminal in the source are ` +
+            `skipped). Symphony owns task status thereafter and pushes terminal statuses back ` +
+            `to the source automatically.`,
+          taskStore: deps.taskStore,
+          projectStore: deps.projectStore,
+          externalLinkStore: deps.externalLinkStore,
+          ...(deps.resolveProjectPath !== undefined
+            ? { resolveProjectPath: deps.resolveProjectPath }
+            : {}),
+        });
+        try {
+          this.opts.registry.register(syncTool);
+          proxyToolNames.push(syncTool.name);
+          deps.registerWritebackRef(
+            makeIssueWritebackRef({
+              connector: adapter,
+              source: issueSource.source,
+              externalLinkStore: deps.externalLinkStore,
+              log: (_level, message) => this.log(`[${id}] writeback: ${message}`),
+            }),
+          );
+          this.log(
+            `plugin '${id}' registered issue-source '${issueSource.source}' ` +
+              `(sync_${issueSource.source} + writeback)`,
+          );
+        } catch (err) {
+          // A duplicate `sync_<source>` or bad registration is isolated — log
+          // + skip; the plugin's other tools still loaded. server.ts gates
+          // EVERY in-tree connector against this discovery set, so an in-tree
+          // vs plugin collision can't happen; the only residual case is TWO
+          // plugins declaring the same source (the second one yields here).
+          // Surfaced at stderr parity with a refused tool (visible, not silent).
+          const reason = err instanceof Error ? err.message : String(err);
+          this.log(`plugin '${id}' issue-source '${issueSource.source}' not registered: ${reason}`);
+        }
       }
     }
 
@@ -292,6 +407,42 @@ export class PluginHost {
     );
     this.loaded.clear();
   }
+}
+
+/**
+ * Phase 9A — coexistence discovery. Returns the set of issue-source ids that
+ * an ENABLED, parseable plugin declares it provides (`provides.issueSource.source`).
+ * The server uses this to YIELD the in-tree connector for that source (no
+ * double `sync_<source>` registration, no double writeback) — the plugin
+ * "takes over" the source. Read-only (fs manifest reads, no subprocess
+ * spawn); a missing / malformed / api-incompatible manifest is skipped (the
+ * host's own `loadOne` will skip it too).
+ *
+ * In-tree stays the DEFAULT: when no plugin provides a source, the set omits
+ * it and the in-tree connector constructs as before. Plugins only load in
+ * Maestro's MCP child (Process C), so the server gates this on the same
+ * `--plugins` condition as the host — in the bootstrap RPC server (Process B)
+ * the set is always empty.
+ */
+export async function collectEnabledPluginIssueSources(opts: {
+  readonly store: PluginStore;
+  readonly home?: string;
+}): Promise<Set<string>> {
+  const sources = new Set<string>();
+  for (const record of opts.store.listEnabled()) {
+    try {
+      const dir = pluginDir(record.id, opts.home);
+      const raw = await fsp.readFile(path.join(dir, PLUGIN_MANIFEST), 'utf8');
+      const manifest = parsePluginManifest(JSON.parse(raw) as unknown);
+      assertPluginApiCompatible(manifest);
+      const src = manifest.provides?.issueSource?.source;
+      if (src !== undefined) sources.add(src);
+    } catch {
+      // Unreadable / invalid / incompatible manifest — skip. The in-tree
+      // connector then stays (safe default); the host's load also skips it.
+    }
+  }
+  return sources;
 }
 
 /** The full event vocabulary (re-exported for callers wiring sources). */
