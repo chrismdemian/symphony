@@ -157,7 +157,7 @@ import type {
 } from '../state/audit-store.js';
 import { createAuditLogger } from '../audit/logger.js';
 import { createAuditFileSink } from '../audit/file-sink.js';
-import { PluginHost } from '../plugins/host.js';
+import { collectEnabledPluginIssueSources, PluginHost } from '../plugins/host.js';
 import { SqlitePluginStore } from '../plugins/store.js';
 import { createPluginAdmin } from '../plugins/admin.js';
 import type { AuditLogger } from '../audit/types.js';
@@ -761,6 +761,12 @@ export async function startOrchestratorServer(
   const forgejoWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
   // Phase 8D.5 — Sentry issue writeback hook (note; opt-in resolve; built by makeIssueWritebackRef).
   const sentryWritebackRef: { current?: (snapshot: TaskSnapshot) => void } = {};
+  // Phase 9A — issue-source PLUGIN writeback refs. A plugin declaring
+  // `provides.issueSource` is wrapped by the host into the same
+  // `makeIssueWritebackRef` shape; each pushes its ref here so terminal
+  // task transitions fan out to the plugin's `write_back_status` tool. Lives
+  // for the host's lifetime (cleared on host shutdown via the server close).
+  const pluginIssueWritebackRefs: Array<(snapshot: TaskSnapshot) => void> = [];
   const fanOutTaskStatusChange = (snapshot: TaskSnapshot): void => {
     taskReadyOnTaskStatusChange(snapshot);
     sagaRollupListener(snapshot);
@@ -781,6 +787,9 @@ export async function startOrchestratorServer(
       plainWritebackRef.current?.(snapshot);
       forgejoWritebackRef.current?.(snapshot);
       sentryWritebackRef.current?.(snapshot);
+      // Phase 9A — issue-source plugin writeback refs (registered by the host
+      // when an issue-source plugin loads).
+      for (const ref of pluginIssueWritebackRefs) ref(snapshot);
     }
   };
   // Phase 7B.3 — fan task creation out to subscribed plugins (onTaskCreated).
@@ -824,6 +833,29 @@ export async function startOrchestratorServer(
     (options.database
       ? new SqliteAutomationStore(options.database.db)
       : new InMemoryAutomationStore());
+  // Phase 9A — coexistence discovery: which issue-sources does an ENABLED
+  // plugin provide? The in-tree connector for such a source YIELDS (skip
+  // construction → no double `sync_<source>` registration, no double
+  // writeback; the plugin "takes over"). In-tree is the DEFAULT — the set is
+  // non-empty only in Maestro's MCP child (`--plugins`) under the
+  // `pluginsEnabled` master switch; in the bootstrap RPC server (Process B,
+  // no `--plugins`) it stays empty so in-tree connectors construct as before.
+  // Gates EVERY in-tree connector (the discovery set is generic) so a future
+  // issue-source plugin for any source coexists cleanly. (`SYMPHONY_PLUGINS_DIR`
+  // env override keeps discovery + the host in sync under test isolation.)
+  let pluginIssueSources: ReadonlySet<string> = new Set();
+  if (options.plugins?.enabled === true && options.database !== undefined) {
+    try {
+      const cfg = await loadConfig();
+      if (cfg.config.pluginsEnabled === true) {
+        pluginIssueSources = await collectEnabledPluginIssueSources({
+          store: new SqlitePluginStore(options.database.db),
+        });
+      }
+    } catch {
+      pluginIssueSources = new Set();
+    }
+  }
   // Phase 8A — Notion connector. Injected (test seam) or auto-constructed
   // from disk when activated by the CLI boot path (`notion.enabled`).
   // Gating off `enabled` keeps tests from reading the user's real Notion
@@ -837,7 +869,7 @@ export async function startOrchestratorServer(
   };
   const notionConnector: NotionConnectorHandle | undefined =
     options.notionConnector ??
-    (options.notion?.enabled === true
+    (options.notion?.enabled === true && !pluginIssueSources.has(NOTION_INTEGRATION)
       ? await createNotionConnectorFromDisk({ log: notionLog })
       : undefined);
   if (notionConnector !== undefined) {
@@ -878,7 +910,7 @@ export async function startOrchestratorServer(
   };
   const obsidianConnector: ObsidianConnectorHandle | undefined =
     options.obsidianConnector ??
-    (options.obsidian?.enabled === true
+    (options.obsidian?.enabled === true && !pluginIssueSources.has(OBSIDIAN_INTEGRATION)
       ? await createObsidianConnectorFromDisk({ log: obsidianLog })
       : undefined);
   if (obsidianConnector !== undefined) {
@@ -932,7 +964,7 @@ export async function startOrchestratorServer(
   };
   const linearConnector: IssueConnectorHandle | undefined =
     options.linearConnector ??
-    (options.linear?.enabled === true
+    (options.linear?.enabled === true && !pluginIssueSources.has(LINEAR_INTEGRATION)
       ? await createLinearConnectorFromDisk({ log: linearLog })
       : undefined);
   if (linearConnector !== undefined) {
@@ -948,6 +980,7 @@ export async function startOrchestratorServer(
   // (`github.enabled`). Undefined when no token OR no repos — the `sync_github`
   // tool + writeback hook wire up only when a connector exists. Same lazy /
   // double-construction-is-safe property as Linear/Notion/Obsidian.
+  // 9A — also yields to an enabled `github` issue-source plugin (coexistence).
   const githubLog = (level: 'info' | 'warn' | 'error', message: string): void => {
     const line = `[symphony] github: ${message}`;
     if (level === 'error') console.error(line);
@@ -956,7 +989,7 @@ export async function startOrchestratorServer(
   };
   const githubConnector: IssueConnectorHandle | undefined =
     options.githubConnector ??
-    (options.github?.enabled === true
+    (options.github?.enabled === true && !pluginIssueSources.has(GITHUB_INTEGRATION)
       ? await createGitHubConnectorFromDisk({ log: githubLog })
       : undefined);
   if (githubConnector !== undefined) {
@@ -979,7 +1012,7 @@ export async function startOrchestratorServer(
   };
   const jiraConnector: IssueConnectorHandle | undefined =
     options.jiraConnector ??
-    (options.jira?.enabled === true
+    (options.jira?.enabled === true && !pluginIssueSources.has(JIRA_INTEGRATION)
       ? await createJiraConnectorFromDisk({ log: jiraLog })
       : undefined);
   if (jiraConnector !== undefined) {
@@ -1002,7 +1035,7 @@ export async function startOrchestratorServer(
   };
   const gitlabConnector: IssueConnectorHandle | undefined =
     options.gitlabConnector ??
-    (options.gitlab?.enabled === true
+    (options.gitlab?.enabled === true && !pluginIssueSources.has(GITLAB_INTEGRATION)
       ? await createGitLabConnectorFromDisk({ log: gitlabLog })
       : undefined);
   if (gitlabConnector !== undefined) {
@@ -1026,7 +1059,7 @@ export async function startOrchestratorServer(
   };
   const plainConnector: IssueConnectorHandle | undefined =
     options.plainConnector ??
-    (options.plain?.enabled === true
+    (options.plain?.enabled === true && !pluginIssueSources.has(PLAIN_INTEGRATION)
       ? await createPlainConnectorFromDisk({ log: plainLog })
       : undefined);
   if (plainConnector !== undefined) {
@@ -1050,7 +1083,7 @@ export async function startOrchestratorServer(
   };
   const forgejoConnector: IssueConnectorHandle | undefined =
     options.forgejoConnector ??
-    (options.forgejo?.enabled === true
+    (options.forgejo?.enabled === true && !pluginIssueSources.has(FORGEJO_INTEGRATION)
       ? await createForgejoConnectorFromDisk({ log: forgejoLog })
       : undefined);
   if (forgejoConnector !== undefined) {
@@ -1074,7 +1107,7 @@ export async function startOrchestratorServer(
   };
   const sentryConnector: IssueConnectorHandle | undefined =
     options.sentryConnector ??
-    (options.sentry?.enabled === true
+    (options.sentry?.enabled === true && !pluginIssueSources.has(SENTRY_INTEGRATION)
       ? await createSentryConnectorFromDisk({ log: sentryLog })
       : undefined);
   if (sentryConnector !== undefined) {
@@ -2043,6 +2076,16 @@ export async function startOrchestratorServer(
     const host = new PluginHost({
       store: new SqlitePluginStore(options.database.db),
       registry,
+      // Phase 9A — issue-source plugins are wrapped into the shared connector
+      // pipeline. The host registers `sync_<source>` + pushes a writeback ref
+      // into `pluginIssueWritebackRefs` (iterated by fanOutTaskStatusChange).
+      issueSource: {
+        taskStore,
+        projectStore,
+        externalLinkStore,
+        resolveProjectPath,
+        registerWritebackRef: (ref) => pluginIssueWritebackRefs.push(ref),
+      },
     });
     try {
       await host.start();
@@ -2227,6 +2270,9 @@ export async function startOrchestratorServer(
     // doesn't race the registry/server close. Isolated + best-effort.
     if (pluginHost !== undefined) {
       pluginHostRef.current = undefined;
+      // Phase 9A — drop issue-source plugin writeback refs so a late task
+      // transition during teardown can't call a closing plugin client.
+      pluginIssueWritebackRefs.length = 0;
       await pluginHost.shutdown().catch(() => {});
     }
     registry.close();

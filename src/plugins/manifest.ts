@@ -97,6 +97,17 @@ export const DELIVERED_PLUGIN_EVENTS: readonly PluginEvent[] = [
   'onWorkerCompleted',
 ];
 
+/**
+ * Phase 9A — a `source` id a plugin can declare it PROVIDES as an
+ * issue/task source. It is the `task_external_links.source` value AND the
+ * `sync_<source>` tool-name suffix, so it must be a safe tool-name
+ * component: lowercase alnum + underscore, leading letter. The host wraps
+ * such a plugin's `fetch_open_issues` / `write_back_status` tools in a
+ * `PluginIssueConnectorAdapter` and runs the SAME ingest + writeback
+ * pipeline the in-tree 8C connectors use (see `issue-connector-adapter.ts`).
+ */
+export const ISSUE_SOURCE_RE = /^[a-z][a-z0-9_]{0,31}$/;
+
 const EntrypointSchema = z
   .object({
     /** Executable to spawn (PATH name like `node`, or absolute path). */
@@ -106,6 +117,21 @@ const EntrypointSchema = z
      * against the plugin's install dir at spawn time (see `client.ts`).
      */
     args: z.array(z.string()).default([]),
+  })
+  .strict();
+
+/**
+ * Phase 9A — what a plugin declares it PROVIDES to Symphony beyond bare
+ * tools. Today only `issueSource` (a plugin that the host wraps as an
+ * `IssueConnectorHandle`). Strict + optional so the field is forward-
+ * compatible for future provider kinds without a schema break.
+ */
+const ProvidesSchema = z
+  .object({
+    issueSource: z
+      .object({ source: z.string().regex(ISSUE_SOURCE_RE) })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -141,6 +167,11 @@ const ManifestObjectSchema = z
      * also exposes them while Maestro plans (for read-only plugins).
      */
     toolScope: z.enum(['act', 'both']).default('act'),
+    /**
+     * Phase 9A — provider declarations (issue-source, …). Optional;
+     * omitted for a plain tool/event plugin.
+     */
+    provides: ProvidesSchema.optional(),
   })
   .strict();
 
@@ -159,6 +190,7 @@ export interface PluginManifest {
   readonly requiresPluginApi?: string;
   readonly configSchema?: Readonly<Record<string, unknown>>;
   readonly toolScope: 'act' | 'both';
+  readonly provides?: { readonly issueSource?: { readonly source: string } };
 }
 
 export class PluginManifestError extends Error {
@@ -235,6 +267,7 @@ export function parsePluginManifest(input: unknown): PluginManifest {
       : {}),
     ...(data.configSchema !== undefined ? { configSchema: data.configSchema } : {}),
     toolScope: data.toolScope,
+    ...(data.provides !== undefined ? { provides: data.provides } : {}),
   };
 }
 
