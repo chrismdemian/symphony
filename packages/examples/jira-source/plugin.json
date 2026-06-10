@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "jira-source-example",
+  "name": "Jira source (example)",
+  "version": "0.1.0",
+  "author": "Symphony",
+  "description": "Issue-source plugin for Jira Cloud: pulls issues as Symphony tasks via a JQL fallback chain, and on completion comments + transitions the issue to a Done-category state. Reads its token + siteUrl + email from <install-dir>/config.json. Repackages the in-tree Jira connector via the @symphony/plugin-sdk provides.issueSource contract — fetch_open_issues + write_back_status, wrapped host-side into the same ingest + writeback pipeline (sync_jira).",
+  "entrypoint": {
+    "command": "node",
+    "args": ["dist/index.js"]
+  },
+  "permissions": ["secrets:read", "net:*.atlassian.net"],
+  "capabilityFlags": ["requires:secrets-read", "requires:network-egress", "external-visible"],
+  "events": [],
+  "requiresPluginApi": "^1.0.0",
+  "toolScope": "both",
+  "provides": {
+    "issueSource": { "source": "jira" }
+  }
+}

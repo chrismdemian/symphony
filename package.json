@@ -70,7 +70,8 @@
     "smoke:6e2": "node tests/smoke/6e2-pty-smoke.mjs",
     "smoke:6e3": "node tests/smoke/6e3-pty-smoke.mjs",
     "smoke:7c": "node tests/smoke/7c-pty-smoke.mjs",
-    "smoke:9b": "node tests/smoke/9b-plugin-smoke.mjs"
+    "smoke:9b": "node tests/smoke/9b-plugin-smoke.mjs",
+    "smoke:9c": "node tests/smoke/9c-plugin-smoke.mjs"
   },
   "dependencies": {
     "@inkjs/ui": "^2.0.0",
