@@ -54,6 +54,9 @@ const VALID: ReadonlyArray<Record<string, unknown>> = [
   { ...base, provides: { issueSource: { source: 'obsidian', pollIntervalMs: 30000 } } },
   { ...base, provides: { issueSource: { source: 'obsidian', pollIntervalMs: 5000 } } },
   { ...base, provides: { issueSource: { source: 'obsidian', pollIntervalMs: 86400000 } } },
+  // Phase 9C.1 — remaining connectors repackaged as plugins (pull-only).
+  { ...base, provides: { issueSource: { source: 'linear' } } },
+  { ...base, provides: { issueSource: { source: 'jira' } } },
 ];
 
 const INVALID: ReadonlyArray<{ label: string; input: Record<string, unknown> }> = [

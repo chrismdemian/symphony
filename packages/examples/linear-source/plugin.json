@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "linear-source-example",
+  "name": "Linear source (example)",
+  "version": "0.1.0",
+  "author": "Symphony",
+  "description": "Issue-source plugin for Linear: pulls issues as Symphony tasks, and pushes terminal task status back by moving the issue to a completed/canceled workflow state. Reads its API key from <install-dir>/config.json. Repackages the in-tree Linear connector via the @symphony/plugin-sdk provides.issueSource contract — fetch_open_issues + write_back_status, wrapped host-side into the same ingest + writeback pipeline (sync_linear).",
+  "entrypoint": {
+    "command": "node",
+    "args": ["dist/index.js"]
+  },
+  "permissions": ["secrets:read", "net:api.linear.app"],
+  "capabilityFlags": ["requires:secrets-read", "requires:network-egress", "external-visible"],
+  "events": [],
+  "requiresPluginApi": "^1.0.0",
+  "toolScope": "both",
+  "provides": {
+    "issueSource": { "source": "linear" }
+  }
+}
