@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "plain-source",
+  "name": "Plain source fixture",
+  "version": "1.0.0",
+  "author": "symphony-tests",
+  "description": "Phase 9C.3 fixture: a canned Plain issue-source plugin (fetch_open_issues + write_back_status, incl. one DONE-terminal + one malformed thread) plus get_writeback_log to observe writeback deliveries from a real subprocess.",
+  "entrypoint": { "command": "node", "args": ["server.mjs"] },
+  "events": [],
+  "toolScope": "both",
+  "permissions": ["secrets:read", "net:*.plain.com"],
+  "capabilityFlags": ["requires:secrets-read", "requires:network-egress", "external-visible"],
+  "provides": { "issueSource": { "source": "plain" } }
+}

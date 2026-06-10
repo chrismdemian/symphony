@@ -1,12 +1,12 @@
 // Phase 9C real-bundle smoke — spawns the ACTUAL built example plugins
-// (packages/examples/{linear,jira,gitlab,forgejo}-source/dist/index.js) as real
-// MCP stdio subprocesses and drives them through a real MCP client.
+// (packages/examples/{linear,jira,gitlab,forgejo,plain,sentry}-source/dist/index.js)
+// as real MCP stdio subprocesses and drives them through a real MCP client.
 //
 // This is the ONE place the self-contained bundles run end-to-end — it proves
 // the bundled deps work at runtime (the SDK + MCP SDK + zod), config.json
 // loading from the install-dir cwd, and the fetch/writeback tools against mock
 // Linear (GraphQL) + Jira (REST) [9C.1] + GitLab (REST) + Forgejo (REST) [9C.2]
-// servers.
+// + Plain (GraphQL) + Sentry (REST) [9C.3] servers.
 //
 // Run: pnpm smoke:9c   (build the examples first: pnpm build:packages)
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
@@ -23,6 +23,8 @@ const LINEAR_DIST = path.join(repoRoot, 'packages/examples/linear-source/dist/in
 const JIRA_DIST = path.join(repoRoot, 'packages/examples/jira-source/dist/index.js');
 const GITLAB_DIST = path.join(repoRoot, 'packages/examples/gitlab-source/dist/index.js');
 const FORGEJO_DIST = path.join(repoRoot, 'packages/examples/forgejo-source/dist/index.js');
+const PLAIN_DIST = path.join(repoRoot, 'packages/examples/plain-source/dist/index.js');
+const SENTRY_DIST = path.join(repoRoot, 'packages/examples/sentry-source/dist/index.js');
 
 let failures = 0;
 const tmps = [];
@@ -346,11 +348,167 @@ async function smokeForgejo() {
   }
 }
 
+async function smokePlain() {
+  process.stdout.write('plain-source bundle:\n');
+  if (!existsSync(PLAIN_DIST)) {
+    ok('built (run pnpm build:packages first)', false);
+    return;
+  }
+  const thread = (id, status, priority) => ({
+    id,
+    ref: `T-${id}`,
+    title: `Thread ${id}`,
+    previewText: 'preview',
+    status,
+    priority,
+    customer: { id: `cust-${id}` },
+    labels: [{ labelType: { name: 'billing' } }],
+    updatedAt: { iso8601: '2026-06-01T00:00:00Z' },
+  });
+
+  const notes = [];
+  const dones = [];
+  let sawReply = false;
+  const server = http.createServer(async (req, res) => {
+    const body = await readBody(req);
+    const query = String(JSON.parse(body || '{}').query ?? '');
+    res.setHeader('content-type', 'application/json');
+    if (/replyToThread/i.test(query)) sawReply = true;
+    if (query.includes('createNote(')) {
+      notes.push(JSON.parse(body).variables);
+      return res.end(JSON.stringify({ data: { createNote: { note: { id: 'n1' }, error: null } } }));
+    }
+    if (query.includes('markThreadAsDone(')) {
+      dones.push(JSON.parse(body).variables);
+      return res.end(JSON.stringify({ data: { markThreadAsDone: { thread: { id: 'th-1' }, error: null } } }));
+    }
+    if (query.includes('thread(threadId:')) {
+      return res.end(JSON.stringify({ data: { thread: { id: 'th-1', customer: { id: 'cust-1' } } } }));
+    }
+    if (query.includes('threads(')) {
+      return res.end(
+        JSON.stringify({
+          data: {
+            threads: {
+              edges: [{ node: thread('th-1', 'TODO', 0) }, { node: thread('th-2', 'DONE', 2) }],
+              pageInfo: { hasNextPage: false, endCursor: null },
+            },
+          },
+        }),
+      );
+    }
+    if (query.includes('myWorkspace')) {
+      return res.end(JSON.stringify({ data: { myWorkspace: { id: 'ws1', name: 'Acme' } } }));
+    }
+    return res.end(JSON.stringify({ data: {} }));
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+
+  const install = tmpdir('sym-9c-plain-install-');
+  writeFileSync(path.join(install, 'config.json'), JSON.stringify({ token: 'plain_smoke', apiUrl: `http://127.0.0.1:${port}` }), 'utf8');
+
+  const client = await connect(PLAIN_DIST, install);
+  try {
+    const names = (await client.listTools()).tools.map((t) => t.name).sort();
+    ok('exposes the issue-source tools', ['check_connection', 'fetch_open_issues', 'search_issues', 'write_back_status'].every((n) => names.includes(n)));
+
+    const fetched = structured(await client.callTool({ name: 'fetch_open_issues', arguments: {} }));
+    const issues = fetched.issues ?? [];
+    ok('fetched 2 threads via the mock GraphQL API', issues.length === 2);
+    const open = issues.find((i) => i.externalId === 'th-1');
+    ok('open thread mapped (thread-id externalId, null project, priority inversion, non-terminal)', open && open.projectValue === null && open.priority === 3 && open.isTerminal === false);
+    ok('DONE thread flagged terminal', (issues.find((i) => i.externalId === 'th-2') || {}).isTerminal === true);
+
+    const wb = structured(await client.callTool({ name: 'write_back_status', arguments: { externalId: 'th-1', status: 'completed' } }));
+    ok('writeback reported written (noted + done)', wb.written === true && wb.code === 'written');
+    ok('mock received an INTERNAL note (createNote) with a resolved customerId', notes.length === 1 && notes[0].customerId === 'cust-1' && notes[0].text === 'Completed by Symphony.');
+    ok('mock received a markThreadAsDone', dones.length === 1);
+    ok('NEVER sent replyToThread (no customer email)', sawReply === false);
+  } finally {
+    await client.close().catch(() => {});
+    server.close();
+  }
+}
+
+async function smokeSentry() {
+  process.stdout.write('sentry-source bundle:\n');
+  if (!existsSync(SENTRY_DIST)) {
+    ok('built (run pnpm build:packages first)', false);
+    return;
+  }
+  const sentryIssue = (id, status) => ({
+    id,
+    shortId: `BACKEND-${id}`,
+    title: `Error ${id}`,
+    culprit: `app/routes/${id}.ts`,
+    permalink: `https://sentry.io/acme/backend/issues/${id}/`,
+    status,
+    level: 'error',
+    lastSeen: '2026-06-01T00:00:00Z',
+    assignedTo: { name: 'Ada' },
+  });
+
+  const notes = [];
+  const resolves = [];
+  const server = http.createServer(async (req, res) => {
+    const u = req.url ?? '';
+    const method = req.method ?? 'GET';
+    const body = await readBody(req);
+    res.setHeader('content-type', 'application/json');
+    if (/\/issues\/\d+\/notes\/$/.test(u) && method === 'POST') {
+      notes.push(JSON.parse(body || '{}'));
+      return res.end(JSON.stringify({ id: 'note1' }));
+    }
+    if (u.includes('/organizations/') && method === 'PUT') {
+      resolves.push(JSON.parse(body || '{}'));
+      return res.end(JSON.stringify({ status: 'resolved' }));
+    }
+    if (u.includes('/issues/') && method === 'GET') {
+      return res.end(JSON.stringify([sentryIssue(1, 'unresolved'), sentryIssue(2, 'resolved')]));
+    }
+    res.statusCode = 404;
+    res.end('[]');
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+
+  const install = tmpdir('sym-9c-sentry-install-');
+  writeFileSync(
+    path.join(install, 'config.json'),
+    JSON.stringify({ token: 'sentry_smoke', org: 'acme', projects: ['backend'], siteUrl: `http://127.0.0.1:${port}`, resolveOnCompleted: true }),
+    'utf8',
+  );
+
+  const client = await connect(SENTRY_DIST, install);
+  try {
+    const names = (await client.listTools()).tools.map((t) => t.name).sort();
+    ok('exposes the issue-source tools', ['check_connection', 'fetch_open_issues', 'search_issues', 'write_back_status'].every((n) => names.includes(n)));
+
+    const fetched = structured(await client.callTool({ name: 'fetch_open_issues', arguments: {} }));
+    const issues = fetched.issues ?? [];
+    ok('fetched 2 issues via the mock REST API', issues.length === 2);
+    const open = issues.find((i) => i.externalId === 'backend#1');
+    ok('open issue mapped (project#id externalId, project route, level→priority, non-terminal)', open && open.projectValue === 'backend' && open.priority === 2 && open.isTerminal === false && JSON.stringify(open.labels) === '["error"]');
+    ok('resolved issue flagged terminal', (issues.find((i) => i.externalId === 'backend#2') || {}).isTerminal === true);
+
+    const wb = structured(await client.callTool({ name: 'write_back_status', arguments: { externalId: 'backend#1', status: 'completed' } }));
+    ok('writeback reported written (noted + resolved)', wb.written === true && wb.code === 'written' && wb.value === 'noted + resolved');
+    ok('mock received an issue-scoped note', notes.length === 1 && notes[0].text === 'Investigated by Symphony.');
+    ok('mock received an org-scoped resolve (PUT status=resolved)', resolves.length === 1 && resolves[0].status === 'resolved');
+  } finally {
+    await client.close().catch(() => {});
+    server.close();
+  }
+}
+
 try {
   await smokeLinear();
   await smokeJira();
   await smokeGitLab();
   await smokeForgejo();
+  await smokePlain();
+  await smokeSentry();
 } finally {
   for (const d of tmps) rmSync(d, { recursive: true, force: true });
 }

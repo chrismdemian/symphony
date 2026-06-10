@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "sentry-source-example",
+  "name": "Sentry source (example)",
+  "version": "0.1.0",
+  "author": "Symphony",
+  "description": "Issue-source plugin for Sentry: pulls unresolved error issues across the configured projects as Symphony tasks, and pushes terminal task status back by posting an internal note (and resolving the issue only when opted in). Reads its auth token (NOT a DSN) + org + projects from <install-dir>/config.json. Repackages the in-tree Sentry connector via the @symphony/plugin-sdk provides.issueSource contract — fetch_open_issues + write_back_status, wrapped host-side into the same ingest + writeback pipeline (sync_sentry).",
+  "entrypoint": {
+    "command": "node",
+    "args": ["dist/index.js"]
+  },
+  "permissions": ["secrets:read", "net:*.sentry.io"],
+  "capabilityFlags": ["requires:secrets-read", "requires:network-egress", "external-visible"],
+  "events": [],
+  "requiresPluginApi": "^1.0.0",
+  "toolScope": "both",
+  "provides": {
+    "issueSource": { "source": "sentry" }
+  }
+}
