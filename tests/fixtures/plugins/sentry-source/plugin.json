@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "id": "sentry-source",
+  "name": "Sentry source fixture",
+  "version": "1.0.0",
+  "author": "symphony-tests",
+  "description": "Phase 9C.3 fixture: a canned Sentry issue-source plugin (fetch_open_issues + write_back_status, incl. one resolved-terminal + one malformed issue) plus get_writeback_log to observe writeback deliveries from a real subprocess.",
+  "entrypoint": { "command": "node", "args": ["server.mjs"] },
+  "events": [],
+  "toolScope": "both",
+  "permissions": ["secrets:read", "net:*.sentry.io"],
+  "capabilityFlags": ["requires:secrets-read", "requires:network-egress", "external-visible"],
+  "provides": { "issueSource": { "source": "sentry" } }
+}

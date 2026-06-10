@@ -60,6 +60,9 @@ const VALID: ReadonlyArray<Record<string, unknown>> = [
   // Phase 9C.2 — the Git-forge siblings.
   { ...base, provides: { issueSource: { source: 'gitlab' } } },
   { ...base, provides: { issueSource: { source: 'forgejo' } } },
+  // Phase 9C.3 — the divergent-writeback pair.
+  { ...base, provides: { issueSource: { source: 'plain' } } },
+  { ...base, provides: { issueSource: { source: 'sentry' } } },
 ];
 
 const INVALID: ReadonlyArray<{ label: string; input: Record<string, unknown> }> = [

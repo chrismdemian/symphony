@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "plain-source-example",
+  "name": "Plain source (example)",
+  "version": "0.1.0",
+  "author": "Symphony",
+  "description": "Issue-source plugin for Plain (customer support): pulls open threads as Symphony tasks, and pushes terminal task status back by posting an INTERNAL note and marking the thread done (never a customer-facing reply). Reads its API key from <install-dir>/config.json. Repackages the in-tree Plain connector via the @symphony/plugin-sdk provides.issueSource contract — fetch_open_issues + write_back_status, wrapped host-side into the same ingest + writeback pipeline (sync_plain).",
+  "entrypoint": {
+    "command": "node",
+    "args": ["dist/index.js"]
+  },
+  "permissions": ["secrets:read", "net:*.plain.com"],
+  "capabilityFlags": ["requires:secrets-read", "requires:network-egress", "external-visible"],
+  "events": [],
+  "requiresPluginApi": "^1.0.0",
+  "toolScope": "both",
+  "provides": {
+    "issueSource": { "source": "plain" }
+  }
+}

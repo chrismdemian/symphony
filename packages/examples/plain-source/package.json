@@ -1,0 +1,29 @@
+{
+  "name": "@symphony/plugin-plain-source-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Symphony issue-source plugin for Plain — pulls customer-support threads as tasks and writes terminal status back by posting an internal note and marking the thread done. Repackages the in-tree Plain connector (Phase 8C.4) as an opt-in plugin via provides.issueSource.",
+  "type": "module",
+  "files": [
+    "dist",
+    "plugin.json"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@symphony/plugin-sdk": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3"
+  },
+  "license": "MIT"
+}
