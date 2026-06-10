@@ -1,11 +1,12 @@
-// Phase 9C.1 real-bundle smoke — spawns the ACTUAL built example plugins
-// (packages/examples/{linear,jira}-source/dist/index.js) as real MCP stdio
-// subprocesses and drives them through a real MCP client.
+// Phase 9C real-bundle smoke — spawns the ACTUAL built example plugins
+// (packages/examples/{linear,jira,gitlab,forgejo}-source/dist/index.js) as real
+// MCP stdio subprocesses and drives them through a real MCP client.
 //
 // This is the ONE place the self-contained bundles run end-to-end — it proves
 // the bundled deps work at runtime (the SDK + MCP SDK + zod), config.json
 // loading from the install-dir cwd, and the fetch/writeback tools against mock
-// Linear (GraphQL) + Jira (REST) servers.
+// Linear (GraphQL) + Jira (REST) [9C.1] + GitLab (REST) + Forgejo (REST) [9C.2]
+// servers.
 //
 // Run: pnpm smoke:9c   (build the examples first: pnpm build:packages)
 import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
@@ -20,6 +21,8 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, '..', '..');
 const LINEAR_DIST = path.join(repoRoot, 'packages/examples/linear-source/dist/index.js');
 const JIRA_DIST = path.join(repoRoot, 'packages/examples/jira-source/dist/index.js');
+const GITLAB_DIST = path.join(repoRoot, 'packages/examples/gitlab-source/dist/index.js');
+const FORGEJO_DIST = path.join(repoRoot, 'packages/examples/forgejo-source/dist/index.js');
 
 let failures = 0;
 const tmps = [];
@@ -196,9 +199,158 @@ async function smokeJira() {
   }
 }
 
+async function smokeGitLab() {
+  process.stdout.write('gitlab-source bundle:\n');
+  if (!existsSync(GITLAB_DIST)) {
+    ok('built (run pnpm build:packages first)', false);
+    return;
+  }
+  const glIssue = (iid, state) => ({
+    id: 1000 + iid,
+    iid,
+    title: `Issue ${iid}`,
+    description: 'body',
+    state,
+    web_url: `http://gl/acme/widgets/-/issues/${iid}`,
+    updated_at: '2026-06-01T00:00:00Z',
+    labels: ['priority::high'],
+    assignee: { username: 'ada' },
+  });
+
+  const notes = [];
+  const closes = [];
+  const server = http.createServer(async (req, res) => {
+    const u = req.url ?? '';
+    const method = req.method ?? 'GET';
+    const body = await readBody(req);
+    res.setHeader('content-type', 'application/json');
+    if (/\/issues\/\d+\/notes$/.test(u) && method === 'POST') {
+      notes.push(JSON.parse(body || '{}'));
+      return res.end(JSON.stringify({ id: 1 }));
+    }
+    if (/\/issues\/\d+$/.test(u) && method === 'PUT') {
+      closes.push(JSON.parse(body || '{}'));
+      return res.end(JSON.stringify({ state: 'closed' }));
+    }
+    if (u.includes('/issues?') && method === 'GET') {
+      return res.end(JSON.stringify([glIssue(1, 'opened'), glIssue(2, 'closed')]));
+    }
+    if (u.endsWith('/user')) {
+      return res.end(JSON.stringify({ username: 'ada' }));
+    }
+    res.statusCode = 404;
+    res.end('[]');
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+
+  const install = tmpdir('sym-9c-gitlab-install-');
+  writeFileSync(
+    path.join(install, 'config.json'),
+    JSON.stringify({ token: 'glpat_smoke', projects: ['acme/widgets'], siteUrl: `http://127.0.0.1:${port}` }),
+    'utf8',
+  );
+
+  const client = await connect(GITLAB_DIST, install);
+  try {
+    const names = (await client.listTools()).tools.map((t) => t.name).sort();
+    ok('exposes the issue-source tools', ['check_connection', 'fetch_open_issues', 'search_issues', 'write_back_status'].every((n) => names.includes(n)));
+
+    const fetched = structured(await client.callTool({ name: 'fetch_open_issues', arguments: {} }));
+    const issues = fetched.issues ?? [];
+    ok('fetched 2 issues via the mock REST API', issues.length === 2);
+    const open = issues.find((i) => i.externalId === 'acme/widgets#1');
+    ok('open issue mapped (group/project#iid id, path route, label priority, non-terminal)', open && open.projectValue === 'acme/widgets' && open.priority === 2 && open.isTerminal === false);
+    ok('closed issue flagged terminal', (issues.find((i) => i.externalId === 'acme/widgets#2') || {}).isTerminal === true);
+
+    const wb = structured(await client.callTool({ name: 'write_back_status', arguments: { externalId: 'acme/widgets#1', status: 'completed' } }));
+    ok('writeback reported written (noted + closed)', wb.written === true && wb.code === 'written');
+    ok('mock received a note', notes.length === 1 && notes[0].body === 'Completed by Symphony.');
+    ok('mock received a close (state_event)', closes.length === 1 && closes[0].state_event === 'close');
+  } finally {
+    await client.close().catch(() => {});
+    server.close();
+  }
+}
+
+async function smokeForgejo() {
+  process.stdout.write('forgejo-source bundle:\n');
+  if (!existsSync(FORGEJO_DIST)) {
+    ok('built (run pnpm build:packages first)', false);
+    return;
+  }
+  const fjIssue = (number, state) => ({
+    id: 1000 + number,
+    number,
+    title: `Issue ${number}`,
+    body: 'body',
+    state,
+    html_url: `http://fj/acme/repo/issues/${number}`,
+    updated_at: '2026-06-01T00:00:00Z',
+    labels: [{ name: 'priority/high' }],
+    assignee: { login: 'ada' },
+  });
+
+  const comments = [];
+  const closes = [];
+  const server = http.createServer(async (req, res) => {
+    const u = req.url ?? '';
+    const method = req.method ?? 'GET';
+    const body = await readBody(req);
+    res.setHeader('content-type', 'application/json');
+    if (/\/issues\/\d+\/comments$/.test(u) && method === 'POST') {
+      comments.push(JSON.parse(body || '{}'));
+      return res.end(JSON.stringify({ id: 1 }));
+    }
+    if (/\/issues\/\d+$/.test(u) && method === 'PATCH') {
+      closes.push(JSON.parse(body || '{}'));
+      return res.end(JSON.stringify({ state: 'closed' }));
+    }
+    if (u.includes('/issues?') && method === 'GET') {
+      // One real issue + one PR (must be filtered) + one closed issue.
+      return res.end(JSON.stringify([fjIssue(1, 'open'), { ...fjIssue(2, 'open'), pull_request: {} }, fjIssue(3, 'closed')]));
+    }
+    if (u.endsWith('/user')) {
+      return res.end(JSON.stringify({ login: 'ada' }));
+    }
+    res.statusCode = 404;
+    res.end('[]');
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+
+  const install = tmpdir('sym-9c-forgejo-install-');
+  writeFileSync(
+    path.join(install, 'config.json'),
+    JSON.stringify({ token: 'fj_smoke', siteUrl: `http://127.0.0.1:${port}`, repos: ['acme/repo'] }),
+    'utf8',
+  );
+
+  const client = await connect(FORGEJO_DIST, install);
+  try {
+    const fetched = structured(await client.callTool({ name: 'fetch_open_issues', arguments: {} }));
+    const issues = fetched.issues ?? [];
+    ok('fetched 2 issues via the mock REST API (PR filtered out)', issues.length === 2);
+    const open = issues.find((i) => i.externalId === 'acme/repo#1');
+    ok('open issue mapped (owner/repo#number id, repo route, label priority, non-terminal)', open && open.projectValue === 'acme/repo' && open.priority === 2 && open.isTerminal === false);
+    ok('closed issue flagged terminal', (issues.find((i) => i.externalId === 'acme/repo#3') || {}).isTerminal === true);
+    ok('pull request excluded', !issues.some((i) => i.externalId === 'acme/repo#2'));
+
+    const wb = structured(await client.callTool({ name: 'write_back_status', arguments: { externalId: 'acme/repo#1', status: 'completed' } }));
+    ok('writeback reported written (commented + closed)', wb.written === true && wb.code === 'written');
+    ok('mock received a comment', comments.length === 1 && comments[0].body === 'Completed by Symphony.');
+    ok('mock received a close (state=closed)', closes.length === 1 && closes[0].state === 'closed');
+  } finally {
+    await client.close().catch(() => {});
+    server.close();
+  }
+}
+
 try {
   await smokeLinear();
   await smokeJira();
+  await smokeGitLab();
+  await smokeForgejo();
 } finally {
   for (const d of tmps) rmSync(d, { recursive: true, force: true });
 }
