@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "browserbase-example",
+  "name": "Browserbase (example skeleton)",
+  "version": "0.1.0",
+  "author": "Symphony",
+  "description": "Phase 9D SKELETON — a Tier-2 browser plugin for Browserbase (authenticated cloud Chrome). Declares the requires:network-egress + requires:secrets-read envelope and a realistic act/navigate/extract tool surface, but every handler is a non-functional stub. A real build wraps the Browserbase SDK + the cookie-sync skill so a worker can act as authenticated-you on a SaaS dashboard. See README.md.",
+  "homepage": "https://www.browserbase.com",
+  "entrypoint": {
+    "command": "node",
+    "args": ["dist/index.js"]
+  },
+  "permissions": ["secrets:read", "net:*.browserbase.com"],
+  "capabilityFlags": ["requires:network-egress", "requires:secrets-read", "external-visible"],
+  "events": [],
+  "requiresPluginApi": "^1.0.0",
+  "toolScope": "act"
+}

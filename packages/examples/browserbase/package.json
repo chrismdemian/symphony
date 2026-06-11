@@ -1,0 +1,29 @@
+{
+  "name": "@symphony/plugin-browserbase-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Symphony browser plugin SKELETON for Browserbase — a Tier-2 remote/cloud-Chrome example. Non-functional (Phase 9D): declares the requires:network-egress security envelope + a realistic tool surface, but the handlers are stubs. Shows plugin authors how to wrap an authenticated cloud browser as opt-in Symphony tools.",
+  "type": "module",
+  "files": [
+    "dist",
+    "plugin.json"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@symphony/plugin-sdk": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3"
+  },
+  "license": "MIT"
+}
