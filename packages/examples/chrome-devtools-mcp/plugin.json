@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "chrome-devtools-mcp-example",
+  "name": "Chrome DevTools MCP (example skeleton)",
+  "version": "0.1.0",
+  "author": "Symphony",
+  "description": "Phase 9D SKELETON — interactive control of the USER's live logged-in Chrome via CDP. requires:host-browser-control forces hardcoded Tier 3, act-only, away-disabled, automation-rejected (all enforced for free by capabilities.ts). Declares a realistic navigate/click/screenshot tool surface, but every handler is a non-functional stub. The highest-risk surface in the browser stack — see README.md for the FULL mandatory envelope before shipping a real build.",
+  "homepage": "https://github.com/ChromeDevTools/chrome-devtools-mcp",
+  "entrypoint": {
+    "command": "node",
+    "args": ["dist/index.js"]
+  },
+  "permissions": [],
+  "capabilityFlags": ["requires:host-browser-control", "irreversible"],
+  "events": [],
+  "requiresPluginApi": "^1.0.0",
+  "toolScope": "act"
+}

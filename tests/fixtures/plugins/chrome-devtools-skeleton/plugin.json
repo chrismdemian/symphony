@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "id": "chrome-devtools-skeleton",
+  "name": "Chrome DevTools skeleton fixture",
+  "version": "1.0.0",
+  "author": "symphony-tests",
+  "description": "Phase 9D fixture: a requires:host-browser-control tool plugin used to prove the capability envelope is enforced end-to-end (exact Tier-3 gate via the real dispatch path).",
+  "entrypoint": { "command": "node", "args": ["server.mjs"] },
+  "events": [],
+  "toolScope": "act",
+  "permissions": [],
+  "capabilityFlags": ["requires:host-browser-control", "irreversible"]
+}

@@ -1,0 +1,29 @@
+{
+  "name": "@symphony/plugin-chrome-devtools-mcp-example",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Symphony browser plugin SKELETON for Chrome DevTools MCP — interactive control of the USER's live logged-in Chrome via CDP. Hardcoded Tier 3, act-only, away-disabled, automation-rejected. Non-functional (Phase 9D): declares the FULL mandatory security envelope + a realistic CDP tool surface, but the handlers are stubs. The highest-risk surface in Symphony's browser stack — read the README before enabling a real build.",
+  "type": "module",
+  "files": [
+    "dist",
+    "plugin.json"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsup",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@symphony/plugin-sdk": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3"
+  },
+  "license": "MIT"
+}
