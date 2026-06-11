@@ -101,6 +101,8 @@ import { makeGlobalStatusTool } from './tools/global-status.js';
 import { makeAuditChangesTool } from './tools/audit-changes.js';
 import { makeVerifyUiTool } from './tools/verify-ui.js';
 import { makeFinalizeTool } from './tools/finalize.js';
+import { makeOpenPrTool } from './tools/open-pr.js';
+import type { GhRunner } from './gh-cli.js';
 import { defaultOneShotRunner, type OneShotRunner } from './one-shot.js';
 import type { AutonomyTier, CapabilityNotice, DispatchContext, ToolMode } from './types.js';
 import { createWorkerLifecycle, type WorkerLifecycleHandle } from './worker-lifecycle.js';
@@ -220,6 +222,11 @@ export interface OrchestratorServerOptions {
   projectConfigs?: Readonly<Record<string, ProjectConfigInput>>;
   /** Override the one-shot Claude runner used by `audit_changes` + `finalize`. Test seam. */
   oneShotRunner?: OneShotRunner;
+  /**
+   * Phase 3O.2 — override the `gh` runner used by `open_pr`. Test seam so
+   * scenarios drive the real generation pipeline without opening a real PR.
+   */
+  openPrGhRunner?: GhRunner;
   /**
    * Phase 2B.1 — open a SQLite-backed store set. When provided, default
    * impls for `{project,task,question,wave}Store` are SQLite-backed.
@@ -2066,6 +2073,19 @@ export async function startOrchestratorServer(
       // refuses to merge a saga slice when siblings are incomplete
       // unless `force_saga_partial:true` (tier 3).
       sagaStore,
+    }),
+  );
+
+  // Phase 3O.2 — open_pr. Maestro-invoked, on-demand: generate a PR
+  // title/description from a worker branch and open the pull request via
+  // `gh`. external-visible (Tier ≥2). Reuses the same one-shot Claude
+  // runner as audit/finalize for content generation.
+  registry.register(
+    makeOpenPrTool({
+      registry: workerRegistry,
+      projectStore,
+      oneShotRunner,
+      ...(options.openPrGhRunner !== undefined ? { ghRunner: options.openPrGhRunner } : {}),
     }),
   );
 

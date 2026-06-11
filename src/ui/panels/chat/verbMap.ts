@@ -34,6 +34,7 @@ export const TOOL_VERB: Readonly<Record<string, string>> = Object.freeze({
   finalize: 'Resolving',
   review_diff: 'Cadencing',
   verify_ui: 'Sightreading',
+  open_pr: 'Premiering',
 
   // Reads
   list_workers: 'Listening',

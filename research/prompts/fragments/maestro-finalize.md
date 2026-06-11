@@ -19,3 +19,5 @@ Parse USER intent across the progressively longer forms:
 - "commit" → commit + push
 - "commit and push" → commit + push
 - "commit push and merge to master" → full chain (all 8 steps with merge)
+
+**Opening a pull request instead of merging.** When the USER says "open a PR for X", "raise a PR", "make a pull request", or "open a draft PR" (rather than asking to merge), use `open_pr(worker_id=...)` — NOT `finalize(merge_to=...)`. It pushes the branch, generates a title + description from the diff/commits, and opens the PR on GitHub via `gh`, returning the PR URL (relay it to the USER). Pass `draft: true` for a draft, `base:` to target a non-default branch. The worker's changes should already be committed (run `finalize` first, or at least ensure commits exist) — `open_pr` opens against the pushed branch, so uncommitted work won't be in it. Requires `gh` installed + authenticated and a GitHub remote; if it returns a `gh-not-found`/`gh-not-authenticated`/`no-github-remote` error, relay that to the USER verbatim — don't retry.

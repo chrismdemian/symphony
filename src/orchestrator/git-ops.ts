@@ -268,7 +268,7 @@ export async function currentBranch(
   }
 }
 
-function isAbortError(err: unknown): boolean {
+export function isAbortError(err: unknown): boolean {
   if (err instanceof Error && err.name === 'AbortError') return true;
   // Node 20+ DOMException with name 'AbortError' from `signal` option.
   if (typeof err === 'object' && err !== null && 'name' in err) {
@@ -552,6 +552,127 @@ export async function mergeBranch(opts: MergeBranchOptions): Promise<MergeResult
     sourceBranch,
     deletedRemoteBranch,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3O.2 — range helpers for PR-content generation.
+//
+// These feed `pr-generation.ts`'s one-shot prompt + heuristic fallback.
+// `diffStatRange` / `changedFilesInRange` use three-dot (`base...HEAD`) so
+// they describe "what this branch changed relative to where it diverged"
+// (the merge-base) — never parent-branch commits made after the worker
+// started. `commitSubjectsInRange` uses two-dot (`base..HEAD`) — commits
+// reachable from HEAD but not from base. Each swallows nothing: a git
+// failure surfaces as a `GitOpsError` so the caller can fall back.
+// ---------------------------------------------------------------------------
+
+/** `git diff <baseRef>...HEAD --stat` — diffstat summary against the merge-base. */
+export async function diffStatRange(
+  worktreePath: string,
+  baseRef: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['diff', `${baseRef}...HEAD`, '--stat'],
+      {
+        cwd: worktreePath,
+        maxBuffer: 64 * 1024 * 1024,
+        ...(signal !== undefined ? { signal } : {}),
+      },
+    );
+    return stdout;
+  } catch (err) {
+    if (isAbortError(err)) throw err;
+    const info = extractExecError(err);
+    throw new GitOpsError(`git diff ${baseRef}...HEAD --stat failed: ${info.message}`, {
+      stderr: info.stderr,
+      exitCode: info.exitCode,
+    });
+  }
+}
+
+/** `git diff --stat` — working-tree diffstat (uncommitted changes). Fallback when no base ref resolves. */
+export async function workingTreeDiffStat(
+  worktreePath: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  try {
+    const { stdout } = await execFileAsync('git', ['diff', '--stat'], {
+      cwd: worktreePath,
+      maxBuffer: 64 * 1024 * 1024,
+      ...(signal !== undefined ? { signal } : {}),
+    });
+    return stdout;
+  } catch (err) {
+    if (isAbortError(err)) throw err;
+    const info = extractExecError(err);
+    throw new GitOpsError(`git diff --stat failed: ${info.message}`, {
+      stderr: info.stderr,
+      exitCode: info.exitCode,
+    });
+  }
+}
+
+/** `git log <baseRef>..HEAD --pretty=format:%s` — commit subjects on this branch, newest first. */
+export async function commitSubjectsInRange(
+  worktreePath: string,
+  baseRef: string,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['log', `${baseRef}..HEAD`, '--pretty=format:%s'],
+      {
+        cwd: worktreePath,
+        maxBuffer: 64 * 1024 * 1024,
+        ...(signal !== undefined ? { signal } : {}),
+      },
+    );
+    return stdout
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+  } catch (err) {
+    if (isAbortError(err)) throw err;
+    const info = extractExecError(err);
+    throw new GitOpsError(`git log ${baseRef}..HEAD failed: ${info.message}`, {
+      stderr: info.stderr,
+      exitCode: info.exitCode,
+    });
+  }
+}
+
+/** `git diff --name-only <baseRef>...HEAD` — changed file paths against the merge-base. */
+export async function changedFilesInRange(
+  worktreePath: string,
+  baseRef: string,
+  signal?: AbortSignal,
+): Promise<string[]> {
+  try {
+    const { stdout } = await execFileAsync(
+      'git',
+      ['diff', '--name-only', `${baseRef}...HEAD`],
+      {
+        cwd: worktreePath,
+        maxBuffer: 64 * 1024 * 1024,
+        ...(signal !== undefined ? { signal } : {}),
+      },
+    );
+    return stdout
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 0);
+  } catch (err) {
+    if (isAbortError(err)) throw err;
+    const info = extractExecError(err);
+    throw new GitOpsError(`git diff --name-only ${baseRef}...HEAD failed: ${info.message}`, {
+      stderr: info.stderr,
+      exitCode: info.exitCode,
+    });
+  }
 }
 
 /** Internal: run git with arbitrary args and stdin. Rejects on non-zero exit. */
