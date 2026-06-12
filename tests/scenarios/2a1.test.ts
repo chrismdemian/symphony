@@ -135,7 +135,13 @@ describe('Phase 2A.1 production scenario — real claude -p invokes symphony MCP
         const mcpStatuses = init.mcpServers ?? [];
         const symphonyEntry = mcpStatuses.find((m) => m.name === 'symphony');
         expect(symphonyEntry).toBeDefined();
-        expect(symphonyEntry?.status.toLowerCase()).toMatch(/connected|ready|ok/);
+        // `system_init` carries a SNAPSHOT of MCP status taken while servers
+        // are still being established — modern claude -p reports `pending`
+        // here and finishes the handshake moments later. The authoritative
+        // proof that `symphony` actually connected is the successful
+        // `think` tool_use + dispatched tool_result asserted below; this
+        // line just confirms the server was registered with a known state.
+        expect(symphonyEntry?.status.toLowerCase()).toMatch(/connected|ready|ok|pending/);
 
         const toolUses = events.filter((e) => e.type === 'tool_use');
         const symphonyCall = toolUses.find(

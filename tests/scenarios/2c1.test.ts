@@ -258,6 +258,10 @@ describe('Phase 2C.1 production scenario — MaestroProcess + MCP attachment', (
       'tsx',
       path.join(REPO_ROOT, 'src', 'index.ts'),
       'mcp-server',
+      // Phase 7A — `writeMaestroMcpConfig` appends `--plugins` so Maestro's
+      // MCP child boots the PluginHost (gated by this flag + the
+      // pluginsEnabled master switch). Added after the 2C.1 scenario shipped.
+      '--plugins',
     ]);
 
     // Drive a turn through the fake-claude scenario and assert the typed

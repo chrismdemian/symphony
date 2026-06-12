@@ -8,10 +8,12 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter, PassThrough } from 'node:stream';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runStart } from '../../src/cli/start.js';
+import { SYMPHONY_CONFIG_FILE_ENV } from '../../src/utils/config.js';
+import { defaultConfig } from '../../src/utils/config-schema.js';
 import { MaestroHookServer } from '../../src/orchestrator/maestro/hook-server.js';
 import type {
   MaestroProcess,
@@ -98,13 +100,32 @@ class FakeMaestroProcess {
 
 let sandbox: string;
 let home: string;
+let prevConfigEnv: string | undefined;
 
 beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), 'symphony-3b1-scenario-'));
   home = join(sandbox, 'home');
+  // Hermetic config: runStart's `loadConfig()` reads the real
+  // `~/.symphony/config.json` (no `home` arg). Pin an isolated config with
+  // automations OFF so (a) the test never depends on the real machine's
+  // config and (b) the Phase-8D AutomationInjector — a second, legitimate
+  // `maestro.events()` consumer — doesn't start, keeping the single-TUI-
+  // iterator invariant (`eventsIterCount === 1`) clean and deterministic.
+  const cfgDir = join(sandbox, 'cfg');
+  mkdirSync(cfgDir, { recursive: true });
+  const cfgFile = join(cfgDir, 'config.json');
+  writeFileSync(
+    cfgFile,
+    JSON.stringify({ ...defaultConfig(), automationsEnabled: false }),
+    'utf8',
+  );
+  prevConfigEnv = process.env[SYMPHONY_CONFIG_FILE_ENV];
+  process.env[SYMPHONY_CONFIG_FILE_ENV] = cfgFile;
 });
 
 afterEach(() => {
+  if (prevConfigEnv === undefined) delete process.env[SYMPHONY_CONFIG_FILE_ENV];
+  else process.env[SYMPHONY_CONFIG_FILE_ENV] = prevConfigEnv;
   try {
     rmSync(sandbox, { recursive: true, force: true });
   } catch {

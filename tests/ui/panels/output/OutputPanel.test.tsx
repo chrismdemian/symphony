@@ -102,8 +102,39 @@ function Harness({ rpc, initialSelectedId }: HarnessProps): React.JSX.Element {
   );
 }
 
-function flush(): Promise<void> {
-  return new Promise((r) => setImmediate(r));
+/**
+ * Robust convergence-settle for ink-testing-library frames.
+ *
+ * The OutputPanel's `useBoxMetrics` reports a transient small height before
+ * Ink's layout converges, collapsing `viewportEvents` to 1 — early events
+ * scroll off as "↑ N above". The async subscribe→tail→dispatch backfill
+ * chain also lands over several microtasks. A fixed `setImmediate` pair
+ * (the old `flush()×2`) samples too early under parallel-suite CPU pressure
+ * — the documented OutputPanel banner/backfill flake.
+ *
+ * This polls the frame across microtask drains + macrotask/timer hops until
+ * it is byte-stable for several consecutive samples (the UI stopped
+ * changing) or a generous hop budget is spent. It waits for actual
+ * convergence rather than a fixed delay, so it's load-independent. Frames
+ * that legitimately never settle (e.g. the Equalizer spinner in the
+ * waiting-state test) just spend the full budget — bounded, never hangs.
+ */
+async function settle(tree: { lastFrame: () => string | undefined }): Promise<void> {
+  let last: string | undefined;
+  let stable = 0;
+  for (let i = 0; i < 80; i += 1) {
+    for (let j = 0; j < 12; j += 1) await Promise.resolve();
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 2));
+    const cur = tree.lastFrame();
+    if (cur === last) {
+      stable += 1;
+      if (stable >= 5) return;
+    } else {
+      stable = 0;
+      last = cur;
+    }
+  }
 }
 
 const text = (t: string): StreamEvent => ({ type: 'assistant_text', text: t });
@@ -118,7 +149,7 @@ describe('<OutputPanel/>', () => {
   it('renders the no-selection empty hint when selectedId is null', async () => {
     const { rpc } = makeFakeRpc();
     const tree = render(<Harness rpc={rpc} initialSelectedId={null} />);
-    await flush();
+    await settle(tree);
     const frame = stripAnsi(tree.lastFrame() ?? '');
     expect(frame).toContain('Select a worker');
     tree.unmount();
@@ -131,11 +162,11 @@ describe('<OutputPanel/>', () => {
     // first React commit.
     const { rpc } = makeFakeRpc({ tailEvents: [] });
     const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
-    await flush();
+    await settle(tree);
     // After backfill resolves with empty: the panel switches to the
     // backfillReady-empty state. Both states are valid; the harness
     // verifies one of them is on-screen.
-    await flush();
+    await settle(tree);
     const frame = stripAnsi(tree.lastFrame() ?? '');
     expect(frame.includes('Waiting for first event') || frame.includes('no output captured yet'))
       .toBe(true);
@@ -147,8 +178,7 @@ describe('<OutputPanel/>', () => {
       tailEvents: [text('hello world'), toolUse('c1', 'Read', { file_path: '/x/foo.ts' })],
     });
     const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
-    await flush();
-    await flush();
+    await settle(tree);
     const frame = stripAnsi(tree.lastFrame() ?? '');
     expect(frame).toContain('hello world');
     expect(frame).toContain('▸ Read');
@@ -159,11 +189,9 @@ describe('<OutputPanel/>', () => {
   it('appends a live event after backfill', async () => {
     const handle = makeFakeRpc({ tailEvents: [] });
     const tree = render(<Harness rpc={handle.rpc} initialSelectedId="w-1" />);
-    await flush();
-    await flush();
+    await settle(tree);
     handle.emit('w-1', text('live event arrived'));
-    await flush();
-    await flush();
+    await settle(tree);
     const frame = stripAnsi(tree.lastFrame() ?? '');
     expect(frame).toContain('live event arrived');
     tree.unmount();
@@ -176,8 +204,7 @@ describe('<OutputPanel/>', () => {
       ],
     });
     const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
-    await flush();
-    await flush();
+    await settle(tree);
     const frame = stripAnsi(tree.lastFrame() ?? '');
     expect(frame).toContain('rate limited');
     expect(frame).toContain('attempt 2');
@@ -192,16 +219,14 @@ describe('<OutputPanel/>', () => {
       ],
     });
     const tree = render(<Harness rpc={handle.rpc} initialSelectedId="w-1" />);
-    await flush();
-    await flush();
+    await settle(tree);
     // Pre-clear: TWO occurrences of the rate-limited string — once in
     // the sticky header banner (RateLimitBanner), once in the inline
     // EventRow audit-trail row.
     expect(stripAnsi(tree.lastFrame() ?? '').match(/rate limited/g) ?? []).toHaveLength(2);
 
     handle.emit('w-1', text('ok again'));
-    await flush();
-    await flush();
+    await settle(tree);
     const frame = stripAnsi(tree.lastFrame() ?? '');
     expect(frame).toContain('ok again');
     // Post-clear: the banner is gone (RateLimitBanner returns null), but
@@ -215,8 +240,7 @@ describe('<OutputPanel/>', () => {
   it('renders the subscribeError when tail RPC fails', async () => {
     const { rpc } = makeFakeRpc({ tailReject: new Error('tail unavailable') });
     const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
-    await flush();
-    await flush();
+    await settle(tree);
     const frame = stripAnsi(tree.lastFrame() ?? '');
     expect(frame).toContain('output stream error');
     expect(frame).toContain('tail unavailable');
@@ -233,8 +257,7 @@ describe('<OutputPanel/>', () => {
       return <Harness rpc={handle.rpc} initialSelectedId={selected} />;
     }
     const tree = render(<App selected="w-1" />);
-    await flush();
-    await flush();
+    await settle(tree);
     expect(stripAnsi(tree.lastFrame() ?? '')).toContain('w-1 backfill');
     expect(handle.subs.length).toBe(1);
     expect(handle.subs[0]?.workerId).toBe('w-1');
@@ -275,8 +298,7 @@ describe('<OutputPanel/>', () => {
       'narrative after';
     const { rpc } = makeFakeRpc({ tailEvents: [text(fenced)] });
     const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
-    await flush();
-    await flush();
+    await settle(tree);
     const frame = stripAnsi(tree.lastFrame() ?? '');
     expect(frame).toContain('narrative before');
     expect(frame).toContain('Worker Status');
@@ -291,8 +313,7 @@ describe('<OutputPanel/>', () => {
     const fenced = ['preamble', '```json-render', '{not real json', '```', 'epilogue'].join('\n');
     const { rpc } = makeFakeRpc({ tailEvents: [text(fenced)] });
     const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
-    await flush();
-    await flush();
+    await settle(tree);
     const frame = stripAnsi(tree.lastFrame() ?? '');
     expect(frame).toContain('preamble');
     expect(frame).toContain('json-render block failed');
@@ -334,8 +355,7 @@ describe('<OutputPanel/>', () => {
       ],
     });
     const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
-    await flush();
-    await flush();
+    await settle(tree);
     const frame = stripAnsi(tree.lastFrame() ?? '');
     expect(frame).toContain('completion');
     expect(frame).toContain('audit PASS');
@@ -358,8 +378,7 @@ describe('<OutputPanel/>', () => {
       ],
     });
     const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
-    await flush();
-    await flush();
+    await settle(tree);
     const frame = stripAnsi(tree.lastFrame() ?? '');
     expect(frame).toContain('audit FAIL');
     expect(frame).toContain('blocker: migration 0007 conflicts with 0006');
@@ -387,8 +406,7 @@ describe('<OutputPanel/>', () => {
       ],
     });
     const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
-    await flush();
-    await flush();
+    await settle(tree);
     const ansi = tree.lastFrame() ?? '';
     const frame = stripAnsi(ansi);
     // Authoritative textual summary still present…
@@ -411,8 +429,7 @@ describe('<OutputPanel/>', () => {
       tailEvents: [completion({ did: ['shipped'], display: null })],
     });
     const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
-    await flush();
-    await flush();
+    await settle(tree);
     const frame = stripAnsi(tree.lastFrame() ?? '');
     expect(frame).toContain('audit PASS');
     expect(frame).toContain('did 1');
@@ -432,8 +449,7 @@ describe('<OutputPanel/>', () => {
       ],
     });
     const tree = render(<Harness rpc={rpc} initialSelectedId="w-1" />);
-    await flush();
-    await flush();
+    await settle(tree);
     const frame = stripAnsi(tree.lastFrame() ?? '');
     // Advisory rule: the textual fields stay authoritative and intact…
     expect(frame).toContain('audit PASS');

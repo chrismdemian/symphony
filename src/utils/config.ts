@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { applyEdits, modify, type FormattingOptions } from 'jsonc-parser';
+import { renameWithRetry } from './atomic.js';
 import {
   defaultConfig,
   parseConfig,
@@ -300,7 +301,7 @@ export async function writeFileAtomic600(filePath: string, text: string): Promis
     }
     await handle.close();
     handle = undefined;
-    await fsp.rename(tmp, filePath);
+    await renameWithRetry(tmp, filePath);
   } catch (err) {
     if (handle !== undefined) {
       await handle.close().catch(() => {});

@@ -178,7 +178,7 @@ def open_mic(
 
 def _open_sounddevice(  # pragma: no cover - hardware-dependent
     sample_rate: int, frame_samples: int
-) -> tuple[Iterator[bytes], str, callable]:
+) -> tuple[Iterator[Optional[bytes]], str, callable]:
     import sounddevice as sd  # type: ignore[import-not-found]
     import queue as _q
 
@@ -198,9 +198,19 @@ def _open_sounddevice(  # pragma: no cover - hardware-dependent
     )
     stream.start()
 
-    def _iter() -> Iterator[bytes]:
+    def _iter() -> Iterator[Optional[bytes]]:
         while True:
-            chunk = q.get()
+            try:
+                chunk = q.get(timeout=0.2)
+            except _q.Empty:
+                # Heartbeat. With no audio arriving (e.g. the PortAudio
+                # callback is starved under heavy CPU load), a bare blocking
+                # `q.get()` would park here indefinitely and the consumer loop
+                # couldn't observe `shutdown_event` until the parent
+                # force-kills us (the 6a-bridge-shutdown flake). Yield None so
+                # the loop wakes ~5×/s to re-check shutdown.
+                yield None
+                continue
             if chunk is None:
                 return
             yield chunk
@@ -211,7 +221,10 @@ def _open_sounddevice(  # pragma: no cover - hardware-dependent
             stream.close()
         except Exception as e:
             log(f"sounddevice close failed: {e!r}")
-        q.put(None)  # type: ignore[arg-type]
+        try:
+            q.put_nowait(None)  # type: ignore[arg-type]
+        except _q.Full:
+            pass  # consumer already stopped; nothing waiting to unblock
 
     return _iter(), "sounddevice", _close
 
@@ -544,7 +557,7 @@ class Bridge:
         )
         self.force_backend = force_backend
         self.segmenter: Optional[VadSegmenter] = None
-        self.audio_iter: Optional[Iterator[bytes]] = None
+        self.audio_iter: Optional[Iterator[Optional[bytes]]] = None
         self.audio_close: Optional[callable] = None
         self.backend_name = "stdin-pcm"
         self.shutdown_event = threading.Event()
@@ -765,6 +778,12 @@ class Bridge:
             for frame in self.audio_iter:
                 if self.shutdown_event.is_set():
                     break
+                # `None` is a heartbeat from the mic iterator's timed-out
+                # `q.get()` (no audio available yet) — it exists only so the
+                # shutdown check above runs promptly under load. Skip it; it
+                # is not a real audio frame.
+                if frame is None:
+                    continue
                 # Pre-roll ring buffer: always append the LATEST frame
                 # so on speech_start we can backfill the run-up audio
                 # that triggered the segmenter.
@@ -1099,13 +1118,25 @@ def main(argv: Optional[list[str]] = None) -> int:
 
 if __name__ == "__main__":
     try:
-        sys.exit(main())
+        _code = main()
     except KeyboardInterrupt:
         # SIGINT from the parent process - Bridge.run() will have
         # already cleaned up via the iterator-close path. Exit clean.
-        sys.exit(0)
-    except SystemExit:
-        raise
-    except Exception as e:
+        _code = 0
+    except Exception as e:  # noqa: BLE001
+        # Unhandled crash: surface a structured error before exiting non-zero.
         emit_error("unhandled", repr(e))
-        sys.exit(2)
+        _code = 2
+    # argparse's SystemExit (bad args) is NOT an Exception subclass, so it
+    # propagates past the handlers above and exits normally with the usage
+    # message — we only reach the lines below on a return / handled exit.
+    #
+    # Clean path: bypass interpreter shutdown via os._exit. On Windows,
+    # PortAudio/sounddevice registers an atexit finalizer that can RAISE
+    # during interpreter teardown even after a fully clean shutdown — turning
+    # a code-0 run into exit 1 (the 6a-bridge-shutdown flake). run() already
+    # emitted + flushed shutdown_ack before any teardown, and every emit()
+    # flushes stdout inline, so skipping atexit finalizers loses no output.
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(_code if isinstance(_code, int) else 0)

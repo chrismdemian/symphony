@@ -256,8 +256,14 @@ export function WorkerOutputContainer({
   // mounts only when injectActive, capturing input from the dispatcher
   // exclusive of D / r (gated above). When unmounted, its useInput
   // listener clears so the parent's panel-scope commands re-register.
+  //
+  // `flexGrow={1}` is load-bearing: without it this wrapper sizes to its
+  // CONTENT height, so the child views' `flexGrow` boxes have no bounded
+  // parent to fill and `useBoxMetrics` measures ~1 row — collapsing the
+  // scroll viewport (`viewportEvents`) to a single event in both the TUI
+  // and tests. Growing to fill the parent panel restores a real viewport.
   return (
-    <Box flexDirection="column" width="100%">
+    <Box flexDirection="column" width="100%" flexGrow={1}>
       {body}
       {injectActive ? (
         <OutputInlineInput

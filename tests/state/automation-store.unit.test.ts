@@ -171,7 +171,11 @@ describe.each([
     const total = ids.reduce((sum, id) => sum + h.store.listRunLogs(id).length, 0);
     expect(total).toBeLessThanOrEqual(MAX_TOTAL_RUNS);
     expect(total).toBeGreaterThan(MAX_TOTAL_RUNS - perAuto); // trimmed close to the cap, not nuked
-  });
+    // ~4250 real better-sqlite3 txns (25×85 claim+complete), each running a
+    // full-table-sort retention trim. Correct but CPU-heavy; the default 5s
+    // timeout is exceeded under the parallel-suite scheduler. The work is
+    // bounded and synchronous, so a generous timeout is the honest fix.
+  }, 30_000);
 
   it('create round-trips a trigger_config (JSON persisted + returned verbatim)', () => {
     const cfg = JSON.stringify({ labelFilter: ['bug', 'urgent'], assigneeFilter: 'chris' });

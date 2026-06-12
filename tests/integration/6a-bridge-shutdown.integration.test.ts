@@ -65,6 +65,12 @@ describeOrSkip('Phase 6A — bridge shutdown semantics (real Python)', () => {
       liveBridges.push(bridge);
       await bridge.start({
         inputMode: 'mic',
+        // VAD-only: this test asserts the command → ack → clean-exit
+        // contract, not STT. Disabling STT removes the numba-JIT warmup
+        // (3–8s, slower under the parallel suite) that could overlap the
+        // shutdown and make `stt_worker.stop()` blow past `graceMs` → a
+        // force-kill (exit 1). STT teardown is exercised by 6b.
+        sttEnabled: false,
         onStderr: () => {},
       });
 
