@@ -6,10 +6,11 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { EventEmitter, PassThrough } from 'node:stream';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runStart } from '../../src/cli/start.js';
+import { useHermeticConfig, type HermeticConfigHandle } from './_hermetic.js';
 import { MaestroHookServer } from '../../src/orchestrator/maestro/hook-server.js';
 import type {
   MaestroProcess,
@@ -82,18 +83,28 @@ class FakeMaestroProcess {
 let sandbox: string;
 let home: string;
 
+let hermetic: HermeticConfigHandle;
+
 beforeEach(() => {
   sandbox = mkdtempSync(join(tmpdir(), 'symphony-3f2-scenario-'));
   home = join(sandbox, 'home');
+  // Hermetic config: modelMode starts 'mixed'; a generous leader window so
+  // the arm→second-key sequence isn't a real-timer race; automations off.
+  hermetic = useHermeticConfig({ modelMode: 'mixed', leaderTimeoutMs: 1000 });
 });
 
 afterEach(() => {
+  hermetic.restore();
   try {
     rmSync(sandbox, { recursive: true, force: true });
   } catch {
     // ignore
   }
 });
+
+function readModelMode(cfgFile: string): string {
+  return (JSON.parse(readFileSync(cfgFile, 'utf8')) as { modelMode?: string }).modelMode ?? '(none)';
+}
 
 interface FakeRpcHandle {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -175,9 +186,6 @@ function settle(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-const stripAnsi = (s: string): string =>
-  // eslint-disable-next-line no-control-regex
-  s.replace(/\x1b\[[\d;?]*[a-zA-Z]/g, '').replace(/\x1b\][^\x07]*\x07/g, '');
 
 const CTRL_X = '\x18';
 
@@ -220,63 +228,35 @@ describe('Phase 3F.2 scenario — leader-chord plumbing', () => {
 
     await settle(1300);
 
-    // Press Ctrl+X — leader armed, KeybindBar shows the hint.
-    const beforeArmLength = stdoutChunks.length;
+    // BEHAVIORAL plumbing check (replaces fragile fake-stdout visual
+    // assertions — the launcher's PassThrough cascades Ink frames and
+    // overwrites the transient bold-violet "Ctrl+X" bar; that render is
+    // covered by keybinds.leader.test.tsx + the 3f2 visual frames). The
+    // `<leader>m` handler cycles modelMode opus↔mixed AND persists it via
+    // setConfig → applyPatchToDisk, so the on-disk config is the
+    // end-to-end signal that the chord fired through the real launcher.
+    expect(readModelMode(hermetic.cfgFile)).toBe('mixed');
+
+    // Arm (Ctrl+X) then fire the second key (m) within the generous leader
+    // window → modelMode cycles mixed → opus.
     (stdin as unknown as PassThrough).write(CTRL_X);
     await settle(300);
-    {
-      const post = stdoutChunks.slice(beforeArmLength).join('');
-      const plain = stripAnsi(post);
-      expect(plain).toContain('Ctrl+X');
-      // Audit M1: bar lists available leader-seconds when armed.
-      expect(plain).toContain('switch model mode');
-    }
-
-    // Press `m` — model-mode toast renders.
-    const beforeFireLength = stdoutChunks.length;
     (stdin as unknown as PassThrough).write('m');
-    await settle(300);
-    {
-      const post = stdoutChunks.slice(beforeFireLength).join('');
-      const plain = stripAnsi(post);
-      // Phase 3H.2 wired the real `<leader>m` handler: stub toast
-      // "Model mode switch — Phase 3H will wire the real action."
-      // becomes the actual cycle confirmation "Model mode: <mode>
-      // (applies on next start)." The 3F.2 scenario validates the
-      // chord PLUMBING — that the second keystroke fires SOME toast —
-      // NOT the literal stub copy.
-      expect(plain).toMatch(/Model mode/);
-    }
+    await settle(400);
+    expect(readModelMode(hermetic.cfgFile)).toBe('opus');
 
-    // Wait past the toast TTL (default 2000ms). Toast should dismiss
-    // and the next render won't contain the toast text. Capture the
-    // boundary AFTER dismissal so we don't see the still-active toast
-    // chunks.
-    await settle(2400);
-    const beforeDismissCheckLength = stdoutChunks.length;
-    // Trigger a render that's guaranteed to be post-dismissal — write
-    // a no-op key (Tab cycles focus from chat → workers, no toast).
-    (stdin as unknown as PassThrough).write('\t');
-    await settle(300);
-    {
-      const post = stdoutChunks.slice(beforeDismissCheckLength).join('');
-      const plain = stripAnsi(post);
-      expect(plain).not.toContain('Model mode switch');
-    }
+    // The leader CLEARS after firing: a bare `m` (no preceding Ctrl+X) is
+    // not a leader-second and must NOT re-cycle.
+    (stdin as unknown as PassThrough).write('m');
+    await settle(400);
+    expect(readModelMode(hermetic.cfgFile)).toBe('opus');
 
-    // Press Ctrl+X then wait past the leader timeout (300ms) + cushion.
+    // A fresh arm + fire cycles back opus → mixed (proves repeatability).
     (stdin as unknown as PassThrough).write(CTRL_X);
-    await settle(500);
-    const beforeTimeoutMLength = stdoutChunks.length;
-    (stdin as unknown as PassThrough).write('m');
     await settle(300);
-    {
-      const post = stdoutChunks.slice(beforeTimeoutMLength).join('');
-      const plain = stripAnsi(post);
-      // After the leader timed out, the second `m` does NOT fire the
-      // toast (would fire if the leader were still armed).
-      expect(plain).not.toContain('Model mode switch');
-    }
+    (stdin as unknown as PassThrough).write('m');
+    await settle(400);
+    expect(readModelMode(hermetic.cfgFile)).toBe('mixed');
 
     await launcher.stop('scenario shutdown');
     await launcher.done;

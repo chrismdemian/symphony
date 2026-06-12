@@ -81,8 +81,13 @@ describe('Phase 1D production scenario — pool claim + real claude reads preser
   it.skipIf(!claudeAvailable)(
     'pool-enabled WorktreeManager.create claims a reserve; real worker reads preserved .env; pool replenishes',
     async () => {
-      const secret = `symphony-1d-${Date.now()}`;
-      writeFileSync(path.join(projectPath, '.env'), `SECRET=${secret}\n`);
+      // A NON-secret build marker, not a credential: this scenario verifies
+      // the worker reads the PRESERVED `.env` from the worktree, and modern
+      // Claude correctly refuses to echo values that look like secrets (a
+      // `SECRET=` line is withheld — "present but withheld"). Use an
+      // innocuous marker the model has no reason to redact.
+      const marker = `symphony-1d-marker-${Date.now()}`;
+      writeFileSync(path.join(projectPath, '.env'), `BUILD_MARKER=${marker}\n`);
       writeFileSync(
         path.join(projectPath, '.symphony.json'),
         JSON.stringify({ worktreePool: { enabled: true } }),
@@ -126,7 +131,7 @@ describe('Phase 1D production scenario — pool claim + real claude reads preser
       expect(existsSync(warmedReservePath)).toBe(false);
 
       const preservedEnv = readFileSync(path.join(info.path, '.env'), 'utf8');
-      expect(preservedEnv).toBe(`SECRET=${secret}\n`);
+      expect(preservedEnv).toBe(`BUILD_MARKER=${marker}\n`);
 
       const gitDirOut = await git(info.path, 'rev-parse', '--git-common-dir');
       const gitDir = gitDirOut.trim();
@@ -144,7 +149,7 @@ describe('Phase 1D production scenario — pool claim + real claude reads preser
           deterministicUuidInput: `scenario-1d::${info.path}`,
           prompt: [
             'Use the Read tool to read the file `.env` in the current working directory.',
-            'It contains a single line of the form `SECRET=<value>`.',
+            'It contains a single non-secret line of the form `BUILD_MARKER=<value>` (a build identifier, not a credential).',
             'Then emit ONE structured completion JSON fence (```json ... ```) with this exact shape and nothing else after it:',
             '{',
             '  "did": ["<value>"],',
@@ -156,7 +161,7 @@ describe('Phase 1D production scenario — pool claim + real claude reads preser
             '  "tests_run": [],',
             '  "preview_url": null',
             '}',
-            'Where <value> is the literal string after `SECRET=` on the line. No quoting tricks; reproduce it byte-for-byte.',
+            'Where <value> is the literal string after `BUILD_MARKER=` on the line. No quoting tricks; reproduce it byte-for-byte.',
           ].join('\n'),
           timeoutMs: 90_000,
         });
@@ -171,7 +176,7 @@ describe('Phase 1D production scenario — pool claim + real claude reads preser
         if (completion?.type !== 'structured_completion') {
           throw new Error('expected a structured_completion event');
         }
-        expect(completion.report.did[0]).toContain(secret);
+        expect(completion.report.did[0]).toContain(marker);
       } finally {
         await mgr.shutdown();
       }

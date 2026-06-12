@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { promises as fsp } from 'node:fs';
 import { randomBytes } from 'node:crypto';
+import { renameWithRetry } from '../../utils/atomic.js';
 
 import { prependTsxLoaderIfTs } from '../../utils/node-runner.js';
 
@@ -96,7 +97,7 @@ export async function writeMaestroMcpConfig(
   const tmp = `${target}.tmp-${randomBytes(6).toString('hex')}`;
   try {
     await fsp.writeFile(tmp, serialized, 'utf8');
-    await fsp.rename(tmp, target);
+    await renameWithRetry(tmp, target);
   } catch (err) {
     fsp.unlink(tmp).catch(() => {});
     throw err;

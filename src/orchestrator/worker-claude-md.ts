@@ -3,6 +3,7 @@ import { promises as fsp, statSync } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { promisify } from 'node:util';
+import { renameWithRetry } from '../utils/atomic.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -135,7 +136,7 @@ async function writeAtomic(filePath: string, content: string): Promise<void> {
   const tmp = `${filePath}.tmp-${randomBytes(6).toString('hex')}`;
   try {
     await fsp.writeFile(tmp, content, 'utf8');
-    await fsp.rename(tmp, filePath);
+    await renameWithRetry(tmp, filePath);
   } catch (err) {
     fsp.unlink(tmp).catch(() => {});
     throw err;

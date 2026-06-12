@@ -18,6 +18,24 @@ import gradient from 'gradient-string';
 // tests opt back in via `__setSecretBackendForTests` with a fake backend.
 process.env.SYMPHONY_DISABLE_KEYRING = '1';
 
+// Safety net: never let a unit/integration test read or WRITE the
+// developer's real ~/.symphony/config.json. `loadConfig()`/`applyPatchToDisk()`
+// take no `home` arg, so a test that forgets to isolate (or leaks an async
+// write past its afterEach — the 5d-config-watch class that polluted the real
+// config with `activeProject: should-not-leak`) silently corrupts it and every
+// later test/scenario inherits the garbage. Tests that need specific config set
+// their own SYMPHONY_CONFIG_FILE (overriding this); config.test.ts deletes it
+// to exercise the default-path branch. Only seed it when unset.
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+if (process.env.SYMPHONY_CONFIG_FILE === undefined) {
+  process.env.SYMPHONY_CONFIG_FILE = join(
+    mkdtempSync(join(tmpdir(), 'symphony-test-cfg-')),
+    'config.json',
+  );
+}
+
 // Force a small priming render so the chalk module behind gradient-string
 // is fully initialized, then poke its level. We import chalk dynamically
 // via require because it's a transitive dep — direct ESM import would

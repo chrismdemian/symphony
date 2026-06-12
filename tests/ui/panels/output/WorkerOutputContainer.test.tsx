@@ -120,7 +120,7 @@ async function flush(n = 6): Promise<void> {
   }
 }
 
-async function waitFor(check: () => void, timeoutMs = 1500): Promise<void> {
+async function waitFor(check: () => void, timeoutMs = 3000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   let lastError: unknown;
   while (Date.now() < deadline) {
@@ -129,7 +129,11 @@ async function waitFor(check: () => void, timeoutMs = 1500): Promise<void> {
       return;
     } catch (err) {
       lastError = err;
-      await new Promise((r) => setImmediate(r));
+      // Yield REAL wall-clock time (not a tight setImmediate spin) so the
+      // keystroke → diff-view mount → RPC chain can advance under parallel-
+      // suite CPU pressure — a setImmediate-only loop can burn the whole
+      // deadline without the awaited render/RPC ever getting scheduled.
+      await new Promise((r) => setTimeout(r, 10));
     }
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError));

@@ -3,6 +3,7 @@ import path from 'node:path';
 import { promises as fsp } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { symphonyDataDir } from '../../utils/config.js';
+import { renameWithRetry } from '../../utils/atomic.js';
 
 const MAESTRO_SUBDIR = 'maestro';
 const CLAUDE_MD_FILENAME = 'CLAUDE.md';
@@ -53,7 +54,7 @@ export async function writeMaestroClaudeMd(claudeMdPath: string, content: string
   const tmp = `${claudeMdPath}.tmp-${randomBytes(6).toString('hex')}`;
   try {
     await fsp.writeFile(tmp, content, 'utf8');
-    await fsp.rename(tmp, claudeMdPath);
+    await renameWithRetry(tmp, claudeMdPath);
   } catch (err) {
     // Best-effort cleanup so a write-or-rename failure doesn't leak the tmp.
     fsp.unlink(tmp).catch(() => {});

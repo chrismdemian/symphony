@@ -2,6 +2,7 @@ import { promises as fsp } from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import * as jsoncParser from 'jsonc-parser';
+import { renameWithRetry } from '../../utils/atomic.js';
 
 const SETTINGS_FILENAME = 'settings.local.json';
 const DEFAULT_MARKER = 'SYMPHONY_HOOK_PORT';
@@ -232,7 +233,7 @@ async function atomicWrite(targetPath: string, content: string): Promise<void> {
   const tmp = `${targetPath}.tmp-${randomBytes(6).toString('hex')}`;
   try {
     await fsp.writeFile(tmp, content, 'utf8');
-    await fsp.rename(tmp, targetPath);
+    await renameWithRetry(tmp, targetPath);
   } catch (err) {
     fsp.unlink(tmp).catch(() => {});
     throw err;

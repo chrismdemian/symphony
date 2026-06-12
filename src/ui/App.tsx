@@ -235,14 +235,16 @@ function AppShell(props: AppProps): React.JSX.Element {
     // Always sync the server's dispatch context. Idempotent
     // server-side; no-op when `toggleAwayMode` already pushed the value
     // for the same flip.
-    void rpc.call.runtime.setAwayMode({ awayMode }).catch(() => {
+    // Optional-chain so a stale RPC client missing the `runtime` /
+    // `notifications` namespace can't synchronously throw and blank the TUI.
+    void rpc.call.runtime?.setAwayMode?.({ awayMode })?.catch(() => {
       // Best-effort; capability-shim consequence is documented in the
       // race-window note above.
     });
     if (prev === true && awayMode === false) {
       void rpc.call.notifications
-        .flushAwayDigest()
-        .then((result) => {
+        ?.flushAwayDigest?.()
+        ?.then((result) => {
           if (result.digest !== null) {
             // Synthesize a "while you were away" system row. Uses the
             // existing SystemSummary shape; workerName='Symphony' since
@@ -536,7 +538,9 @@ function AppShell(props: AppProps): React.JSX.Element {
     const prev = prevTierRef.current;
     if (prev === autonomyTier) return;
     prevTierRef.current = autonomyTier;
-    void rpc.call.runtime.setAutonomyTier({ tier: autonomyTier }).catch(() => {
+    // Optional-chain so a stale RPC client missing the `runtime` namespace
+    // can't synchronously throw and blank the TUI over a best-effort sync.
+    void rpc.call.runtime?.setAutonomyTier?.({ tier: autonomyTier })?.catch(() => {
       // Best-effort; the dispatcher's per-call cursor reads will stay
       // at the prior value until the next push. Acceptable for MVP.
     });
@@ -559,13 +563,14 @@ function AppShell(props: AppProps): React.JSX.Element {
     const prev = prevActiveProjectRef.current;
     if (prev === activeProject) return;
     prevActiveProjectRef.current = activeProject;
+    // Optional-chain the whole call: a malformed RPC client missing the
+    // `runtime` namespace must never throw synchronously inside this effect
+    // and blank the entire TUI over a best-effort cursor sync. The trailing
+    // `?.catch` swallows the async rejection (server falls back to the prior
+    // cursor + boot defaultProjectPath on the next push).
     void rpc.call.runtime
-      .setActiveProject({ project: activeProject })
-      .catch(() => {
-        // Best-effort; server falls back to prior cursor + boot
-        // defaultProjectPath. A user-visible failure would be more
-        // hostile than a silent re-sync on next push.
-      });
+      ?.setActiveProject?.({ project: activeProject })
+      ?.catch(() => undefined);
   }, [activeProject, rpc]);
 
   // Phase 3T — interrupt pivot handlers. Two split entry points (Esc

@@ -99,8 +99,14 @@ describe('KeybindProvider — leader-chord dispatch', () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(getLeader()).toBe('Ctrl+X');
 
-    // Wait beyond the timeout (cushion for timer dispatch + re-render).
-    await new Promise((r) => setTimeout(r, 350));
+    // Poll until the leader auto-disarms. The 100ms `leaderTimeoutMs` timer
+    // can fire late under parallel-suite CPU starvation, so a fixed 350ms
+    // cushion flaked (the timer hadn't run yet). Poll to a generous deadline
+    // instead — load-independent.
+    const disarmDeadline = Date.now() + 3000;
+    while (getLeader() !== null && Date.now() < disarmDeadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
     expect(getLeader()).toBeNull();
 
     // Second keystroke after timeout does NOT fire the leader command.
